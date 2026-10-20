@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { globToRegExp } from '../index/scanner.js';
 import { tokenize } from '../index/bm25.js';
 
@@ -62,8 +62,18 @@ export function loadProjectRules(root: string, stateDir: string): ProjectRules {
   const rules: RuleDoc[] = [];
   const skills: RuleDoc[] = [];
   const review: RuleDoc[] = [];
+  // the same physical file can be reached under several names (case-insensitive filesystems, symlinks)
+  const seen = new Set<string>();
   const add = (list: RuleDoc[], p: string, src: string) => {
-    const d = loadDoc(p, src);
+    let key: string;
+    try {
+      key = realpathSync.native(p).toLowerCase();
+    } catch {
+      key = p.toLowerCase();
+    }
+    if (seen.has(key)) return;
+    seen.add(key);
+    const d = loadDoc(p, src.split(sep).join('/'));
     if (d && d.body) list.push(d);
   };
   for (const f of ['AGENTS.md', 'KURULTAY.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules', '.github/copilot-instructions.md']) {
@@ -79,7 +89,7 @@ export function loadProjectRules(root: string, stateDir: string): ProjectRules {
   for (const dir of [join(stateDir, 'skills'), join(root, 'skills')]) for (const p of mdFiles(dir)) add(skills, p, p.slice(root.length + 1));
   for (const f of ['review_rules.md', 'REVIEW_RULES.md', join('.kurultay', 'review_rules.md')]) {
     const p = join(root, f);
-    if (existsSync(p) && !review.some((r) => r.source === f)) add(review, p, f);
+    if (existsSync(p)) add(review, p, f);
   }
   return { rules, skills, review };
 }
