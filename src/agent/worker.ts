@@ -2,12 +2,26 @@ import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { ModelHandle, Router } from '../llm/router.js';
 import { LlmError, type ChatMessage, type ChatResult } from '../llm/types.js';
+import { SkillRegistry, type Skill } from '../skills/skills.js';
 import { errorMessage } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateMiddle, tryExtractJson } from '../util/text.js';
-import { parseTextToolCalls, textToolInstructions } from './text-tools.js';
+import { LoopGuard } from './loop-guard.js';
+import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
 import { executeTool, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
+
+export interface WorkerSkills {
+  registry: SkillRegistry;
+  /** loaded into the context up front */
+  preload: Skill[];
+  /** named as recommended in the catalogue */
+  recommended?: string[];
+  /** hidden skills the user selected explicitly */
+  explicit?: Set<string>;
+  /** files the task is about (conditional skills) */
+  files?: string[];
+}
 
 export interface WorkerSpec {
   id: string;
@@ -23,6 +37,7 @@ export interface WorkerSpec {
   maxSteps?: number;
   /** extra system instructions (role specific) */
   roleInstructions?: string;
+  skills?: WorkerSkills;
 }
 
 export interface WorkerResult {
@@ -36,15 +51,36 @@ export interface WorkerResult {
   /** last assistant text (useful for read-only analysts) */
   finalText: string;
   tokens: { in: number; out: number };
+  /** skills used by this worker and how they were loaded */
+  skills: Array<{ name: string; how: 'preload' | 'tool' }>;
+  /** guard interventions (loop warnings, toolshim, condense) */
+  interventions: string[];
 }
 
 const BASE_SYSTEM = `You are a senior software engineer working autonomously inside an existing codebase, as one member of a team of AI models (a "kurultay").
 Principles:
-- Investigate before editing: use search/read tools; never guess file contents or APIs.
+- Investigate before editing: use search/read tools; never guess file contents or APIs. Read a file before you edit it.
 - Make the smallest correct change that fully solves the task; follow existing style and project rules.
 - Keep the build green: after editing, run the project's build/test commands when available and fix what you broke.
 - Never touch files unrelated to the task. Never run destructive or networked commands.
 - Communicate only through tool calls; when finished call finish with a short summary (what changed, how verified).`;
+
+const READ_ONLY_TOOLS = ['read_file', 'list_dir', 'search_code', 'grep', 'find_symbol', 'repo_map', 'skill', 'skill_file', 'finish'];
+
+/** Structured hand-off summary (Pi compaction + Codex checkpoint), updated incrementally. */
+const CONDENSE_PROMPT = `You are compacting the work log of an autonomous coding agent so it can continue with a smaller context.
+Write a structured hand-off summary in Markdown with EXACTLY these sections:
+## Goal
+## Constraints & Preferences
+## Progress
+### Done
+### In Progress
+### Blocked
+## Key Decisions
+## Files (read / modified)
+## Next Steps
+## Critical Context
+Rules: keep exact file paths, function names, error messages and commands that still matter; drop raw tool output; be concise.`;
 
 export class AgentWorker {
   private messages: ChatMessage[] = [];
@@ -52,6 +88,14 @@ export class AgentWorker {
   private nativeTools: boolean;
   private readonly toolCtx: ToolContext;
   private tokens = { in: 0, out: 0 };
+  private readonly guard: LoopGuard;
+  private readonly skillLog: Array<{ name: string; how: 'preload' | 'tool' }> = [];
+  private readonly interventions: string[] = [];
+  /** conditional skills already advertised */
+  private advertised = new Set<string>();
+  private previousSummary = '';
+  private readonly touched = { read: new Set<string>(), modified: new Set<string>() };
+  private readonly staleFiles = new Set<string>();
 
   constructor(
     private readonly spec: WorkerSpec,
@@ -63,7 +107,8 @@ export class AgentWorker {
   ) {
     const handle = router.get(spec.model);
     this.nativeTools = handle?.caps.nativeTools ?? true;
-    const allowed = spec.readOnly ? new Set(['read_file', 'list_dir', 'search_code', 'grep', 'find_symbol', 'repo_map', 'finish']) : undefined;
+    const allowed = spec.readOnly ? new Set(READ_ONLY_TOOLS) : undefined;
+    const loaded = new Set<string>();
     this.toolCtx = {
       workerId: spec.id,
       root: deps.root,
@@ -74,7 +119,19 @@ export class AgentWorker {
       bus: deps.bus,
       signal: deps.signal,
       allowed,
+      skills: spec.skills?.registry,
+      explicitSkills: spec.skills?.explicit,
+      loadedSkills: loaded,
+      readFiles: this.touched.read,
+      writtenFiles: this.touched.modified,
+      staleFiles: this.staleFiles,
     };
+    this.guard = new LoopGuard({ maxConsecutiveErrors: cfg.orchestrator.maxConsecutiveErrors ?? 6 });
+  }
+
+  private get hasSkills(): boolean {
+    const s = this.spec.skills;
+    return !!s && (s.registry.visible().length > 0 || (s.explicit?.size ?? 0) > 0);
   }
 
   private handle(): ModelHandle | undefined {
@@ -90,18 +147,50 @@ export class AgentWorker {
     const parts = [BASE_SYSTEM];
     if (this.spec.roleInstructions) parts.push(this.spec.roleInstructions);
     if (verify.length) parts.push(`Project verification commands (run them with run_command before finishing):\n${verify.map((v) => `- ${v}`).join('\n')}`);
-    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed)));
+    const sk = this.spec.skills;
+    if (sk && this.hasSkills) {
+      const files = sk.files?.length ? sk.files : undefined;
+      const cat = sk.registry.catalogue({ files, exclude: sk.preload.map((s) => s.name), recommended: sk.recommended });
+      if (cat) parts.push(cat);
+      for (const s of sk.registry.visible()) if (!files || SkillRegistry.matchesFiles(s, files)) this.advertised.add(s.name);
+    }
+    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills })));
     return parts.join('\n\n');
   }
 
   private firstUserMessage(): string {
     const acc = this.spec.acceptance?.length ? `\n\nAcceptance criteria:\n${this.spec.acceptance.map((a) => `- ${a}`).join('\n')}` : '';
-    return `${this.spec.context}\n\n# TASK\n${this.spec.task}${acc}`;
+    let skills = '';
+    const sk = this.spec.skills;
+    if (sk?.preload.length) {
+      const budget = Math.max(800, Math.floor(this.contextWindow() * 0.15 / sk.preload.length));
+      skills = `\n\n# ACTIVE SKILLS (follow these procedures)\n${sk.preload
+        .map((s) => {
+          this.toolCtx.loadedSkills?.add(s.name);
+          this.skillLog.push({ name: s.name, how: 'preload' });
+          this.bus?.emitEvent('skill.load', { source: this.spec.id, data: { name: s.name, how: 'preload' } });
+          return sk.registry.render(s, undefined, budget);
+        })
+        .join('\n\n')}`;
+    }
+    return `${this.spec.context}${skills}\n\n# TASK\n${this.spec.task}${acc}`;
   }
 
-  /** OpenHands-style condenser: shrink old tool outputs, then summarise the middle of the history. */
+  /** Conditional skills (paths:) become visible once the worker touches a matching file (Qwen Code). */
+  private newlyRelevantSkills(path: string | undefined): string {
+    const sk = this.spec.skills;
+    if (!sk || !path) return '';
+    const fresh = sk.registry.visible().filter((s) => s.paths.length && !this.advertised.has(s.name) && !this.toolCtx.loadedSkills?.has(s.name) && SkillRegistry.matchesFiles(s, [path]));
+    if (!fresh.length) return '';
+    fresh.forEach((s) => this.advertised.add(s.name));
+    return `\n[Kurultay] ${path} ile ilgili skill'ler kullanılabilir: ${fresh.map((s) => `${s.name} — ${s.description}`).join('; ')}. Gerekirse skill aracıyla yükleyin.`;
+  }
+
+  /** Pi/Codex style condenser: shrink old tool outputs first, then replace the middle with a structured hand-off summary. */
   private async condense(): Promise<void> {
-    const budget = Math.floor(this.contextWindow() * 0.6);
+    const window = this.contextWindow();
+    const reserve = Math.max(1024, Math.min(16_384, Math.floor(window * 0.3)));
+    const budget = window - reserve;
     const size = () => estimateTokens(this.messages.map((m) => (m.content ?? '') + JSON.stringify(m.tool_calls ?? '')).join('\n'));
     if (size() <= budget) return;
     const keepTail = 8;
@@ -112,18 +201,23 @@ export class AgentWorker {
       }
     }
     if (size() <= budget || this.messages.length <= keepTail + 3) return;
-    // summarise everything between the first user message and the tail
     let cut = this.messages.length - keepTail;
-    // never split an assistant tool_call from its tool responses
     while (cut < this.messages.length && this.messages[cut].role === 'tool') cut++;
-    const middle = this.messages.slice(2, cut);
+    const middle = this.messages.slice(2, cut).filter((m) => !(m.role === 'user' && m.content?.startsWith('<progress_notes>')));
     const transcript = middle.map((m) => `${m.role}: ${(m.content ?? '').slice(0, 1500)}${m.tool_calls ? ' ' + JSON.stringify(m.tool_calls).slice(0, 600) : ''}`).join('\n');
+    const files = `Files read: ${[...this.touched.read].join(', ') || '-'}\nFiles modified: ${[...this.touched.modified].join(', ') || '-'}`;
     let notes = '';
     try {
       const r = await this.router.chat(
         {
-          messages: [{ role: 'user', content: `Condense this agent work log into compact notes: files inspected and key facts learned, changes already made, failing commands/errors, and what remains to do.\n\n${truncateMiddle(transcript, 40_000)}` }],
-          maxTokens: 1200,
+          messages: [
+            { role: 'system', content: CONDENSE_PROMPT },
+            {
+              role: 'user',
+              content: `${this.previousSummary ? `<previous-summary>\n${this.previousSummary}\n</previous-summary>\nUpdate it with the new log below (move finished items to Done).\n\n` : ''}# TASK\n${this.spec.task.slice(0, 2000)}\n\n${files}\n\n# WORK LOG\n${truncateMiddle(transcript, 40_000)}`,
+            },
+          ],
+          maxTokens: 1500,
           temperature: 0,
           purpose: 'condense',
           signal: this.signal,
@@ -132,18 +226,19 @@ export class AgentWorker {
       );
       notes = r.content;
     } catch {
-      notes = transcript.slice(-4000);
+      notes = `${files}\n\n${transcript.slice(-4000)}`;
     }
+    this.previousSummary = notes;
     this.messages = [this.messages[0], this.messages[1], { role: 'user', content: `<progress_notes>\n${notes}\n</progress_notes>\nContinue the task from these notes.` }, ...this.messages.slice(cut)];
-    // native protocol: a leading assistant must not reference missing tool calls
     while (this.messages[3]?.role === 'tool') this.messages.splice(3, 1);
+    this.interventions.push('condense');
     this.bus?.info(this.spec.id, 'bağlam yoğunlaştırıldı');
   }
 
   private async callModel(): Promise<ChatResult> {
     const req = {
       messages: this.messages,
-      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed) : undefined,
+      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills }) : undefined,
       temperature: 0.2,
       purpose: `worker:${this.spec.id}`,
       signal: this.signal,
@@ -163,6 +258,40 @@ export class AgentWorker {
     }
   }
 
+  /**
+   * Goose-style toolshim: when a model answers in prose (no parseable tool call),
+   * ask another model to extract the intended tool calls from that text.
+   */
+  private async toolshim(text: string): Promise<ParsedCall[]> {
+    if (!text.trim() || text.length > 20_000) return [];
+    const names = toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills }).map((t) => t.function.name);
+    // only worth a model call when the prose looks like an attempted tool call
+    if (!names.some((n) => text.includes(n)) && !/[{`]/.test(text)) return [];
+    try {
+      const r = await this.router.chat(
+        {
+          messages: [
+            {
+              role: 'user',
+              content: `An AI coding agent replied with plain text instead of a tool call. Extract the tool call(s) it intends to make, using ONLY these tools:\n${toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills })}\n\nReturn ONLY JSON: {"calls":[{"name":"...","arguments":{...}}]} – return {"calls":[]} if the text does not clearly intend a tool action (e.g. it only asks a question or says it is done without calling finish).\n\nAgent text:\n${text}`,
+            },
+          ],
+          temperature: 0,
+          jsonMode: true,
+          maxTokens: 1500,
+          purpose: 'toolshim',
+          signal: this.signal,
+        },
+        { role: 'fast' },
+      );
+      const j = tryExtractJson<{ calls?: Array<{ name?: string; arguments?: Record<string, unknown> }> }>(r.content);
+      const allowed = new Set(names);
+      return (j?.calls ?? []).filter((c) => c.name && allowed.has(c.name)).map((c) => ({ name: c.name!, arguments: c.arguments ?? {} }));
+    } catch {
+      return [];
+    }
+  }
+
   async run(): Promise<WorkerResult> {
     const maxSteps = this.spec.maxSteps ?? this.cfg.orchestrator.maxStepsPerWorker;
     this.messages = [
@@ -171,7 +300,7 @@ export class AgentWorker {
     ];
     let idle = 0;
     let finalText = '';
-    this.bus?.emitEvent('worker.start', { source: this.spec.id, data: { model: this.spec.model, task: this.spec.task.slice(0, 200) } });
+    this.bus?.emitEvent('worker.start', { source: this.spec.id, data: { model: this.spec.model, task: this.spec.task.slice(0, 200), skills: this.spec.skills?.preload.map((s) => s.name) ?? [] } });
 
     for (let step = 1; step <= maxSteps; step++) {
       if (this.signal?.aborted) return this.result('failed', 'iptal edildi', step, finalText, 'aborted');
@@ -187,10 +316,20 @@ export class AgentWorker {
       this.tokens.out += r.usage.completionTokens;
       if (r.content) finalText = r.content;
       const answeringNative = this.router.get(r.model)?.caps.nativeTools ?? this.nativeTools;
+      const useNative = this.nativeTools && answeringNative && r.toolCalls.length > 0;
 
-      const calls = this.nativeTools && answeringNative && r.toolCalls.length
+      let calls = useNative
         ? r.toolCalls.map((tc) => ({ id: tc.id, name: tc.function.name, args: (tryExtractJson<Record<string, unknown>>(tc.function.arguments) ?? {}) as Record<string, unknown> }))
         : parseTextToolCalls(r.content).map((c, i) => ({ id: `t${step}_${i}`, name: c.name, args: c.arguments }));
+
+      if (!calls.length && r.content.trim()) {
+        const shim = await this.toolshim(r.content);
+        if (shim.length) {
+          calls = shim.map((c, i) => ({ id: `s${step}_${i}`, name: c.name, args: c.arguments }));
+          this.interventions.push('toolshim');
+          this.bus?.emitEvent('worker.toolshim', { source: this.spec.id, data: { tools: shim.map((c) => c.name) } });
+        }
+      }
 
       if (!calls.length) {
         idle++;
@@ -206,26 +345,36 @@ export class AgentWorker {
       }
       idle = 0;
 
-      if (this.nativeTools && answeringNative && r.toolCalls.length) {
-        this.messages.push({ role: 'assistant', content: r.content || null, tool_calls: r.toolCalls });
-      } else {
-        this.messages.push({ role: 'assistant', content: r.content });
-      }
+      if (useNative) this.messages.push({ role: 'assistant', content: r.content || null, tool_calls: r.toolCalls });
+      else this.messages.push({ role: 'assistant', content: r.content || `(araç çağrıları: ${calls.map((c) => c.name).join(', ')})` });
 
       const results: string[] = [];
       for (const c of calls) {
         this.bus?.emitEvent('worker.tool', { source: this.spec.id, data: { tool: c.name, args: summarizeArgs(c.args) } });
         const out = await executeTool(c.name, c.args, this.toolCtx);
+        if (c.name === 'skill' && !out.isError && typeof c.args.name === 'string' && !this.skillLog.some((x) => x.name === c.args.name)) {
+          const s = this.spec.skills?.registry.get(c.args.name);
+          if (s) this.skillLog.push({ name: s.name, how: 'tool' });
+        }
         if (out.finished) {
-          if (this.nativeTools && answeringNative && r.toolCalls.length) this.messages.push({ role: 'tool', tool_call_id: c.id, content: 'ok' });
+          if (useNative) this.messages.push({ role: 'tool', tool_call_id: c.id, content: 'ok' });
           return this.result(out.finished.status, out.finished.summary || finalText, step, finalText);
         }
-        const text = truncateMiddle(out.output, 16_000);
-        if (this.nativeTools && answeringNative && r.toolCalls.length) {
-          this.messages.push({ role: 'tool', tool_call_id: c.id, content: text });
-        } else {
-          results.push(`<tool_result name="${c.name}"${out.isError ? ' error="true"' : ''}>\n${text}\n</tool_result>`);
+        let text = truncateMiddle(out.output, 16_000);
+        text += this.newlyRelevantSkills(typeof c.args.path === 'string' ? c.args.path : undefined);
+        const verdict = this.guard.record(c.name, c.args, out.output, !!out.isError);
+        if (verdict.action === 'stop') {
+          this.interventions.push(`stop:${verdict.kind}`);
+          this.bus?.warn(this.spec.id, `çalışan durduruldu: ${verdict.message}`);
+          return this.result('failed', `durduruldu: ${verdict.message}`, step, finalText, verdict.kind);
         }
+        if (verdict.action === 'warn') {
+          this.interventions.push(`warn:${verdict.kind}`);
+          this.bus?.emitEvent('worker.guard', { source: this.spec.id, message: verdict.message, data: { kind: verdict.kind } });
+          text += `\n[Kurultay] ${verdict.message}`;
+        }
+        if (useNative) this.messages.push({ role: 'tool', tool_call_id: c.id, content: text });
+        else results.push(`<tool_result name="${c.name}"${out.isError ? ' error="true"' : ''}>\n${text}\n</tool_result>`);
       }
       if (results.length) this.messages.push({ role: 'user', content: results.join('\n') });
     }
@@ -243,8 +392,10 @@ export class AgentWorker {
       error,
       finalText,
       tokens: this.tokens,
+      skills: [...this.skillLog],
+      interventions: [...this.interventions],
     };
-    this.bus?.emitEvent('worker.end', { source: this.spec.id, data: { status, steps, files: res.changedFiles.length, models: res.models } });
+    this.bus?.emitEvent('worker.end', { source: this.spec.id, data: { status, steps, files: res.changedFiles.length, models: res.models, skills: res.skills.map((s) => s.name) } });
     return res;
   }
 }

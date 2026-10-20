@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { globToRegExp } from '../index/scanner.js';
-import { tokenize } from '../index/bm25.js';
+import { fmList, fmString, parseFrontmatter } from '../util/frontmatter.js';
 
 export interface RuleDoc {
   name: string;
@@ -14,32 +14,16 @@ export interface RuleDoc {
 
 export interface ProjectRules {
   rules: RuleDoc[];
-  skills: RuleDoc[];
   review: RuleDoc[];
-}
-
-function parseFrontmatter(text: string): { meta: Record<string, string>; body: string } {
-  const m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
-  if (!m) return { meta: {}, body: text };
-  const meta: Record<string, string> = {};
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^([\w-]+)\s*:\s*(.*)$/);
-    if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, '');
-  }
-  return { meta, body: text.slice(m[0].length) };
 }
 
 function loadDoc(path: string, source: string): RuleDoc | undefined {
   try {
-    const { meta, body } = parseFrontmatter(readFileSync(path, 'utf8'));
-    const name = meta.name ?? path.split(/[\\/]/).pop()!.replace(/\.md$/i, '');
-    const applies = (meta.applies_to ?? meta.globs ?? meta.applyto ?? '')
-      .replace(/^\[|\]$/g, '')
-      .split(',')
-      .map((s) => s.trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean);
+    const { data, body } = parseFrontmatter(readFileSync(path, 'utf8'));
+    const name = fmString(data.name) ?? path.split(/[\\/]/).pop()!.replace(/\.md$/i, '');
+    const applies = fmList(data.applies_to ?? data.globs ?? data.applyTo ?? data.applyto ?? data.paths);
     const firstLine = body.split('\n').find((l) => l.trim() && !l.startsWith('#'))?.trim() ?? '';
-    return { name, source, description: meta.description ?? firstLine.slice(0, 160), appliesTo: applies, body: body.trim() };
+    return { name, source, description: fmString(data.description) ?? firstLine.slice(0, 160), appliesTo: applies, body: body.trim() };
   } catch {
     return undefined;
   }
@@ -58,9 +42,8 @@ function mdFiles(dir: string): string[] {
  * other agents (AGENTS.md, CLAUDE.md, .cursorrules, .clinerules, copilot) so
  * existing rule files work without migration.
  */
-export function loadProjectRules(root: string, stateDir: string): ProjectRules {
+export function loadProjectRules(root: string, stateDir: string, nestedRuleFiles?: string[]): ProjectRules {
   const rules: RuleDoc[] = [];
-  const skills: RuleDoc[] = [];
   const review: RuleDoc[] = [];
   // the same physical file can be reached under several names (case-insensitive filesystems, symlinks)
   const seen = new Set<string>();
@@ -86,12 +69,24 @@ export function loadProjectRules(root: string, stateDir: string): ProjectRules {
       else add(rules, p, p.slice(root.length + 1));
     }
   }
-  for (const dir of [join(stateDir, 'skills'), join(root, 'skills')]) for (const p of mdFiles(dir)) add(skills, p, p.slice(root.length + 1));
   for (const f of ['review_rules.md', 'REVIEW_RULES.md', join('.kurultay', 'review_rules.md')]) {
     const p = join(root, f);
     if (existsSync(p)) add(review, p, f);
   }
-  return { rules, skills, review };
+  // directory-scoped AGENTS.md / CLAUDE.md (Pi ancestors, OMO directory injector):
+  // a sub-folder's file applies to the files inside that folder
+  for (const rel of nestedRuleFiles ?? []) {
+    const dir = rel.split('/').slice(0, -1).join('/');
+    if (!dir || /(^|\/)(node_modules|\.git|\.kurultay)(\/|$)/.test(dir)) continue;
+    const before = rules.length;
+    add(rules, join(root, rel), rel);
+    if (rules.length > before) {
+      const d = rules[rules.length - 1];
+      d.appliesTo = [`${dir}/**`];
+      d.name = `${dir}/${rel.split('/').pop()}`;
+    }
+  }
+  return { rules, review };
 }
 
 /** Rules relevant to a set of target files (rules without globs always apply). */
@@ -102,21 +97,6 @@ export function selectRules(rules: RuleDoc[], files: string[]): RuleDoc[] {
     const res = r.appliesTo.map(globToRegExp);
     return files.some((f) => res.some((re) => re.test(f)));
   });
-}
-
-/** Skills whose name/description overlap with the task text. */
-export function selectSkills(skills: RuleDoc[], task: string, max = 3): RuleDoc[] {
-  const words = new Set(tokenize(task));
-  return skills
-    .map((s) => {
-      const toks = tokenize(`${s.name} ${s.description}`);
-      const overlap = toks.filter((t) => words.has(t) && t.length > 2).length;
-      return { s, score: overlap / Math.max(3, toks.length) };
-    })
-    .filter((x) => x.score > 0.15)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, max)
-    .map((x) => x.s);
 }
 
 export function renderRules(docs: RuleDoc[], title: string): string {

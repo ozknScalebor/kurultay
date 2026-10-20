@@ -61,7 +61,7 @@ export class OpenAICompatClient {
         body: JSON.stringify(body),
         signal: t.signal,
       });
-      if (!res.ok) throw classifyHttp(res.status, await safeText(res), modelKey);
+      if (!res.ok) throw classifyHttp(res.status, await safeText(res), modelKey, res.headers.get('retry-after'));
       const ctype = res.headers.get('content-type') ?? '';
       if (stream && ctype.includes('text/event-stream') && res.body) {
         return await readStream(res.body, started, modelKey, req.onToken);
@@ -99,9 +99,21 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
-export function classifyHttp(status: number, text: string, model: string): LlmError {
+/** Parse a Retry-After header (seconds or HTTP date) into ms. */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const secs = Number(value.trim());
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - now) : undefined;
+}
+
+export function classifyHttp(status: number, text: string, model: string, retryAfter?: string | null): LlmError {
   const lower = text.toLowerCase();
   const msg = `HTTP ${status} (${model}): ${text.slice(0, 400)}`;
+  const ra = parseRetryAfter(retryAfter);
+  if (status === 429) return new LlmError(msg, 'rate_limit', status, model, ra);
+  if (status === 503 && ra !== undefined) return new LlmError(msg, 'server', status, model, ra);
   if (
     /context length|maximum context|context_length_exceeded|too many tokens|prompt is too long|exceeds the (model'?s )?(maximum|max)|n_ctx|reduce the length/.test(lower)
   ) {

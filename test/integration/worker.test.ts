@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { AgentWorker } from '../../src/agent/worker.js';
+import { SkillRegistry, selectSkillsFor } from '../../src/skills/skills.js';
 import { Materializer, Overlay } from '../../src/agent/workspace.js';
 import { ProjectIndex } from '../../src/index/project-index.js';
 import { startMockServer, type MockModel, type MockReply, type MockRequest, type MockServerHandle } from '../../src/mock/server.js';
@@ -139,11 +140,20 @@ describe('AgentWorker', () => {
           id: 'small',
           script: (n, q) => {
             if (q.messages.some((m) => (m.content ?? '').includes('<progress_notes>'))) return call('finish', { summary: 'after condense' });
-            return n < 8 ? call('read_file', { path: 'big.c' }) : call('finish', { summary: 'no condense' });
+            return n < 8 ? call('read_file', { path: 'big.c', start_line: n + 1 }) : call('finish', { summary: 'no condense' });
           },
           handler: undefined,
         },
-        { id: 'fast', handler: (q) => (/Condense this agent work log/.test(lastUser(q.messages)) ? (condensed++, text('notes: read big.c several times')) : undefined) },
+        {
+          id: 'fast',
+          handler: (q) => {
+            if (!/compacting the work log/.test(q.messages[0]?.content ?? '')) return undefined;
+            condensed++;
+            // the condenser lists the files the worker touched and asks for the structured sections
+            assert.match(lastUser(q.messages), /big\.c/);
+            return text('## Goal\nread big.c\n## Progress\n### Done\n- read big.c several times');
+          },
+        },
       ],
       { 'big.c': big },
       { small: { contextWindow: 6000 }, fast: { roleScores: { planner: 0, coder: 0, summarizer: 0, reviewer: 0, judge: 0, fast: 1 } } },
@@ -153,6 +163,109 @@ describe('AgentWorker', () => {
     assert.equal(r.summary, 'after condense');
     assert.ok(condensed >= 1, 'a condense request was made');
     assert.ok(bus.ofType('log.info').some((e) => /yoğunlaştırıldı/.test(e.message ?? '')));
+  });
+
+  it('toolshim turns prose that names a tool into a real call', async () => {
+    let shimAsked = 0;
+    const { make, bus } = await setup(
+      [
+        { id: 'prose', tools: false, script: (n) => [text('I will now use read_file to open {src/a.c}.'), text('<tool_call>{"name":"finish","arguments":{"summary":"read it"}}</tool_call>')][n] },
+        {
+          id: 'fast',
+          handler: (q) => {
+            if (!/replied with plain text instead of a tool call/.test(lastUser(q.messages))) return undefined;
+            shimAsked++;
+            return text('{"calls":[{"name":"read_file","arguments":{"path":"src/a.c"}},{"name":"rm_rf","arguments":{}}]}');
+          },
+        },
+      ],
+      undefined,
+      { prose: { nativeTools: false }, fast: { roleScores: { planner: 0, coder: 0, summarizer: 0, reviewer: 0, judge: 0, fast: 1 } } },
+    );
+    const { w } = make('prose');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.equal(shimAsked, 1);
+    assert.ok(r.interventions.includes('toolshim'));
+    assert.ok(bus.types().includes('worker.toolshim'));
+  });
+
+  it('stops a worker stuck repeating the same call with the same result', async () => {
+    const { make } = await setup([{ id: 'stuck', script: () => call('list_dir', { path: 'src' }) }]);
+    const { w } = make('stuck');
+    const r = await w.run();
+    assert.equal(r.status, 'failed');
+    assert.match(r.summary, /döngü/);
+    assert.equal(r.steps, 5);
+    assert.ok(r.interventions.some((i) => /repeat/.test(i)));
+  });
+
+  it('stops after too many consecutive failing tool calls', async () => {
+    const { make } = await setup([{ id: 'clumsy', script: (n) => call('read_file', { path: `missing-${n}.c` }) }]);
+    const { w } = make('clumsy');
+    const r = await w.run();
+    assert.equal(r.status, 'failed');
+    assert.match(r.summary, /üst üste başarısız/);
+  });
+
+  it('preloads selected skills, advertises the rest and loads on demand', async () => {
+    const files = {
+      'src/a.c': 'int a = 1;\n',
+      'src/drivers/uart.c': 'int u;\n',
+      '.kurultay/skills/c-style/SKILL.md': '---\nname: c-style\ndescription: C kod stili\nalways: true\n---\nPRELOADED-STYLE-1',
+      '.kurultay/skills/driver/SKILL.md': '---\nname: driver\ndescription: Sürücü ekleme adımları\npaths: ["src/drivers/**"]\n---\nDRIVER-BODY-2',
+      '.kurultay/skills/review/SKILL.md': '---\nname: review\ndescription: İnceleme listesi\n---\nREVIEW-BODY-3',
+    };
+    let seen: MockRequest | undefined;
+    const { make, root } = await setup(
+      [
+        {
+          id: 'sk',
+          script: (n, q) => {
+            seen ??= q;
+            return [call('read_file', { path: 'src/drivers/uart.c' }), call('skill', { name: 'driver' }), call('finish', { summary: 'ok' })][n];
+          },
+        },
+      ],
+      files,
+    );
+    const registry = SkillRegistry.discover(root, { includeUser: false });
+    const sel = selectSkillsFor(registry, { text: 'change a', files: ['src/a.c'] });
+    const { w } = make('sk', { skills: { registry, preload: sel.preload, recommended: ['review'], files: ['src/a.c'] } });
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    const sys = (seen!.messages[0].content ?? '') as string;
+    const first = (seen!.messages[1].content ?? '') as string;
+    assert.match(first, /# ACTIVE SKILLS[\s\S]*PRELOADED-STYLE-1/);
+    assert.match(sys, /<name>review<\/name>/);
+    assert.ok(!sys.includes('<name>driver</name>'), 'path-scoped skill not advertised up front');
+    assert.ok(!sys.includes('<name>c-style</name>'), 'preloaded skill not listed twice');
+    assert.deepEqual(r.skills, [
+      { name: 'c-style', how: 'preload' },
+      { name: 'driver', how: 'tool' },
+    ]);
+  });
+
+  it('keeps going with a raw log when the condenser model fails', async () => {
+    const big = Array.from({ length: 300 }, (_, i) => `int value_${i} = ${i}; // padding padding padding`).join('\n');
+    const { make } = await setup(
+      [
+        {
+          id: 'small2',
+          script: (n, q) => {
+            if (q.messages.some((m) => (m.content ?? '').includes('<progress_notes>'))) return call('finish', { summary: 'after fallback' });
+            return n < 8 ? call('read_file', { path: 'big.c', start_line: n + 1 }) : call('finish', { summary: 'no condense' });
+          },
+          handler: (q) => (/compacting the work log/.test(q.messages[0]?.content ?? '') ? { status: 400, error: 'nope' } : undefined),
+        },
+        { id: 'fast', handler: (q) => (/compacting the work log/.test(q.messages[0]?.content ?? '') ? { status: 400, error: 'nope' } : undefined) },
+      ],
+      { 'big.c': big },
+      { small2: { contextWindow: 6000 }, fast: { roleScores: { planner: 0, coder: 0, summarizer: 0, reviewer: 0, judge: 0, fast: 1 } } },
+    );
+    const { w } = make('small2');
+    const r = await w.run();
+    assert.equal(r.summary, 'after fallback');
   });
 
   it('falls back to another model when its model dies mid-task and reports both', async () => {

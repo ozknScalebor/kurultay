@@ -66,6 +66,8 @@ describe('text utils', () => {
     assert.deepEqual(stripThinking('<think>cut off mid'), { content: '', thinking: 'cut off mid' });
     assert.equal(slug('Src/Net Driver!!'), 'src-net-driver');
     assert.equal(slug('!!!'), 'x');
+    assert.equal(slug('Ana Akış: Şifre Güncelleme'), 'ana-akis-sifre-guncelleme');
+    assert.equal(slug('İletişim Çözücü'), 'iletisim-cozucu');
     assert.equal(fnv1a('abc'), fnv1a('abc'));
     assert.notEqual(fnv1a('abc'), fnv1a('abd'));
     assert.equal(indent('a\n\nb'), '  a\n\n  b');

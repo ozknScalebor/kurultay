@@ -1,5 +1,5 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex, IndexedFile, ModuleGroup } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
@@ -12,6 +12,10 @@ export interface AnalyzeOptions {
   force?: boolean;
   /** number of independent architecture drafts merged by a chairman (council). 0/1 = single */
   architectureDrafts?: number;
+  /** how many key flows to document (DeepWiki-style pages); 0 disables. default 6 */
+  flows?: number;
+  /** write PROJECT_NOTES.md (Serena-style onboarding). default true */
+  notes?: boolean;
   signal?: AbortSignal;
 }
 
@@ -19,6 +23,8 @@ export interface AnalyzeResult {
   filesSummarized: number;
   modules: number;
   architecturePath: string;
+  notesPath?: string;
+  flowPaths: string[];
   modelsUsed: Record<string, number>;
   failures: number;
 }
@@ -77,11 +83,33 @@ export class ProjectAnalyzer {
 
     const archPath = await this.writeArchitecture(modules, moduleDocs, opts.architectureDrafts ?? Math.min(3, this.router.size), opts.signal);
     this.writeIndexMarkdown(modules);
+    let notesPath: string | undefined;
+    if (opts.notes !== false) {
+      try {
+        notesPath = await this.writeProjectNotes(moduleDocs, modules, opts.signal);
+      } catch (e) {
+        this.failures++;
+        this.bus?.warn('analyze', `PROJECT_NOTES üretilemedi: ${errorMessage(e)}`);
+      }
+    }
+    let flowPaths: string[] = [];
+    const nFlows = opts.flows ?? 6;
+    if (nFlows > 0) {
+      try {
+        flowPaths = await this.writeFlows(modules, moduleDocs, nFlows, opts.signal);
+        if (flowPaths.length) appendFileSync(archPath, `\n## Akış Dokümanları\n\n${flowPaths.map((p) => `- [${basename(p, '.md')}](flows/${basename(p)})`).join('\n')}\n`);
+      } catch (e) {
+        this.failures++;
+        this.bus?.warn('analyze', `akış dokümanları üretilemedi: ${errorMessage(e)}`);
+      }
+    }
     this.bus?.emitEvent('analyze.done', { data: { usage: this.usage, failures: this.failures } });
     return {
       filesSummarized: todo.length,
       modules: modules.length,
       architecturePath: archPath,
+      notesPath,
+      flowPaths,
       modelsUsed: { ...this.usage },
       failures: this.failures,
     };
@@ -361,6 +389,122 @@ ${modules.map((m) => `- [${m.name || '(kök)'}](modules/${slug(m.name || 'root')
     const path = join(this.index.stateDir, 'ARCHITECTURE.md');
     writeFileSync(path, doc);
     return path;
+  }
+
+  // ---------- 4) project notes (Serena onboarding memories) ----------
+
+  private async writeProjectNotes(moduleDocs: Map<string, string>, modules: ModuleGroup[], signal?: AbortSignal): Promise<string> {
+    const budget = this.batchBudget();
+    const buildFiles = this.index.files
+      .filter((f) => /(^|\/)(CMakeLists\.txt|Makefile|makefile|pom\.xml|build\.gradle(\.kts)?|package\.json|Cargo\.toml|go\.mod|meson\.build|pyproject\.toml|setup\.py|Dockerfile|\.gitlab-ci\.yml|Jenkinsfile)$/.test(f.path))
+      .slice(0, 6);
+    const readme = this.index.files.find((f) => /^readme(\.\w+)?$/i.test(f.path));
+    const per = Math.floor((budget * 0.5) / Math.max(1, buildFiles.length + (readme ? 1 : 0)));
+    const sources = [...buildFiles, ...(readme ? [readme] : [])].map((f) => `### ${f.path}\n\`\`\`\n${truncateTokens(this.index.read(f.path) ?? '', per)}\n\`\`\``).join('\n\n');
+    const configured = [this.cfg.verify.build, this.cfg.verify.test, this.cfg.verify.lint].filter(Boolean);
+    const sample = this.index.files
+      .filter((f) => f.defs.length > 3 && f.lang !== 'markdown')
+      .sort((a, b) => (this.index.data.ranks[b.path] ?? 0) - (this.index.data.ranks[a.path] ?? 0))
+      .slice(0, 2)
+      .map((f) => `### ${f.path}\n\`\`\`\n${truncateTokens(this.index.read(f.path) ?? '', Math.floor(budget * 0.15))}\n\`\`\``)
+      .join('\n\n');
+    const prompt = `You are onboarding onto a software project. Write durable, non-obvious notes that future coding agents will read before every task. Use ${this.lang} Markdown with EXACTLY these sections:
+## Teknoloji Yığını (languages, frameworks, toolchains, target platforms, versions when stated)
+## Komutlar (exact build / test / lint / run commands; mark guesses as "(tahmin)")
+## Kod Kuralları (naming, formatting, error handling, logging, memory/ownership conventions actually visible in the code)
+## Görev Tamamlama Kontrol Listesi (what to run/check before a change is done)
+## Değişmezler ve Tuzaklar (invariants, fragile areas, things that must not change)
+Only state facts supported by the material. Be concise. No top-level title.
+
+Configured verification commands: ${configured.join(' | ') || 'none'}
+Directory tree:
+${this.index.tree(50)}
+
+Modules: ${modules.map((m) => `${m.name || '(kök)'}: ${(moduleDocs.get(m.name) ?? '').split('\n').find((l) => l.trim() && !l.startsWith('#'))?.slice(0, 160) ?? ''}`).join('\n')}
+
+${sources}
+
+Representative source files:
+${sample}`;
+    const r = await this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.1, purpose: 'analyze.notes', signal, maxTokens: 2500 }, { role: 'planner' });
+    this.track(r.model);
+    const path = join(this.index.stateDir, 'PROJECT_NOTES.md');
+    writeFileSync(path, `# Proje Notları\n\n> Kurultay analizi · ${new Date().toISOString()} · model: ${r.model}. Elle düzeltebilirsiniz; her çalışana bağlam olarak verilir.\n\n${r.content.trim()}\n`);
+    return path;
+  }
+
+  // ---------- 5) flow documents (DeepWiki two-phase: structure → grounded pages) ----------
+
+  private async writeFlows(modules: ModuleGroup[], moduleDocs: Map<string, string>, maxFlows: number, signal?: AbortSignal): Promise<string[]> {
+    const budget = this.batchBudget();
+    const known = new Set(this.index.files.map((f) => f.path));
+    const structurePrompt = `You are documenting how this software system WORKS at runtime. Identify the ${maxFlows} most important end-to-end flows (e.g. startup/initialisation, the main data path, command/request handling, error recovery, shutdown, a key algorithm or protocol). For each flow list the source files that implement it (use exact paths from the tree; 2–8 files).
+Return ONLY JSON: {"flows":[{"title":"short title in ${this.lang}","description":"one sentence","files":["path", "..."],"importance":"high|medium|low"}]}
+
+Entry points:
+${this.entryPoints().join('\n') || '-'}
+
+Module dependency graph:
+${this.mermaid(modules)}
+
+Modules:
+${truncateTokens(modules.map((m) => `### ${m.name || '(kök)'}\n${truncateTokens(moduleDocs.get(m.name) ?? '', 200)}`).join('\n'), Math.floor(budget * 0.5))}
+
+Files:
+${truncateTokens(this.index.files.map((f) => `${f.path}${f.summary ? ' — ' + f.summary.split('\n')[0].slice(0, 100) : ''}`).join('\n'), Math.floor(budget * 0.35))}`;
+    const r = await this.router.chat({ messages: [{ role: 'user', content: structurePrompt }], temperature: 0.1, jsonMode: true, purpose: 'analyze.flows.structure', signal, maxTokens: 2500 }, { role: 'planner' });
+    this.track(r.model);
+    const parsed = tryExtractJson<{ flows?: Array<{ title?: string; description?: string; files?: string[]; importance?: string }> }>(r.content);
+    const flows = (parsed?.flows ?? [])
+      .map((f) => ({
+        title: (f.title ?? '').trim(),
+        description: (f.description ?? '').trim(),
+        importance: f.importance ?? 'medium',
+        files: [...new Set((f.files ?? []).map((p) => String(p).replace(/^\.?\//, '')).map((p) => (known.has(p) ? p : [...known].find((k) => k.endsWith('/' + p)) ?? '')).filter(Boolean))].slice(0, 8),
+      }))
+      .filter((f) => f.title && f.files.length)
+      .slice(0, maxFlows);
+    if (!flows.length) {
+      this.bus?.warn('analyze', 'akış yapısı çıkarılamadı (geçerli dosya içeren akış yok)');
+      return [];
+    }
+    const dir = join(this.index.stateDir, 'flows');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    this.bus?.info('analyze', `${flows.length} akış dokümanı tüm modellere dağıtılıyor`);
+    const paths = await mapLimit(flows, Math.max(1, this.router.totalCapacity()), async (f, i) => {
+      const per = Math.floor((budget * 0.75) / f.files.length);
+      const sources = f.files
+        .map((p) => {
+          const content = this.index.read(p) ?? '';
+          const numbered = content.split('\n').map((l, n) => `${n + 1}: ${l}`).join('\n');
+          return `### FILE ${p}\n\`\`\`\n${truncateTokens(numbered, per)}\n\`\`\``;
+        })
+        .join('\n\n');
+      const prompt = `Write a technical documentation page in ${this.lang} Markdown about the flow "${f.title}" (${f.description}) of this project, based ONLY on the source files below (lines are numbered).
+Structure:
+1. Start with a <details><summary>Kaynak dosyalar</summary> block listing the files used.
+2. "# ${f.title}" then a short overview.
+3. "## Adım Adım" – numbered steps of the runtime flow; cite every step as \`path:line\`.
+4. A Mermaid diagram (\`\`\`mermaid sequenceDiagram or flowchart) of the flow – only participants that exist in the code.
+5. "## Hata ve Uç Durumlar" – error paths, timeouts, concurrency/locking if present.
+6. "## Değiştirirken Dikkat" – what a developer must keep consistent.
+Do not invent functions or files that are not in the sources.
+
+${sources}`;
+      try {
+        const page = await this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, purpose: 'analyze.flows.page', signal, maxTokens: 3000 }, { role: 'summarizer' });
+        this.track(page.model);
+        const path = join(dir, `${String(i + 1).padStart(2, '0')}-${slug(f.title)}.md`);
+        writeFileSync(path, `${page.content.trim()}\n\n> Önem: ${f.importance} · yazan model: ${page.model}\n`);
+        return path;
+      } catch (e) {
+        this.failures++;
+        this.bus?.warn('analyze', `akış sayfası başarısız (${f.title}): ${errorMessage(e)}`);
+        return '';
+      }
+    });
+    return paths.filter(Boolean);
   }
 
   private writeIndexMarkdown(modules: ModuleGroup[]): void {

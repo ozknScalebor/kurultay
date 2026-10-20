@@ -4,7 +4,8 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { ProjectAnalyzer } from './analyze/summarizer.js';
 import { createApp, loadOrBuildIndex, type App } from './app.js';
-import { ConfigError, SAMPLE_CONFIG, type RunMode } from './config.js';
+import { ConfigError, SAMPLE_CONFIG, loadConfig, type RunMode } from './config.js';
+import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
 import { councilAnswer } from './orchestrator/council.js';
@@ -49,11 +50,14 @@ Komutlar:
   init                 Proje köküne kurultay.config.json, kural/skill şablonları oluştur
   probe                Tüm endpoint ve modellerin yeteneklerini ölç (--deep, --quick)
   index                Projeyi indeksle (sembol, bağımlılık grafiği, PageRank) – LLM gerekmez
-  analyze              İndeksle + tüm modellerle paralel özet ve ARCHITECTURE.md üret (--force, --drafts N)
+  analyze              İndeksle + tüm modellerle paralel özet: ARCHITECTURE.md, PROJECT_NOTES.md, akış dokümanları
+                         (--force, --drafts N, --flows N; 0 = akış yok)
   run "<görev>"        Görevi planla, modellere dağıt, doğrula, incele ve uygula
                          --mode auto|single|split|race|council   --req <dosya>   --dry-run   --yes
+                         --skill a,b (skill'leri baştan yükle; görev metninde $skill-adı da olur)
   ask "<soru>"         Proje hakkında soru: modeller ayrı cevaplar, konsey birleştirir (--members N)
   map                  Repo haritasını yazdır (--tokens N, --focus a,b)
+  skills               Skill'leri listele ve doğrula; "skills new <ad> --description ..." yeni skill oluşturur
   search "<sorgu>"     İndekste BM25 arama
   status               Modeller, indeks ve son oturumlar
   mock                 Test için sahte OpenAI-uyumlu LLM sunucusu başlat (--port 9100)
@@ -115,10 +119,12 @@ async function cmdInit(root: string, flags: Args['flags']) {
     join(state, 'rules', 'java.md'),
     `---\nname: java-kurallari\napplies_to: "*.java"\n---\n# Java kuralları\n\n- Alanlar mümkünse final olmalı.\n- Checked exception'ları RuntimeException'a sarmadan önce bağlam mesajı ekle.\n`,
   );
+  mkdirSync(join(state, 'skills', 'yeni-surucu-ekleme', 'references'), { recursive: true });
   tpl(
-    join(state, 'skills', 'yeni-surucu-ekleme.md'),
-    `---\nname: yeni-surucu-ekleme\ndescription: Yeni bir donanım sürücüsü (driver) ekleme adımları\n---\n1. include/ altında arayüz başlığını oluştur.\n2. drivers/ altında init/deinit/read/write fonksiyonlarını uygula.\n3. Sürücüyü platform kayıt tablosuna ekle.\n4. Birim testini tests/ altına ekle ve derlemeyi doğrula.\n`,
+    join(state, 'skills', 'yeni-surucu-ekleme', 'SKILL.md'),
+    `---\nname: yeni-surucu-ekleme\ndescription: Yeni bir donanım sürücüsü (driver) eklerken izlenecek adımlar - arayüz başlığı, init/deinit/read/write, platform kaydı ve test. Görev yeni bir sürücü/driver eklemeyi içeriyorsa kullan.\nkeywords: [sürücü, driver]\n---\n# Yeni sürücü ekleme\n\n1. include/ altında arayüz başlığını oluştur (bkz. references/arayuz-kurallari.md).\n2. drivers/ altında init/deinit/read/write fonksiyonlarını uygula.\n3. Sürücüyü platform kayıt tablosuna ekle.\n4. Birim testini tests/ altına ekle ve derlemeyi doğrula.\n`,
   );
+  tpl(join(state, 'skills', 'yeni-surucu-ekleme', 'references', 'arayuz-kurallari.md'), `# Arayüz kuralları\n\n- Tüm fonksiyonlar hata kodu (int) döndürür; 0 = başarı.\n- Donanım kaydı adresleri tek bir başlıkta tanımlanır.\n`);
   tpl(join(state, 'review_rules.md'), `# Review kuralları\n\n- Bellek sızıntısı, tampon taşması ve yarış durumu olmamalı.\n- Her hata yolu kaynakları serbest bırakmalı.\n- Public API değişiklikleri dokümante edilmeli.\n`);
   out(`${color.green('✓')} .kurultay/rules, .kurultay/skills ve .kurultay/review_rules.md şablonları hazır.`);
   out(`Öneri: .gitignore dosyanıza ".kurultay/" ekleyin (veya kural klasörlerini sürüm kontrolünde tutun).`);
@@ -154,9 +160,15 @@ async function cmdAnalyze(app: App, flags: Args['flags']) {
     const s = index.stats();
     out(`${color.bold('Analiz')}: ${s.files} dosya, ${app.router.size} model, toplam ${app.router.totalCapacity()} paralel slot`);
     const analyzer = new ProjectAnalyzer(index, app.router, app.config, app.bus);
-    const r = await analyzer.run({ force: !!flags.force, architectureDrafts: flags.drafts !== undefined ? Number(flags.drafts) : undefined });
-    out(`\n${color.green('✓')} ${r.filesSummarized} dosya özetlendi, ${r.modules} modül, ${r.failures} hata`);
+    const r = await analyzer.run({
+      force: !!flags.force,
+      architectureDrafts: flags.drafts !== undefined ? Number(flags.drafts) : undefined,
+      flows: flags.flows !== undefined ? Number(flags.flows) : undefined,
+    });
+    out(`\n${color.green('✓')} ${r.filesSummarized} dosya özetlendi, ${r.modules} modül, ${r.flowPaths.length} akış dokümanı, ${r.failures} hata`);
     out(`${color.green('✓')} ${r.architecturePath}`);
+    if (r.notesPath) out(`${color.green('✓')} ${r.notesPath}`);
+    for (const f of r.flowPaths) out(`${color.green('✓')} ${f}`);
     out(color.dim(`  model kullanımı: ${Object.entries(r.modelsUsed).map(([m, n]) => `${m}×${n}`).join(', ')}`));
   } finally {
     stop();
@@ -191,6 +203,7 @@ async function cmdRun(app: App, args: Args) {
     if (args.flags.yes || args.flags.y) app.config.orchestrator.confirmMerge = false;
     const report = await orch.run(task, {
       mode: (args.flags.mode as RunMode) || undefined,
+      skills: typeof args.flags.skill === 'string' ? args.flags.skill.split(',').map((x) => x.trim()).filter(Boolean) : undefined,
       requirements,
       dryRun: !!args.flags['dry-run'],
       confirm: confirmPrompt,
@@ -239,6 +252,37 @@ async function cmdAsk(app: App, args: Args) {
   }
 }
 
+async function cmdSkills(root: string, args: Args, cfgSkills?: { paths: string[]; disabled: string[]; includeUser: boolean }) {
+  const sub = args.positional[0];
+  if (sub === 'new') {
+    const name = (args.positional[1] ?? '').trim();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) throw new ConfigError('Skill adı küçük harf, rakam ve tire olmalı (ör. "kod-inceleme"), en fazla 64 karakter.');
+    const dir = join(root, '.kurultay', 'skills', name);
+    if (existsSync(join(dir, 'SKILL.md'))) throw new ConfigError(`${join(dir, 'SKILL.md')} zaten var.`);
+    mkdirSync(dir, { recursive: true });
+    const desc = typeof args.flags.description === 'string' ? args.flags.description : 'Bu skill ne yapar ve hangi görevlerde kullanılmalı – modeller bu cümleye bakarak seçer.';
+    writeFileSync(join(dir, 'SKILL.md'), SKILL_TEMPLATE(name, desc));
+    out(`${color.green('✓')} ${join(dir, 'SKILL.md')}`);
+    return;
+  }
+  const reg = SkillRegistry.discover(root, { extraPaths: cfgSkills?.paths, disabled: cfgSkills?.disabled, includeUser: cfgSkills?.includeUser ?? true });
+  if (!reg.size) out("Skill bulunamadı. Oluşturmak için: kurultay skills new <ad>  (taranan dizinler: .kurultay/skills, .agents/skills, .claude/skills, .codex/skills, .qwen/skills, .goose/skills, .opencode/skills, .github/skills, skills/, ~/.agents/skills, ~/.claude/skills)");
+  for (const s of reg.skills) {
+    const flags = [s.hidden ? 'yalnızca açık seçimle' : '', s.always ? 'always' : '', s.paths.length ? `paths: ${s.paths.join(' ')}` : '', s.keywords.length ? `keywords: ${s.keywords.join(', ')}` : '', s.files.length ? `${s.files.length} destek dosyası` : '']
+      .filter(Boolean)
+      .join(' · ');
+    out(`${color.bold(s.name)}  ${color.dim(`[${s.source}${s.format === 'file' ? ', tek dosya' : ''}]`)}
+  ${s.description}${flags ? `
+  ${color.dim(flags)}` : ''}`);
+  }
+  if (reg.diagnostics.length) {
+    out(`
+${color.yellow('Uyarılar:')}`);
+    for (const d of reg.diagnostics) out(`  ${d.level === 'error' ? color.red('✖') : color.yellow('⚠')} ${d.path}: ${d.message}`);
+    if (reg.diagnostics.some((d) => d.level === 'error')) process.exitCode = 1;
+  }
+}
+
 async function cmdStatus(app: App) {
   out(`${color.bold('Proje')}: ${app.root}`);
   out(`${color.bold('Yapılandırma')}: ${app.configPath}`);
@@ -265,7 +309,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (args.flags.version || args.flags.v) return out(VERSION);
   if (args.cmd === 'help' || args.flags.help || args.flags.h) return out(HELP);
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Bilinmeyen komut: ${args.cmd}\n`);
     out(HELP);
@@ -278,6 +322,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     switch (args.cmd) {
       case 'init':
         return await cmdInit(root, args.flags);
+      case 'skills': {
+        let cfgSkills;
+        try {
+          cfgSkills = loadConfig(root, configPath).config.skills;
+        } catch {
+          cfgSkills = undefined; // skills work without a config file
+        }
+        return await cmdSkills(root, args, cfgSkills);
+      }
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
         const { url } = await startMockServer(DEFAULT_MOCK_MODELS, port);

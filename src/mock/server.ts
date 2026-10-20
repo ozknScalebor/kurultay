@@ -43,7 +43,7 @@ export interface MockRequest {
 export type MockReply =
   | { content: string; toolCall?: { name: string; args: Record<string, unknown> } }
   | { content?: string; toolCall: { name: string; args: Record<string, unknown> } }
-  | { status: number; error: string }
+  | { status: number; error: string; retryAfter?: string }
   | { hangMs: number }
   | { raw: string; contentType?: string };
 
@@ -160,7 +160,19 @@ function respond(model: MockModel, body: { messages: Msg[]; tools?: unknown[]; r
     const ok = /Math\.min\(Math\.max/.test(u);
     return { content: JSON.stringify(ok ? { complete: true, missing: [] } : { complete: false, missing: ['clamp must respect the max bound'] }) };
   }
-  if (/Condense this agent work log/.test(u)) return { content: 'notes: read file, wrote clamp' };
+  if (/Condense this agent work log/.test(u) || /compacting the work log/.test(sys)) return { content: '## Goal\nclamp\n## Progress\n### Done\n- read file\n## Next Steps\n- finish' };
+  if (/An AI coding agent replied with plain text/.test(u)) return { content: '{"calls":[]}' };
+  if (/You are onboarding onto a software project/.test(u)) {
+    return { content: `## Teknoloji Yığını\nNode.js (ESM)\n## Komutlar\n- test: node test.js\n## Kod Kuralları\n- export function\n## Görev Tamamlama Kontrol Listesi\n- node test.js geçmeli\n## Değişmezler ve Tuzaklar\n- clamp sınırları (${model.id})` };
+  }
+  if (/most important end-to-end flows/.test(u)) {
+    const files = [...u.matchAll(/^([\w./-]+\.(?:js|c|h|py|java|ts|cpp))(?: — |$)/gm)].map((m) => m[1]);
+    return { content: JSON.stringify({ flows: [{ title: 'Ana akış', description: 'test çağrısı', files: files.slice(0, 2), importance: 'high' }, { title: 'Hayali akış', description: 'yok', files: ['does/not/exist.c'] }] }) };
+  }
+  if (/Write a technical documentation page/.test(u)) {
+    const title = u.match(/about the flow "([^"]+)"/)?.[1] ?? 'Akış';
+    return { content: `<details><summary>Kaynak dosyalar</summary>\n\n- src/mathutil.js\n</details>\n\n# ${title}\n\n## Adım Adım\n1. clamp çağrılır (\`src/mathutil.js:2\`)\n\n\`\`\`mermaid\nsequenceDiagram\n  test->>clamp: çağır\n\`\`\`\n\n## Hata ve Uç Durumlar\n- yok\n## Değiştirirken Dikkat\n- sınırlar (${model.id})` };
+  }
   if (/You chair a council of experts/.test(u)) return { content: `Nihai cevap (${model.id}): clamp src/mathutil.js içinde tanımlıdır.` };
   if (/# QUESTION/.test(u)) return { content: `Cevap (${model.id}): clamp işlevi src/mathutil.js dosyasındadır.` };
   void text;
@@ -215,7 +227,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     let custom: MockReply | undefined;
     if (model.handler) custom = model.handler({ model: model.id, messages: body.messages, tools: body.tools, n: nth, body: body as unknown as Record<string, unknown> });
     if (custom && 'status' in custom) {
-      res.writeHead(custom.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: custom.error } }));
+      res.writeHead(custom.status, { 'content-type': 'application/json', ...(custom.retryAfter ? { 'retry-after': custom.retryAfter } : {}) }).end(JSON.stringify({ error: { message: custom.error } }));
       return;
     }
     if (custom && 'hangMs' in custom) {

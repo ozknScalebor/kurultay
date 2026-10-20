@@ -136,7 +136,7 @@ describe('Orchestrator', () => {
         if (id === 'T2') return call('write_file', { path: 'other.txt', content: 'x' });
         if (id === 'V1') {
           verifyFixSeen = /fail verification/.test(q.messages.find((m) => m.role === 'user')?.content ?? '');
-          return call('write_file', { path: 'flag.txt', content: 'good' });
+          return call('edit_file', { path: 'flag.txt', old_text: 'bad', new_text: 'good' });
         }
         return undefined;
       },
@@ -189,7 +189,7 @@ describe('Orchestrator', () => {
 
   it('asks for confirmation and keeps the project untouched when declined', async () => {
     let asked = '';
-    const brain: Brain = { plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] }, agent: (_id, step) => (step === 0 ? call('write_file', { path: 'a.txt', content: 'changed' }) : undefined) };
+    const brain: Brain = { plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] }, agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'a.txt', old_text: 'orig', new_text: 'changed' }) : undefined) };
     const { run, root } = await setup(brain, { 'a.txt': 'orig' }, { models: ['solo'], cfg: { orchestrator: { confirmMerge: true } } });
     const report = await run('change a', {
       mode: 'single',
@@ -208,7 +208,7 @@ describe('Orchestrator', () => {
     const seen: Record<string, string[]> = { plan: [], agent: [], review: [] };
     const brain: Brain = {
       plan: { subtasks: [{ id: 'T1', title: 'java work', description: 'edit Foo.java', files: ['src/Foo.java'] }] },
-      agent: (_id, step, _q, model) => (step === 0 ? call('write_file', { path: 'src/Foo.java', content: `class Foo { /* ${model} */ }` }) : undefined),
+      agent: (_id, step, _q, model) => (step === 0 ? call('edit_file', { path: 'src/Foo.java', old_text: 'class Foo {}', new_text: `class Foo { /* ${model} */ }` }) : undefined),
       record: (kind, prompt) => seen[kind]?.push(prompt),
     };
     const { run } = await setup(brain, {
@@ -217,15 +217,24 @@ describe('Orchestrator', () => {
       '.kurultay/rules/java.md': '---\napplies_to: "*.java"\n---\nRULE-JAVA-456',
       '.kurultay/rules/c.md': '---\napplies_to: "*.c"\n---\nRULE-C-789',
       '.kurultay/skills/refactor.md': '---\nname: java-refactor\ndescription: refactor java classes safely\n---\nSKILL-STEPS-321',
+      '.agents/skills/foo-kurallari/SKILL.md': '---\nname: foo-kurallari\ndescription: Foo sınıfı kuralları\nkeywords: [foo]\n---\nSKILL-KEYWORD-654',
+      '.agents/skills/gizli/SKILL.md': '---\nname: gizli\ndescription: yalnızca açıkça istenince\ndisable-model-invocation: true\n---\nSKILL-HIDDEN-000',
       'review_rules.md': 'REVIEW-RULE-999',
     });
-    await run('refactor the java class Foo', { mode: 'race', requirements: 'REQ-DOC-555' });
+    const report = await run('refactor the java class Foo', { mode: 'race', requirements: 'REQ-DOC-555' });
+    assert.equal(report.skills.available, 3);
+    assert.ok(report.skills.used.some((u) => u.name === 'foo-kurallari' && u.how === 'preload'));
+    assert.match(readFileSync(report.reportPath, 'utf8'), /## Skill'ler[\s\S]*foo-kurallari/);
     assert.ok(seen.plan.some((p) => p.includes('REQ-DOC-555')), 'requirements reach the planner');
     const agentPrompt = seen.agent.join('\n');
     assert.ok(agentPrompt.includes('RULE-GLOBAL-123'));
     assert.ok(agentPrompt.includes('RULE-JAVA-456'));
     assert.ok(!agentPrompt.includes('RULE-C-789'), 'glob-scoped rule for *.c is not injected');
-    assert.ok(agentPrompt.includes('SKILL-STEPS-321'), 'matching skill injected');
+    // progressive disclosure: a merely relevant skill is advertised (name + description), its body is not preloaded
+    assert.ok(agentPrompt.includes('<name>java-refactor</name><description>refactor java classes safely</description>'), 'relevant skill advertised');
+    assert.ok(!agentPrompt.includes('SKILL-STEPS-321'), 'relevant skill body is loaded on demand only');
+    assert.ok(agentPrompt.includes('SKILL-KEYWORD-654'), 'keyword-triggered skill preloaded');
+    assert.ok(!agentPrompt.includes('SKILL-HIDDEN-000') && !agentPrompt.includes('<name>gizli</name>'), 'hidden skill neither advertised nor loaded');
     assert.ok(seen.review.some((p) => p.includes('REVIEW-RULE-999')), 'review rules reach the council');
   });
 
@@ -244,7 +253,7 @@ describe('Orchestrator', () => {
     const brain: Brain = {
       plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
       agent: (_id, step) => {
-        if (step === 0) return call('write_file', { path: 'a.txt', content: 'half-done' });
+        if (step === 0) return call('edit_file', { path: 'a.txt', old_text: 'orig', new_text: 'half-done' });
         setTimeout(() => ctrl.abort(new Error('user cancelled')), 5);
         return { hangMs: 2000 };
       },

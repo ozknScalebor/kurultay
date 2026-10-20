@@ -129,7 +129,27 @@ export function closestSnippet(content: string, search: string): { line: number;
  * Replace `oldText` with `newText` inside `content`.
  * Throws EditError with an actionable hint when it cannot apply unambiguously.
  */
+/** Smart quotes, dashes, NBSP and friends → ASCII (Pi edit-diff, Codex seek_sequence). */
+export function normalizeUnicode(s: string): string {
+  return s
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/[\u00A0\u2007\u202F\u2009\u200A]/g, ' ')
+    .replace(/\u2026/g, '...');
+}
+
 export function applyReplacement(content: string, oldText: string, newText: string, opts: { replaceAll?: boolean; path?: string } = {}): string {
+  // Preserve Windows line endings: match on LF, write back CRLF (Pi edit-diff).
+  if (content.includes('\r\n')) {
+    const lf = (t: string) => t.replace(/\r\n/g, '\n');
+    return applyReplacementLF(lf(content), lf(oldText), lf(newText), opts).replace(/\n/g, '\r\n');
+  }
+  return applyReplacementLF(content, oldText.replace(/\r\n/g, '\n'), newText.replace(/\r\n/g, '\n'), opts);
+}
+
+function applyReplacementLF(content: string, oldText: string, newText: string, opts: { replaceAll?: boolean; path?: string }): string {
   const label = opts.path ?? 'dosya';
   if (oldText === '') {
     // empty search: append (or create)
@@ -154,6 +174,11 @@ export function applyReplacement(content: string, oldText: string, newText: stri
   // 3) indentation insensitive
   if (matches.length === 0) {
     matches = findLineMatches(fileLines, searchLines, (s) => s.trim());
+    reindent = matches.length > 0;
+  }
+  // 4) unicode punctuation insensitive (smart quotes / dashes typed by the model)
+  if (matches.length === 0) {
+    matches = findLineMatches(fileLines, searchLines, (s) => normalizeUnicode(s).trim());
     reindent = matches.length > 0;
   }
   if (matches.length === 1 || (matches.length > 1 && opts.replaceAll)) {

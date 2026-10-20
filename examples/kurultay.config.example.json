@@ -45,6 +45,7 @@
     "councilSize": 3,
     "maxIterations": 4,
     "maxStepsPerWorker": 40,
+    "maxConsecutiveErrors": 6,
     "confirmMerge": true
   },
   "index": {
@@ -56,7 +57,14 @@
   },
   "tools": {
     "allowCommands": true,
-    "commandTimeoutMs": 600000
+    "commandTimeoutMs": 600000,
+    "requireReadBeforeEdit": true
+  },
+  "skills": {
+    "paths": ["~/ortak-skilller"],
+    "disabled": [],
+    "includeUser": true,
+    "maxPreload": 3
   },
   "language": "tr"
 }

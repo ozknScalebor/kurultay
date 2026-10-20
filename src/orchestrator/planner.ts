@@ -11,6 +11,8 @@ export interface SubTask {
   dependsOn: string[];
   /** worth racing several models on */
   critical: boolean;
+  /** skills the planner wants preloaded for this subtask */
+  skills?: string[];
 }
 
 export interface Plan {
@@ -25,7 +27,7 @@ interface RawPlan {
   understanding?: string;
   acceptance_criteria?: string[];
   acceptance?: string[];
-  subtasks?: Array<{ id?: string; title?: string; description?: string; files?: string[]; depends_on?: string[]; dependsOn?: string[]; critical?: boolean }>;
+  subtasks?: Array<{ id?: string; title?: string; description?: string; files?: string[]; depends_on?: string[]; dependsOn?: string[]; critical?: boolean; skills?: string[] }>;
 }
 
 const PLAN_INSTRUCTIONS = `You are the planner of a team of AI coding agents working on the project described below.
@@ -35,10 +37,11 @@ Return ONLY JSON:
   "understanding": "one paragraph: what must change and why",
   "acceptance_criteria": ["observable, checkable criteria for the whole task"],
   "subtasks": [
-    {"id": "T1", "title": "...", "description": "precise instructions incl. files, functions, edge cases", "files": ["paths likely touched"], "depends_on": [], "critical": true}
+    {"id": "T1", "title": "...", "description": "precise instructions incl. files, functions, edge cases", "files": ["paths likely touched"], "depends_on": [], "critical": true, "skills": []}
   ]
 }
-Mark "critical": true for subtasks with tricky logic where comparing several independent implementations is valuable.`;
+Mark "critical": true for subtasks with tricky logic where comparing several independent implementations is valuable.
+If project skills are listed below, put the names of the skills a subtask needs in its "skills" array (only names from the list; [] when none apply).`;
 
 function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'authors'> | undefined {
   if (!raw || !Array.isArray(raw.subtasks) || raw.subtasks.length === 0) return undefined;
@@ -49,6 +52,7 @@ function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'auth
     files: Array.isArray(s.files) ? s.files.filter((f) => typeof f === 'string') : [],
     dependsOn: (s.depends_on ?? s.dependsOn ?? []).map(String),
     critical: !!s.critical,
+    skills: Array.isArray(s.skills) ? s.skills.filter((x) => typeof x === 'string').slice(0, 4) : undefined,
   }));
   // drop dangling / self dependencies and break cycles
   const ids = new Set(subtasks.map((s) => s.id));
@@ -88,9 +92,10 @@ export async function makePlan(
   router: Router,
   task: string,
   context: string,
-  opts: { drafts: number; contextTokens: number; bus?: EventBus; signal?: AbortSignal; extra?: string },
+  opts: { drafts: number; contextTokens: number; bus?: EventBus; signal?: AbortSignal; extra?: string; skillCatalogue?: string },
 ): Promise<Plan> {
-  const prompt = `${PLAN_INSTRUCTIONS}\n\n${truncateTokens(context, opts.contextTokens)}\n\n# TASK\n${task}${opts.extra ? '\n\n' + opts.extra : ''}`;
+  const skills = opts.skillCatalogue ? `\n\n${opts.skillCatalogue}` : '';
+  const prompt = `${PLAN_INSTRUCTIONS}\n\n${truncateTokens(context, opts.contextTokens)}${skills}\n\n# TASK\n${task}${opts.extra ? '\n\n' + opts.extra : ''}`;
   const planners = router.pick('planner', Math.max(1, opts.drafts));
   opts.bus?.info('planner', `plan taslakları: ${planners.map((p) => p.caps.key).join(', ')}`);
   const results = await settle(
@@ -122,7 +127,7 @@ export async function makePlan(
             role: 'user',
             content: `${PLAN_INSTRUCTIONS}
 
-Several planners proposed plans for the same task (below). Merge them into the single best plan: keep the most accurate understanding, the union of valid acceptance criteria, and the simplest correct subtask breakdown. Return ONLY the JSON plan.
+Several planners proposed plans for the same task (below). Merge them into the single best plan: keep the most accurate understanding, the union of valid acceptance criteria, and the simplest correct subtask breakdown. Return ONLY the JSON plan.${skills}
 
 # TASK
 ${task}

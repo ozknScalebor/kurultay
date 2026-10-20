@@ -5,7 +5,7 @@
 Kurultay, verdiğiniz OpenAI-uyumlu endpoint'leri ve API anahtarlarını kullanarak:
 
 1. **Her modelin yeteneklerini ölçer.** Bağlam penceresi, tool calling, JSON, hız, eşzamanlılık kapasitesi, kodlama ve düzenleme başarısı ölçülür; her modele rol puanı verilir.
-2. **Projeyi indeksler.** Semboller, bağımlılık grafiği, PageRank ve BM25 araması çıkarılır. Ardından **tüm modellere paralel dağıtılan** map-reduce özetleme ile `ARCHITECTURE.md` ve modül dokümanları üretilir.
+2. **Projeyi indeksler.** Semboller, bağımlılık grafiği, PageRank ve BM25 araması çıkarılır. Ardından **tüm modellere paralel dağıtılan** map-reduce özetleme ile `ARCHITECTURE.md`, modül dokümanları, uçtan uca **akış dokümanları** (DeepWiki tarzı, kaynak satır referanslı, Mermaid diyagramlı) ve ajanların her görevde okuduğu `PROJECT_NOTES.md` üretilir.
 3. **Verilen işi yapar.** Plan modellerden oluşan bir konseyde hazırlanır. Alt görevler modellere **eşzamanlı** dağıtılır. Kritik işlerde birden çok model yarışır. Her aday build/test ile doğrulanır. Adaylar **anonim konsey incelemesi** ile sıralanır. Son olarak gereksinim kontrolü yapılır; eksik varsa döngü devam eder.
 
 Çalışma zamanında **hiçbir npm bağımlılığı yoktur**. Gereken tek şey Node.js ≥ 20. Native derleme, Python, Docker, CDN veya telemetri gerekmez.
@@ -79,7 +79,11 @@ flowchart TB
 ### Dayanıklılık
 
 - **Bağlantı koparsa** üstel backoff ile tekrar denenir. Model düşerse iş diğer modele devredilir. Tüm modeller düşerse 10 dakikaya kadar bekleyip yeniden denenir (devre kesiciler sıfırlanır).
-- **Bağlam taşarsa** prompt'u sığdıran modellere yönlendirilir. Uzun çalışmalarda condenser geçmişi özetler.
+- **Bağlam taşarsa** prompt'u sığdıran modellere yönlendirilir. Uzun çalışmalarda condenser önce eski araç çıktılarını kırpar, sonra geçmişi yapılandırılmış bir devir notuna (hedef / yapılanlar / kararlar / dosyalar / sıradaki adımlar) dönüştürür; not her yoğunlaştırmada artımlı güncellenir.
+- **Sunucu `429`/`503` + `Retry-After` dönerse** istenen süre kadar beklenir.
+- **Döngü koruması**: aynı çağrı aynı sonuçla 3. kez yapıldığında uyarı verilir, 5. kezde çalışan durdurulur. A-B-A-B gidip gelmeler, uzun salt-okuma keşifleri ve üst üste başarısız çağrılar da yakalanır.
+- **Güvenli düzenleme**: var olan bir dosyanın üzerine yazmadan veya silmeden önce okunmuş olması gerekir. Eşleşmeyen bir düzenlemeden sonra dosya yeniden okunmadan tekrar düzenlenemez. Düzenleme sonrası parantez dengesi ve JSON geçerliliği kontrol edilir. CRLF satır sonları korunur; akıllı tırnak ve uzun tire gibi Unicode farkları eşleşmeyi bozmaz; yanlış yazılmış ama tek eşleşmesi olan dosya yolları düzeltilir.
+- **Araç çağrısını düzyazıyla anlatan modeller** için (ör. "şimdi read_file ile açacağım") hızlı bir model metni gerçek araç çağrısına çevirir (toolshim).
 - **Native tool calling desteklemeyen** veya `tools` alanını reddeden sunucularda otomatik olarak prompt tabanlı araç çağrısına geçilir.
 - **Çökme güvenliği**: Build/test sırasında aday değişiklikler geçici olarak diske yazılır. Bu işlem bir journal ile korunur; yarıda kesilirse bir sonraki çalıştırmada orijinal dosyalar geri yüklenir. Bu süre boyunca diğer çalışanlar her zaman orijinal (pristine) içeriği görür.
 - **Sizin değişiklikleriniz korunur**: Ajan çalışırken bir dosyayı siz de düzenlediyseniz sonuç 3-yollu birleştirilir. Çakışma olursa git tarzı işaretler eklenir ve raporda listelenir.
@@ -94,7 +98,7 @@ flowchart TB
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # yalnızca derleme araçları (typescript)
-npm test          # ≈155 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
+npm test          # ≈190 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
 npm run pack:offline
 ```
 
@@ -125,8 +129,9 @@ GPU'nuz yoksa veya önce denemek istiyorsanız sahte LLM sunucusunu kullanabilir
 | `kurultay init` | Yapılandırma ve kural şablonlarını oluşturur; build/test komutlarını tahmin eder (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
 | `kurultay probe [--deep] [--quick]` | Yetenek analizi. `--deep` 256K bağlama ve 16 eşzamanlı isteğe kadar ölçer; `--quick` benchmark'ı atlar |
 | `kurultay index` | Yalnızca statik indeks (LLM gerekmez) |
-| `kurultay analyze [--force] [--drafts N]` | Paralel özetleme ve mimari dokümanı. Artımlıdır: yalnızca değişen dosyalar yeniden özetlenir |
-| `kurultay run "<görev>"` | `--mode auto\|single\|split\|race\|council`, `--req gereksinim.md`, `--dry-run`, `--yes`, `--ui` |
+| `kurultay analyze [--force] [--drafts N] [--flows N]` | Paralel özetleme, mimari dokümanı, `PROJECT_NOTES.md` ve en önemli N akışın dokümanı (`--flows 0` kapatır). Artımlıdır: yalnızca değişen dosyalar yeniden özetlenir |
+| `kurultay skills` | Bulunan skill'leri listeler ve spesifikasyona göre doğrular. `skills new <ad> --description "..."` yeni skill klasörü oluşturur |
+| `kurultay run "<görev>"` | `--mode auto\|single\|split\|race\|council`, `--req gereksinim.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui` |
 | `kurultay ask "<soru>"` | Proje hakkında soru; modeller ayrı ayrı cevaplar, başkan model birleştirir |
 | `kurultay map [--tokens N] [--focus a,b]` | Repo haritası (Aider tarzı) |
 | `kurultay search "<sorgu>"` | BM25 kod araması |
@@ -158,10 +163,39 @@ Tam örnek: [`examples/kurultay.config.example.json`](examples/kurultay.config.e
 
 | Dosya | Kullanım |
 |---|---|
-| `.kurultay/rules/*.md` | Her çalışana verilen kurallar. Frontmatter'da `applies_to: "*.java"` varsa yalnızca ilgili dosyalarda uygulanır |
-| `.kurultay/skills/*.md` | Adım adım iş tarifleri. Görev metniyle eşleşen skill'ler bağlama eklenir |
+| `.kurultay/rules/*.md` | Her çalışana verilen kurallar. Frontmatter'da `applies_to: "*.java"` (veya `globs: ["*.c", "*.h"]`) varsa yalnızca ilgili dosyalarda uygulanır |
+| `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` | Diğer ajanların kural dosyaları dönüştürmeden okunur. Alt klasördeki `AGENTS.md`/`CLAUDE.md` yalnızca o klasördeki dosyalara uygulanır |
 | `review_rules.md` veya `.kurultay/review_rules.md` | Konsey incelemesinde zorunlu kurallar |
-| `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` | Diğer ajanların kural dosyaları dönüştürmeden okunur |
+| `.kurultay/PROJECT_NOTES.md` | `analyze` üretir, elle düzenlenebilir: komutlar, kod kuralları, tamamlama listesi, tuzaklar. Her görevin bağlamına eklenir |
+
+### Skill'ler ([Agent Skills](https://agentskills.io) uyumlu)
+
+Skill, bir işin nasıl yapılacağını anlatan klasördür: `SKILL.md` (frontmatter'da `name` + `description`) ve isteğe bağlı `references/`, `scripts/`, `assets/`.
+
+```
+.kurultay/skills/yeni-surucu-ekleme/
+├── SKILL.md
+└── references/arayuz-kurallari.md
+```
+
+```markdown
+---
+name: yeni-surucu-ekleme
+description: Yeni bir donanım sürücüsü ekleme adımları. Sürücü/driver işlerinde kullan.
+keywords: [sürücü, driver]        # görevde geçerse baştan yüklenir
+paths: ["src/drivers/**"]         # yalnızca bu dosyalarla çalışırken önerilir
+# always: true                    # her çalışana baştan yükle
+# disable-model-invocation: true  # yalnızca --skill veya $ad ile
+---
+1. ...
+```
+
+- **Nereden okunur**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, kullanıcı dizininde `~/.agents/skills` ve `~/.claude/skills`, ayrıca `skills.paths`. Başka ajanlar için yazılmış skill'ler olduğu gibi çalışır. Tek dosyalık eski `.md` skill'ler de desteklenir.
+- **Kademeli yükleme**: Modele başta yalnızca ad + açıklama listesi verilir; model gerekince `skill` aracıyla gövdeyi, `skill_file` ile ek dosyaları açar. Bağlam küçük yerel modeller için boşa harcanmaz.
+- **Seçim önceliği**: `--skill a,b` ve görev metnindeki `$ad` > `always` > `keywords` > planlayıcının alt göreve atadığı skill'ler. Sözcüksel olarak ilgili olanlar "önerilen" diye işaretlenir. `paths` tanımlı skill'ler çalışan o dosyalara dokunduğunda duyurulur.
+- **Rapor**: hangi çalışanın hangi skill'i neden kullandığı `REPORT.md` içinde listelenir. `kurultay skills` ad/açıklama kurallarını doğrular.
+
+Hangi fikrin hangi açık kaynak ajandan alındığı, kod düzeyinde incelemenin notlarıyla birlikte [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) dosyasındadır.
 
 ## Üretilen dosyalar (`.kurultay/`)
 
@@ -170,6 +204,9 @@ capabilities.json, CAPABILITIES.md   model yetenek profili
 index/index.json                     semboller, grafik, PageRank, özetler (artımlı)
 ARCHITECTURE.md, INDEX.md            mimari özet ve dosya indeksi
 modules/*.md                         modül dokümanları
+flows/NN-*.md                        uçtan uca akış dokümanları (adımlar, kaynak satırları, Mermaid)
+PROJECT_NOTES.md                     ajanların her görevde okuduğu proje notları
+skills/<ad>/SKILL.md                 proje skill'leri
 sessions/<id>/                       plan.json, events.jsonl, session.json, changes.diff, REPORT.md
 ```
 
@@ -200,19 +237,19 @@ const report = await new Orchestrator(app.root, app.config, app.router, app.mate
 
 ```bash
 npm ci
-npm test                  # birim + entegrasyon + CLI (≈155 test)
+npm test                  # birim + entegrasyon + CLI (≈190 test)
 npm run test:unit         # yalnızca birim testleri
 npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
 npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
 npm run test:package      # offline paketleme + internetsiz kurulum + taşınabilir başlatıcı
-npm run test:coverage     # kapsam eşikleri: satır ≥ %95, dal ≥ %85, fonksiyon ≥ %93
+npm run test:coverage     # kapsam eşikleri: satır ≥ %96, dal ≥ %88, fonksiyon ≥ %94
 ```
 
 | Katman | Ne test ediliyor |
 |---|---|
-| `test/unit` | Router (seçim, retry, devre kesici, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, test kanıtı önceliği), planlayıcı, doğrulama, yapılandırma |
-| `test/integration` | Ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, boşta kalma, adım sınırı, condenser, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
-| `test/cli` | `init`, `probe`, `index`, `analyze`, `run`, `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
+| `test/unit` | Router (seçim, retry, devre kesici, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
+| `test/integration` | Ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
+| `test/cli` | `init`, `probe`, `index`, `analyze` (akış dokümanları, proje notları), `skills`, `run` (`--skill`, `--req`), `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
 | `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
 
 ### CI pipeline (`.github/workflows/ci.yml`)
