@@ -1,0 +1,46 @@
+{
+  "name": "kurultay",
+  "version": "0.1.0",
+  "description": "Offline, multi-LLM coding agent: probes every configured model, indexes and summarizes the project, then completes tasks using all models concurrently (split / race / council).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "kurultay": "bin/kurultay.js"
+  },
+  "main": "dist/src/index.js",
+  "files": [
+    "bin",
+    "dist/src",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "npm run build && node --test --test-reporter=spec dist/test/unit.test.js dist/test/e2e.test.js",
+    "mock": "node dist/src/mock/server.js",
+    "pack:offline": "npm run build && node scripts/pack-offline.mjs"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "offline",
+    "air-gapped",
+    "coding-agent",
+    "multi-model",
+    "council"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ozknScalebor/kurultay.git"
+  },
+  "author": "Özkan Eren"
+}

@@ -1,0 +1,62 @@
+{
+  "$comment": "Kurultay örnek yapılandırması – kapalı ağdaki tipik bir kurulum: 2 GPU sunucusunda vLLM, bir iş istasyonunda llama.cpp ve Ollama. Proje köküne kurultay.config.json olarak kopyalayın.",
+  "endpoints": [
+    {
+      "name": "gpu1-vllm",
+      "baseUrl": "http://10.10.0.11:8000/v1",
+      "apiKey": "${GPU1_API_KEY}",
+      "models": [],
+      "maxConcurrency": 0,
+      "timeoutMs": 600000
+    },
+    {
+      "name": "gpu2-vllm",
+      "baseUrl": "http://10.10.0.12:8000/v1",
+      "apiKey": "${GPU2_API_KEY}"
+    },
+    {
+      "name": "ws-llamacpp",
+      "baseUrl": "http://10.10.0.20:8080/v1",
+      "apiKey": "none",
+      "models": ["qwen3-coder-30b-a3b"],
+      "maxConcurrency": 2
+    },
+    {
+      "name": "ollama",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "models": ["qwen2.5-coder:14b", "deepseek-coder-v2:16b"]
+    }
+  ],
+  "models": {
+    "qwen2.5-coder:14b": { "contextWindow": 32768, "extraBody": { "options": { "num_ctx": 32768 } } },
+    "gpt-oss-120b@gpu2-vllm": { "roles": ["planner", "judge", "reviewer"] },
+    "tiny-model@ollama": { "disabled": true }
+  },
+  "verify": {
+    "build": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j",
+    "test": "ctest --test-dir build --output-on-failure",
+    "lint": "",
+    "timeoutMs": 900000
+  },
+  "orchestrator": {
+    "defaultMode": "auto",
+    "raceWidth": 3,
+    "councilSize": 3,
+    "maxIterations": 4,
+    "maxStepsPerWorker": 40,
+    "confirmMerge": true
+  },
+  "index": {
+    "include": [],
+    "exclude": ["third_party/**", "*.pb.cc", "*.pb.h", "generated/**"],
+    "maxFileBytes": 524288,
+    "summaryLanguage": "tr",
+    "repoMapTokens": 2048
+  },
+  "tools": {
+    "allowCommands": true,
+    "commandTimeoutMs": 600000
+  },
+  "language": "tr"
+}
