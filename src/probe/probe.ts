@@ -14,6 +14,8 @@ export interface ProbeOptions {
   deep?: boolean;
   /** skip benchmark (connectivity + features only) */
   quick?: boolean;
+  /** base delay between reachability retries while a model is loading (default 1000 ms) */
+  retryDelayMs?: number;
   signal?: AbortSignal;
 }
 
@@ -59,7 +61,7 @@ class ModelProber {
         lastErr = e;
         if (!(e instanceof LlmError) || !e.retryable || attempt === 5) break;
         this.log(`yanıt yok (${e.kind}), ${attempt}. tekrar deneniyor…`);
-        await sleep(Math.min(20_000, 1000 * 2 ** (attempt - 1)), this.opts.signal);
+        await sleep(Math.min(20_000, (this.opts.retryDelayMs ?? 1000) * 2 ** (attempt - 1)), this.opts.signal);
       }
     }
     if (lastErr) {
@@ -182,7 +184,7 @@ class ModelProber {
   /** Ladder of prompt sizes until the server reports a context overflow. */
   private async probeContext(): Promise<void> {
     const c = this.caps;
-    const reported = c.contextWindow;
+    const reported = c.contextWindow > 0 ? c.contextWindow : undefined;
     const ladder = this.opts.deep ? [8_192, 16_384, 32_768, 65_536, 131_072, 262_144] : [8_192, 16_384, 32_768];
     // If the server reported a window, trust it but verify the largest rung below it.
     const filler = 'lorem ipsum dolor sit amet consectetur ';
@@ -286,7 +288,8 @@ async function probeEndpoint(ep: EndpointConfig, cfg: KurultayConfig, bus: Event
   // models on the same endpoint are probed sequentially (shared GPU → fair timing)
   for (const m of ids) {
     const caps = defaultCapabilities(m.id, ep.name);
-    if (m.contextWindow) caps.contextWindow = m.contextWindow;
+    // 0 = unknown: the ladder must measure it instead of trusting the 32k default
+    caps.contextWindow = m.contextWindow ?? 0;
     const ov = cfg.models[caps.key] ?? cfg.models[m.id];
     if (ov?.contextWindow) caps.contextWindow = ov.contextWindow;
     out.push(await new ModelProber(client, caps, bus, opts).run());

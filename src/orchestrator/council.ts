@@ -56,10 +56,13 @@ export async function councilReview(
   const labelOf = new Map(shuffled.map((c, i) => [c.id, LABELS[i]]));
   const byLabel = new Map(shuffled.map((c, i) => [LABELS[i], c]));
   const perDiff = Math.floor(args.contextTokens / (shuffled.length + 1));
+  // scrub model identities from free text so reviewers cannot recognise authors
+  const identities = [...new Set(candidates.flatMap((c) => [c.author, c.author.split('@')[0]]).filter((x) => x && x.length > 2))].sort((a, b) => b.length - a.length);
+  const scrub = (t: string) => identities.reduce((acc, id) => acc.split(id).join('[model]'), t);
   const body = shuffled
     .map((c) => {
       const v = c.verifyScore === undefined ? 'not run' : c.verifyOk ? 'PASSED' : `FAILED (score ${c.verifyScore.toFixed(2)})`;
-      return `<candidate id="${labelOf.get(c.id)}">\nBuild/tests: ${v}\nAuthor's note: ${c.summary.slice(0, 600)}\n\`\`\`diff\n${truncateTokens(c.diff || '(no changes)', perDiff)}\n\`\`\`\n</candidate>`;
+      return `<candidate id="${labelOf.get(c.id)}">\nBuild/tests: ${v}\nAuthor's note: ${scrub(c.summary.slice(0, 600))}\n\`\`\`diff\n${truncateTokens(c.diff || '(no changes)', perDiff)}\n\`\`\`\n</candidate>`;
     })
     .join('\n\n');
   const prompt = `You are a strict senior code reviewer in a review council. Several independent engineers implemented the same task. Evaluate each candidate for correctness, completeness against the acceptance criteria, safety (memory, concurrency, error handling), minimality and consistency with the codebase.

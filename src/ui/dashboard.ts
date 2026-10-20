@@ -31,10 +31,17 @@ export function startDashboard(bus: EventBus, router: Router, port = 7420): Prom
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(PAGE);
   });
-  server.on('close', () => bus.off('event', onEvent));
+  server.on('close', () => {
+    bus.off('event', onEvent);
+    for (const c of clients) c.end();
+  });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${port}` }));
+    server.listen(port, '127.0.0.1', () => {
+      const addr = server.address();
+      const actual = typeof addr === 'object' && addr ? addr.port : port;
+      resolve({ server, url: `http://127.0.0.1:${actual}` });
+    });
   });
 }
 

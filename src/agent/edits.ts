@@ -19,6 +19,25 @@ const SEARCH_RE = /^<{5,9} ?SEARCH\s*$/;
 const DIVIDER_RE = /^={5,9}\s*$/;
 const REPLACE_RE = /^>{5,9} ?REPLACE\s*$/;
 
+const PATH_RE = /^[\w.\\/-]*[\w-]\.[A-Za-z0-9]{1,8}$|^[\w.\\/-]*\/[\w.-]+$/;
+
+/**
+ * Extract a file path from a line preceding a SEARCH block. Accepts a bare path,
+ * markdown decorations (`path`, **path**, ### path) and prose such as
+ * "Edit `src/a.c`:" or "In file src/a.c:".
+ */
+export function pathFromLine(line: string): string | undefined {
+  const t = line.trim();
+  if (!t || t.startsWith('```')) return undefined;
+  const bare = t.replace(/^[#>*\-\s]+|[`*:]+$/g, '').replace(/^[`*]+/, '').trim();
+  if (PATH_RE.test(bare)) return bare;
+  if (/^(?:[\w.-]+\/)*(?:Makefile|makefile|GNUmakefile|Dockerfile|Kconfig|Jenkinsfile|Rakefile|Gemfile)$/.test(bare)) return bare;
+  const ticked = [...t.matchAll(/`([^`\s]+)`|\*\*([^*\s]+)\*\*/g)].map((m) => m[1] ?? m[2]).filter((x) => PATH_RE.test(x));
+  if (ticked.length) return ticked[ticked.length - 1];
+  const words = t.split(/\s+/).map((w) => w.replace(/^[("'`]+|[)"'`:,;.]+$/g, '')).filter((w) => PATH_RE.test(w) && /[/\\]|\.[a-z]{1,5}$/i.test(w) && !/^\d+(\.\d+)+$/.test(w));
+  return words.length ? words[words.length - 1] : undefined;
+}
+
 /** Parse SEARCH/REPLACE blocks. The file path is the last non-empty, non-fence line before the block. */
 export function parseSearchReplace(text: string, defaultPath?: string): SearchReplaceBlock[] {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
@@ -27,8 +46,8 @@ export function parseSearchReplace(text: string, defaultPath?: string): SearchRe
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!SEARCH_RE.test(line.trim())) {
-      const t = line.trim().replace(/^[`*#]+|[`*:]+$/g, '').trim();
-      if (t && !t.startsWith('```') && /^[\w./\\-]+\.[\w]+$|^[\w./\\-]*\/[\w.-]+$/.test(t)) lastPath = t;
+      const p = pathFromLine(line);
+      if (p) lastPath = p;
       continue;
     }
     const search: string[] = [];

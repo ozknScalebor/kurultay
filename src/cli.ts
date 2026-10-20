@@ -265,6 +265,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (args.flags.version || args.flags.v) return out(VERSION);
   if (args.cmd === 'help' || args.flags.help || args.flags.h) return out(HELP);
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search'];
+  if (!KNOWN.includes(args.cmd)) {
+    out(`Bilinmeyen komut: ${args.cmd}\n`);
+    out(HELP);
+    process.exitCode = 1;
+    return;
+  }
   const root = resolve(typeof args.flags.root === 'string' ? args.flags.root : process.cwd());
   const configPath = typeof args.flags.config === 'string' ? args.flags.config : undefined;
   try {
