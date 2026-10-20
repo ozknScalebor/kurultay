@@ -20,8 +20,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "test": "npm run build && node --test --test-reporter=spec dist/test/unit.test.js dist/test/e2e.test.js",
+    "test": "npm run build && node scripts/run-tests.mjs all",
+    "test:unit": "npm run build && node scripts/run-tests.mjs unit",
+    "test:integration": "npm run build && node scripts/run-tests.mjs integration",
+    "test:cli": "npm run build && node scripts/run-tests.mjs cli",
+    "test:package": "npm run build && node scripts/run-tests.mjs package",
+    "test:coverage": "npm run build && node scripts/run-tests.mjs all --coverage --min-lines=95 --min-branches=85 --min-functions=93",
     "mock": "node dist/src/mock/server.js",
     "pack:offline": "npm run build && node scripts/pack-offline.mjs"
   },

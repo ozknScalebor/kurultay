@@ -1,25 +1,166 @@
 name: ci
+
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: '1'
+  NODE_OPTIONS: --max-old-space-size=4096
+
 jobs:
-  test:
+  # 1) fast gate: types, packaging metadata, zero runtime deps
+  static:
+    name: Statik kontroller
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Tip kontrolü (strict)
+        run: npm run typecheck
+      - name: Çalışma zamanı bağımlılığı olmamalı
+        run: node -e "const p=require('./package.json');const d=Object.keys(p.dependencies||{});if(d.length){console.error('runtime deps:',d);process.exit(1)}"
+      - name: npm paket içeriği (testler ve kaynaklar pakete girmemeli)
+        run: |
+          npm run build
+          npm pack --dry-run --json > pack.json
+          node -e "const f=require('./pack.json')[0].files.map(x=>x.path);for(const n of ['bin/kurultay.js','dist/src/cli.js','README.md','LICENSE'])if(!f.includes(n)){console.error('eksik:',n);process.exit(1)}const bad=f.filter(x=>/^(dist\/)?test\/|^src\/|\.ts$/.test(x)&&!x.endsWith('.d.ts'));if(bad.length){console.error('pakete girmemeli:',bad);process.exit(1)}console.log(f.length+' dosya OK')"
+
+  # 2) unit tests on every supported OS × Node
+  unit:
+    name: Birim (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: '${{ matrix.node }}', cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/ci-run.mjs unit
+
+  # 3) integration: router, workers, orchestrator, probe, analyzer, UI against mock LLM servers
+  integration:
+    name: Entegrasyon (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: static
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [20, 22]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: '${{ matrix.node }}', cache: npm }
       - run: npm ci
       - run: npm run build
-      - name: test
-        shell: bash
+      - run: node scripts/ci-run.mjs integration
+
+  # 4) the real CLI end to end (child processes, exit codes, files on disk)
+  cli:
+    name: CLI uçtan uca (${{ matrix.os }})
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/ci-run.mjs cli
+
+  # 5) coverage gate
+  coverage:
+    name: Kapsam eşiği
+    needs: [unit, integration, cli]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/ci-run.mjs all --coverage --min-lines=95 --min-branches=85 --min-functions=93
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-output-coverage
+          path: test-output.tap
+          retention-days: 14
+
+  # 6) offline distributables per platform (tarball + portable bundle with its own Node)
+  package:
+    name: Offline paket (${{ matrix.os }})
+    needs: [unit, integration, cli]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - name: Paketle ve internetsiz kurulumu doğrula
+        run: node scripts/ci-run.mjs package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kurultay-offline-${{ runner.os }}-${{ runner.arch }}
+          # archives keep the executable bit of the bundled node runtime
+          path: |
+            release/*.tgz
+            release/*.tar.gz
+            release/*.zip
+          retention-days: 30
+
+  # 7) tagged versions become GitHub releases with all offline bundles attached
+  release:
+    name: Sürüm yayınla
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [coverage, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kurultay-offline-*
+          path: dist-artifacts
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          node --test --test-reporter=tap dist/test/unit.test.js dist/test/e2e.test.js > tap.txt 2>&1 && status=0 || status=$?
-          cat tap.txt
-          if [ "$status" != "0" ]; then node scripts/gh-annotate.mjs tap.txt; exit 1; fi
+          files=$(find dist-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name 'kurultay-*.tgz' \) | awk -F/ '!seen[$NF]++' | sort)
+          echo "$files"
+          gh release create "${GITHUB_REF_NAME}" $files --title "Kurultay ${GITHUB_REF_NAME}" --generate-notes

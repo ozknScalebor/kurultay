@@ -46,11 +46,12 @@ if (isWin) {
   chmodSync(join(dir, 'kurultay'), 0o755);
 }
 console.log(`✓ ${dir}  (Node ${process.version})`);
-if (!isWin) {
-  try {
-    execFileSync('tar', ['-czf', `${name}.tar.gz`, name], { cwd: rel });
-    console.log(`✓ ${join(rel, name + '.tar.gz')}`);
-  } catch {
-    /* tar optional */
-  }
+// archive the portable bundle (keeps the executable bit; bsdtar on Windows writes .zip)
+try {
+  const archive = isWin ? `${name}.zip` : `${name}.tar.gz`;
+  rmSync(join(rel, archive), { force: true });
+  execFileSync('tar', isWin ? ['-a', '-cf', archive, name] : ['-czf', archive, name], { cwd: rel });
+  console.log(`✓ ${join(rel, archive)}`);
+} catch (e) {
+  console.warn(`arşiv oluşturulamadı (tar yok?): ${e.message}`);
 }

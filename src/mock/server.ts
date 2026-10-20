@@ -18,9 +18,36 @@ export interface MockModel {
   latencyMs?: number;
   /** emit <think> blocks */
   thinks?: boolean;
+  /** reject requests carrying `tools` with HTTP 400 (servers without function calling) */
+  rejectTools?: boolean;
+  /** ignore stream=true and always answer with a single JSON body */
+  noStream?: boolean;
+  /** do not advertise the context window in GET /models (forces the probe ladder) */
+  hideCtx?: boolean;
+  /**
+   * Scenario hook for tests: return a reply to override the built-in behaviour,
+   * an HTTP error, or undefined to fall through to the default responder.
+   */
+  handler?: (req: MockRequest) => MockReply | undefined;
 }
 
-interface Msg {
+export interface MockRequest {
+  model: string;
+  messages: Msg[];
+  tools?: unknown[];
+  /** 1-based count of chat requests this model has received */
+  n: number;
+  body: Record<string, unknown>;
+}
+
+export type MockReply =
+  | { content: string; toolCall?: { name: string; args: Record<string, unknown> } }
+  | { content?: string; toolCall: { name: string; args: Record<string, unknown> } }
+  | { status: number; error: string }
+  | { hangMs: number }
+  | { raw: string; contentType?: string };
+
+export interface Msg {
   role: string;
   content: string | null;
   tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
@@ -144,14 +171,25 @@ function sse(res: ServerResponse, obj: unknown) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-export function startMockServer(models: MockModel[], port = 0): Promise<{ server: Server; url: string; requests: () => number }> {
+export interface MockServerHandle {
+  server: Server;
+  url: string;
+  requests: () => number;
+  /** every chat request body received, in order (for assertions) */
+  log: Array<{ model: string; body: Record<string, unknown> }>;
+  close: () => Promise<void>;
+}
+
+export function startMockServer(models: MockModel[], port = 0): Promise<MockServerHandle> {
   const failures = new Map<string, number>();
+  const perModel = new Map<string, number>();
+  const log: MockServerHandle['log'] = [];
   let count = 0;
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '';
     if (req.method === 'GET' && url.endsWith('/models')) {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data: models.map((m) => ({ id: m.id, object: 'model', max_model_len: m.ctx })) }));
+      res.end(JSON.stringify({ object: 'list', data: models.map((m) => ({ id: m.id, object: 'model', ...(m.hideCtx ? {} : { max_model_len: m.ctx }) })) }));
       return;
     }
     if (req.method !== 'POST' || !url.endsWith('/chat/completions')) {
@@ -162,9 +200,31 @@ export function startMockServer(models: MockModel[], port = 0): Promise<{ server
     for await (const chunk of req) raw += chunk;
     count++;
     const body = JSON.parse(raw) as { model: string; messages: Msg[]; stream?: boolean; tools?: unknown[]; max_tokens?: number };
+    log.push({ model: body.model, body: body as unknown as Record<string, unknown> });
     const model = models.find((m) => m.id === body.model);
     if (!model) {
       res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `model ${body.model} not found` } }));
+      return;
+    }
+    const nth = (perModel.get(model.id) ?? 0) + 1;
+    perModel.set(model.id, nth);
+    if (model.rejectTools && body.tools?.length) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: '"tools" is not supported by this server' } }));
+      return;
+    }
+    let custom: MockReply | undefined;
+    if (model.handler) custom = model.handler({ model: model.id, messages: body.messages, tools: body.tools, n: nth, body: body as unknown as Record<string, unknown> });
+    if (custom && 'status' in custom) {
+      res.writeHead(custom.status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: custom.error } }));
+      return;
+    }
+    if (custom && 'hangMs' in custom) {
+      await new Promise((r) => setTimeout(r, custom.hangMs));
+      if (!res.writableEnded && !req.destroyed) res.writeHead(504).end('timeout');
+      return;
+    }
+    if (custom && 'raw' in custom) {
+      res.writeHead(200, { 'content-type': custom.contentType ?? 'text/event-stream' }).end(custom.raw);
       return;
     }
     const n = failures.get(model.id) ?? 0;
@@ -183,12 +243,12 @@ export function startMockServer(models: MockModel[], port = 0): Promise<{ server
       return;
     }
     if (model.latencyMs) await new Promise((r) => setTimeout(r, model.latencyMs));
-    const out = respond(model, body);
+    const out = custom ? { content: custom.content ?? '', toolCall: custom.toolCall } : respond(model, body);
     const content = model.thinks && out.content ? `<think>reasoning…</think>${out.content}` : out.content;
     const id = `chatcmpl-${count}`;
     const toolCalls = out.toolCall ? [{ id: `call_${count}`, type: 'function', function: { name: out.toolCall.name, arguments: JSON.stringify(out.toolCall.args) } }] : undefined;
     const usage = { prompt_tokens: promptTok, completion_tokens: Math.max(1, tok(content) + (toolCalls ? 20 : 0)) };
-    if (body.stream) {
+    if (body.stream && !model.noStream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (toolCalls) {
         sse(res, { id, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: toolCalls[0].id, type: 'function', function: { name: toolCalls[0].function.name, arguments: '' } }] } }] });
@@ -210,7 +270,17 @@ export function startMockServer(models: MockModel[], port = 0): Promise<{ server
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address();
       const p = typeof addr === 'object' && addr ? addr.port : port;
-      resolve({ server, url: `http://127.0.0.1:${p}/v1`, requests: () => count });
+      resolve({
+        server,
+        url: `http://127.0.0.1:${p}/v1`,
+        requests: () => count,
+        log,
+        close: () =>
+          new Promise<void>((r) => {
+            server.closeAllConnections?.();
+            server.close(() => r());
+          }),
+      });
     });
   });
 }

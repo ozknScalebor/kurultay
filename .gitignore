@@ -4,3 +4,6 @@ release/
 .kurultay/
 *.log
 .DS_Store
+test-output.tap
+pack.json
+coverage/
