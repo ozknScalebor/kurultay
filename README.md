@@ -94,7 +94,7 @@ flowchart TB
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # yalnızca derleme araçları (typescript)
-npm test          # 31 test – sahte LLM sunucularıyla uçtan uca
+npm test          # ≈155 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
 npm run pack:offline
 ```
 
@@ -196,11 +196,36 @@ const report = await new Orchestrator(app.root, app.config, app.router, app.mate
 - Oturum sürdürme (`--resume`) için durum `session.json` dosyasına kaydediliyor; CLI komutu henüz eklenmedi.
 - Yerel modellerle kalite, modellerin kendisiyle sınırlıdır. Kurultay'ın race + test + konsey yaklaşımı tek bir zayıf modelin hatalarını eler, ancak hiçbir model çözemiyorsa sonuç `incomplete` olur ve rapor eksikleri listeler.
 
-## Geliştirme
+## Geliştirme ve testler
 
 ```bash
-npm ci && npm test        # birim + uçtan uca (sahte çoklu-model sunucularla) testler
-npm run build && node bin/kurultay.js --help
+npm ci
+npm test                  # birim + entegrasyon + CLI (≈155 test)
+npm run test:unit         # yalnızca birim testleri
+npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
+npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
+npm run test:package      # offline paketleme + internetsiz kurulum + taşınabilir başlatıcı
+npm run test:coverage     # kapsam eşikleri: satır ≥ %95, dal ≥ %85, fonksiyon ≥ %93
 ```
+
+| Katman | Ne test ediliyor |
+|---|---|
+| `test/unit` | Router (seçim, retry, devre kesici, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, test kanıtı önceliği), planlayıcı, doğrulama, yapılandırma |
+| `test/integration` | Ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, boşta kalma, adım sınırı, condenser, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
+| `test/cli` | `init`, `probe`, `index`, `analyze`, `run`, `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
+| `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
+
+### CI pipeline (`.github/workflows/ci.yml`)
+
+```
+statik kontroller ─┬─ birim       (Linux/Windows/macOS × Node 20/22)
+                   ├─ entegrasyon (Linux/Windows × Node 20/22)
+                   └─ CLI         (Linux/Windows/macOS)
+                          └─┬─ kapsam eşiği
+                            └─ offline paket (Linux/Windows/macOS → artefakt)
+                                  └─ sürüm yayını (v* etiketi → GitHub Release)
+```
+
+Başarısız testler GitHub üzerinde hata notu (annotation) olarak, sonuç ve kapsam tabloları iş özeti (job summary) olarak görünür. `v0.2.0` gibi bir etiket gönderildiğinde her platformun offline paketi otomatik olarak Release'e eklenir.
 
 Lisans: MIT

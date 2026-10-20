@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import type { Server } from 'node:http';
-import { ProjectAnalyzer } from '../src/analyze/summarizer.js';
-import { createApp, loadOrBuildIndex } from '../src/app.js';
-import { Router } from '../src/llm/router.js';
-import { parseConfig } from '../src/config.js';
-import { startMockServer } from '../src/mock/server.js';
-import { Orchestrator } from '../src/orchestrator/orchestrator.js';
-import { probeAll, writeCapabilities } from '../src/probe/probe.js';
-import { EventBus } from '../src/util/events.js';
+import { ProjectAnalyzer } from '../../src/analyze/summarizer.js';
+import { createApp, loadOrBuildIndex } from '../../src/app.js';
+import { Router } from '../../src/llm/router.js';
+import { parseConfig } from '../../src/config.js';
+import { startMockServer } from '../../src/mock/server.js';
+import { Orchestrator } from '../../src/orchestrator/orchestrator.js';
+import { probeAll, writeCapabilities } from '../../src/probe/probe.js';
+import { EventBus } from '../../src/util/events.js';
 
 /**
  * End-to-end: two mock "GPU servers" with different models (a strong coder with
