@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
 import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
+import type { SkillRegistry } from '../skills/skills.js';
 import type { ToolSpec } from '../llm/types.js';
 import type { EventBus } from '../util/events.js';
 import { truncateMiddle } from '../util/text.js';
 import { EditError, applyReplacement } from './edits.js';
+import { postEditCheck } from './syntax.js';
 import { safeRelPath, type Materializer, type Overlay } from './workspace.js';
 
 export interface ToolContext {
@@ -18,6 +20,42 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** tool names this worker may use (read-only reviewers get a subset) */
   allowed?: Set<string>;
+  skills?: SkillRegistry;
+  /** hidden skills the user selected explicitly may be loaded */
+  explicitSkills?: Set<string>;
+  /** names already loaded into this worker (avoid duplicates) */
+  loadedSkills?: Set<string>;
+  /** files this worker has read (read-before-edit guard – Qwen/Crush/OMO) */
+  readFiles?: Set<string>;
+  /** files this worker created or modified */
+  writtenFiles?: Set<string>;
+  /** files whose last edit failed to match – must be re-read before the next edit */
+  staleFiles?: Set<string>;
+}
+
+/** Read-before-edit: an existing file may only be modified after the worker read it. */
+function guardUnread(path: string, ctx: ToolContext, verb: string): ToolOutcome | undefined {
+  if (!ctx.config.tools.requireReadBeforeEdit || !ctx.readFiles) return undefined;
+  if (ctx.staleFiles?.has(path)) {
+    return { output: `${path} için son düzenleme eşleşmedi; ${verb} önce dosyayı read_file ile yeniden okuyun.`, isError: true };
+  }
+  if (ctx.readFiles.has(path) || ctx.writtenFiles?.has(path)) return undefined;
+  if (ctx.overlay.read(path) === undefined) return undefined;
+  return { output: `${path} dosyasını ${verb} önce read_file ile okumalısınız (gerçek içeriği görmeden yapılan düzenlemeler genellikle başarısız olur).`, isError: true };
+}
+
+/**
+ * Aider-style path resolution: when a model names a file that does not exist
+ * but exactly one indexed file has that suffix/basename, use it.
+ */
+function resolveExisting(ctx: ToolContext, path: string): { path: string; note: string } {
+  if (ctx.overlay.read(path) !== undefined || !ctx.index) return { path, note: '' };
+  const files = ctx.index.files.map((f) => f.path);
+  const suffix = files.filter((f) => f.endsWith('/' + path));
+  const base = path.split('/').pop()!;
+  const cands = suffix.length ? suffix : files.filter((f) => f.split('/').pop() === base);
+  if (cands.length === 1) return { path: cands[0], note: `(not: "${path}" bulunamadı, "${cands[0]}" kullanıldı)\n` };
+  return { path, note: '' };
 }
 
 export interface ToolOutcome {
@@ -104,15 +142,21 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      const path = safeRelPath(ctx.root, str(a.path, 'path'));
+      const r = resolveExisting(ctx, safeRelPath(ctx.root, str(a.path, 'path')));
+      const path = r.path;
       const content = ctx.overlay.read(path);
-      if (content === undefined) return { output: `Dosya yok: ${path}`, isError: true };
+      if (content === undefined) {
+        const near = ctx.index?.files.map((f) => f.path).filter((f) => f.includes(path.split('/').pop()!.replace(/\.[^.]+$/, ''))).slice(0, 5) ?? [];
+        return { output: `Dosya yok: ${path}${near.length ? `. Benzer dosyalar: ${near.join(', ')}` : ''}`, isError: true };
+      }
+      ctx.readFiles?.add(path);
+      ctx.staleFiles?.delete(path);
       const total = content.split('\n').length;
       const start = optNum(a.start_line) ?? 1;
       const end = optNum(a.end_line) ?? Math.min(total, start + 399);
       const body = numbered(content, start, end);
       const more = end < total ? `\n… (${total} satırın ${start}-${end} arası gösterildi; devamı için start_line=${end + 1})` : '';
-      return { output: `${path} (${total} satır)\n${body}${more}` };
+      return { output: `${r.note}${path} (${total} satır)\n${body}${more}` };
     },
   },
   list_dir: {
@@ -253,10 +297,14 @@ const TOOLS: Record<string, ToolDef> = {
     async run(a, ctx) {
       const path = safeRelPath(ctx.root, str(a.path, 'path'));
       const content = str(a.content, 'content');
-      const existed = ctx.overlay.read(path) !== undefined;
+      const before = ctx.overlay.read(path);
+      const blocked = guardUnread(path, ctx, 'üzerine yazmadan');
+      if (blocked) return blocked;
       ctx.overlay.write(path, content);
+      ctx.writtenFiles?.add(path);
       ctx.bus?.emitEvent('tool.write', { source: ctx.workerId, data: { path } });
-      return { output: `${existed ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)` };
+      const warn = postEditCheck(path, before, content);
+      return { output: `${before !== undefined ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)${warn ? '\n' + warn : ''}` };
     },
   },
   edit_file: {
@@ -274,17 +322,30 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      const path = safeRelPath(ctx.root, str(a.path, 'path'));
+      const r = resolveExisting(ctx, safeRelPath(ctx.root, str(a.path, 'path')));
+      const path = r.path;
       const cur = ctx.overlay.read(path);
       const oldText = str(a.old_text, 'old_text');
+      const newText = str(a.new_text, 'new_text');
       if (cur === undefined && oldText.trim()) return { output: `Dosya yok: ${path}. Yeni dosya için write_file kullanın.`, isError: true };
+      if (oldText === newText) return { output: 'old_text ve new_text aynı; değişiklik yok.', isError: true };
+      // old_text must match the real content exactly, which already proves the model knows the file
+      // (Aider SEARCH/REPLACE); only a file whose previous edit missed must be re-read first.
+      const blocked = ctx.staleFiles?.has(path) ? guardUnread(path, ctx, 'düzenlemeden') : undefined;
+      if (blocked) return blocked;
       try {
-        const next = applyReplacement(cur ?? '', oldText, str(a.new_text, 'new_text'), { replaceAll: !!a.replace_all, path });
+        const next = applyReplacement(cur ?? '', oldText, newText, { replaceAll: !!a.replace_all, path });
         ctx.overlay.write(path, next);
+        ctx.writtenFiles?.add(path);
         ctx.bus?.emitEvent('tool.edit', { source: ctx.workerId, data: { path } });
-        return { output: `Düzenlendi: ${path}` };
+        const warn = postEditCheck(path, cur, next);
+        return { output: `${r.note}Düzenlendi: ${path}${warn ? '\n' + warn : ''}` };
       } catch (e) {
-        if (e instanceof EditError) return { output: e.message, isError: true };
+        if (e instanceof EditError) {
+          // OMO edit-error-recovery: force a re-read before the next attempt
+          if (ctx.readFiles && ctx.config.tools.requireReadBeforeEdit) ctx.staleFiles?.add(path);
+          return { output: `${e.message}\nÖnce dosyayı read_file ile yeniden okuyun; varsayımınız dosyanın gerçek içeriğiyle uyuşmuyor.`, isError: true };
+        }
         throw e;
       }
     },
@@ -298,7 +359,10 @@ const TOOLS: Record<string, ToolDef> = {
     async run(a, ctx) {
       const path = safeRelPath(ctx.root, str(a.path, 'path'));
       if (ctx.overlay.read(path) === undefined) return { output: `Dosya yok: ${path}`, isError: true };
+      const blocked = guardUnread(path, ctx, 'silmeden');
+      if (blocked) return blocked;
       ctx.overlay.delete(path);
+      ctx.writtenFiles?.add(path);
       return { output: `Silindi: ${path}` };
     },
   },
@@ -325,6 +389,45 @@ const TOOLS: Record<string, ToolDef> = {
       return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(r.output, 12_000)}`, isError: r.code !== 0 };
     },
   },
+  skill: {
+    readOnly: true,
+    spec: {
+      type: 'function',
+      function: {
+        name: 'skill',
+        description: 'Load a project skill (specialised procedure) by name and follow its instructions. Call it BEFORE doing work that matches a skill description.',
+        parameters: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'string', description: 'optional arguments for the skill' } }, required: ['name'] },
+      },
+    },
+    async run(a, ctx) {
+      const reg = ctx.skills;
+      if (!reg || reg.size === 0) return { output: 'Bu projede skill yok.', isError: true };
+      const s = reg.get(str(a.name, 'name'));
+      const available = reg.visible().map((x) => x.name).join(', ') || '-';
+      if (!s) return { output: `Skill bulunamadı: ${a.name}. Mevcut skill'ler: ${available}`, isError: true };
+      if (s.hidden && !ctx.explicitSkills?.has(s.name)) return { output: `"${s.name}" yalnızca kullanıcı açıkça seçtiğinde kullanılabilir.`, isError: true };
+      if (ctx.loadedSkills?.has(s.name)) return { output: `"${s.name}" zaten yüklü; talimatlarını izlemeye devam edin.` };
+      ctx.loadedSkills?.add(s.name);
+      ctx.bus?.emitEvent('skill.load', { source: ctx.workerId, data: { name: s.name, how: 'tool' } });
+      return { output: reg.render(s, typeof a.args === 'string' ? a.args : undefined) };
+    },
+  },
+  skill_file: {
+    readOnly: true,
+    spec: {
+      type: 'function',
+      function: {
+        name: 'skill_file',
+        description: 'Read a supporting file (references/, scripts/, assets/ …) that belongs to a skill.',
+        parameters: { type: 'object', properties: { name: { type: 'string' }, path: { type: 'string' } }, required: ['name', 'path'] },
+      },
+    },
+    async run(a, ctx) {
+      const s = ctx.skills?.get(str(a.name, 'name'));
+      if (!s) return { output: `Skill bulunamadı: ${a.name}`, isError: true };
+      return { output: `${s.name}/${a.path}\n${ctx.skills!.readFile(s, str(a.path, 'path'))}` };
+    },
+  },
   finish: {
     readOnly: true,
     spec: {
@@ -345,9 +448,10 @@ const TOOLS: Record<string, ToolDef> = {
 export const READ_ONLY_TOOLS = Object.entries(TOOLS).filter(([, t]) => t.readOnly).map(([n]) => n);
 export const ALL_TOOLS = Object.keys(TOOLS);
 
-export function toolSpecs(allowed?: Set<string>): ToolSpec[] {
+export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean } = {}): ToolSpec[] {
   return Object.entries(TOOLS)
     .filter(([n]) => !allowed || allowed.has(n))
+    .filter(([n]) => opts.skills !== false || (n !== 'skill' && n !== 'skill_file'))
     .map(([, t]) => t.spec);
 }
 
@@ -363,8 +467,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 }
 
 /** Human-readable tool catalogue for prompt-based tool calling. */
-export function toolCatalogue(allowed?: Set<string>): string {
-  return toolSpecs(allowed)
+export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean } = {}): string {
+  return toolSpecs(allowed, opts)
     .map((s) => {
       const props = (s.function.parameters as { properties?: Record<string, { type?: string }>; required?: string[] }).properties ?? {};
       const req = new Set((s.function.parameters as { required?: string[] }).required ?? []);

@@ -66,6 +66,8 @@ export class LlmError extends Error {
     readonly kind: LlmErrorKind,
     readonly status?: number,
     readonly model?: string,
+    /** server-requested wait (Retry-After header), ms */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'LlmError';

@@ -52,6 +52,8 @@ export interface OrchestratorConfig {
   /** plan → execute → verify → requirement-check loops */
   maxIterations: number;
   maxStepsPerWorker: number;
+  /** stop a worker after this many failing tool calls in a row */
+  maxConsecutiveErrors?: number;
   /** ask before merging results into the working tree */
   confirmMerge: boolean;
 }
@@ -67,9 +69,22 @@ export interface IndexConfig {
 
 export interface ToolsConfig {
   allowCommands: boolean;
+  /** an existing file must be read before it is edited/overwritten/deleted */
+  requireReadBeforeEdit: boolean;
   commandTimeoutMs: number;
   /** regexes; commands matching any are refused */
   denyPatterns: string[];
+}
+
+export interface SkillsConfig {
+  /** extra skill directories / files */
+  paths: string[];
+  /** skill names to ignore */
+  disabled: string[];
+  /** also read ~/.kurultay/skills, ~/.agents/skills, ~/.claude/skills */
+  includeUser: boolean;
+  /** max skills preloaded per worker (explicit selections not counted) */
+  maxPreload: number;
 }
 
 export interface KurultayConfig {
@@ -79,6 +94,7 @@ export interface KurultayConfig {
   orchestrator: OrchestratorConfig;
   index: IndexConfig;
   tools: ToolsConfig;
+  skills: SkillsConfig;
   /** UI language */
   language: 'tr' | 'en';
   /** where per-project state lives (relative to project root) */
@@ -94,6 +110,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     councilSize: 3,
     maxIterations: 4,
     maxStepsPerWorker: 40,
+    maxConsecutiveErrors: 6,
     confirmMerge: false,
   },
   index: {
@@ -105,6 +122,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
   },
   tools: {
     allowCommands: true,
+    requireReadBeforeEdit: true,
     commandTimeoutMs: 10 * 60_000,
     denyPatterns: [
       '\\brm\\s+-rf\\s+/(\\s|$)',
@@ -117,6 +135,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
       '\\bcurl\\b[^|]*\\|\\s*(ba)?sh',
     ],
   },
+  skills: { paths: [], disabled: [], includeUser: true, maxPreload: 3 },
   language: 'tr',
   stateDir: '.kurultay',
 };

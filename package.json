@@ -27,7 +27,7 @@
     "test:integration": "npm run build && node scripts/run-tests.mjs integration",
     "test:cli": "npm run build && node scripts/run-tests.mjs cli",
     "test:package": "npm run build && node scripts/run-tests.mjs package",
-    "test:coverage": "npm run build && node scripts/run-tests.mjs all --coverage --min-lines=95 --min-branches=85 --min-functions=93",
+    "test:coverage": "npm run build && node scripts/run-tests.mjs all --coverage --min-lines=96 --min-branches=88 --min-functions=94",
     "mock": "node dist/src/mock/server.js",
     "pack:offline": "npm run build && node scripts/pack-offline.mjs"
   },

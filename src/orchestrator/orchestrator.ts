@@ -2,11 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { KurultayConfig, RunMode } from '../config.js';
 import { diffStat } from '../agent/diff.js';
-import { loadProjectRules, renderRules, selectRules, selectSkills, type ProjectRules } from '../agent/rules.js';
+import { loadProjectRules, renderRules, selectRules, type ProjectRules } from '../agent/rules.js';
 import { AgentWorker, type WorkerResult } from '../agent/worker.js';
 import { Overlay, type Materializer, type MergeReport } from '../agent/workspace.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
+import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateTokens, tryExtractJson } from '../util/text.js';
@@ -24,6 +25,17 @@ export interface RunOptions {
   confirm?: (summary: string) => Promise<boolean>;
   signal?: AbortSignal;
   sessionId?: string;
+  /** skills the user selected explicitly (--skill); `$name` in the task text works too */
+  skills?: string[];
+  /** use this registry instead of discovering skills (tests / embedding) */
+  skillRegistry?: SkillRegistry;
+}
+
+export interface SkillUsage {
+  name: string;
+  worker: string;
+  how: 'preload' | 'tool';
+  reason?: string;
 }
 
 export interface SubtaskReport {
@@ -52,6 +64,7 @@ export interface RunReport {
   iterations: number;
   status: 'completed' | 'incomplete' | 'failed' | 'dry-run';
   modelsUsed: string[];
+  skills: { available: number; used: SkillUsage[]; diagnostics: SkillDiagnostic[] };
 }
 
 interface Winner {
@@ -68,6 +81,9 @@ export function focusTerms(text: string): { identifiers: string[]; files: string
 
 export class Orchestrator {
   private rules!: ProjectRules;
+  private skills: SkillRegistry = SkillRegistry.empty();
+  private explicitSkills: string[] = [];
+  private readonly skillUsage: SkillUsage[] = [];
   private readonly used = new Set<string>();
   private sessionDir = '';
 
@@ -103,10 +119,10 @@ export class Orchestrator {
       parts.push(`# REPO MAP (most relevant files and their definitions)\n${map}`);
       if (hits.length) parts.push(`# FILES MATCHING THE TASK (search)\n${[...new Set(hits)].map((h) => `- ${h}`).join('\n')}`);
     }
+    const notes = join(this.stateDir, 'PROJECT_NOTES.md');
+    if (existsSync(notes)) parts.push(`# PROJECT NOTES (stack, commands, conventions)\n${truncateTokens(readFileSync(notes, 'utf8'), Math.floor(budget * 0.2))}`);
     const rules = renderRules(selectRules(this.rules.rules, files), 'PROJECT RULES (must follow)');
     if (rules) parts.push(truncateTokens(rules, Math.floor(budget * 0.25)));
-    const skills = selectSkills(this.rules.skills, text);
-    if (skills.length) parts.push(truncateTokens(renderRules(skills, 'RELEVANT SKILLS / PROCEDURES'), Math.floor(budget * 0.2)));
     return parts.join('\n\n');
   }
 
@@ -130,7 +146,14 @@ export class Orchestrator {
     this.bus.attachLog(join(this.sessionDir, 'events.jsonl'));
     const restored = this.materializer.recover();
     if (restored.length) this.bus.warn('orchestrator', `önceki yarım kalan çalışmadan ${restored.length} dosya geri yüklendi`);
-    this.rules = loadProjectRules(this.root, this.stateDir);
+    const nested = this.index?.files.map((f) => f.path).filter((p) => /(^|\/)(AGENTS|CLAUDE)\.md$/i.test(p) && p.includes('/')) ?? [];
+    this.rules = loadProjectRules(this.root, this.stateDir, nested);
+    this.skills =
+      opts.skillRegistry ??
+      SkillRegistry.discover(this.root, { extraPaths: this.cfg.skills.paths, disabled: this.cfg.skills.disabled, includeUser: this.cfg.skills.includeUser });
+    this.explicitSkills = [...(opts.skills ?? []), ...this.skills.mentioned(task).map((s) => s.name)];
+    for (const n of opts.skills ?? []) if (!this.skills.get(n)) this.bus.warn('skills', `istenen skill bulunamadı: ${n}`);
+    if (this.skills.size) this.bus.info('skills', `${this.skills.size} skill bulundu${this.explicitSkills.length ? `; seçilen: ${this.explicitSkills.join(', ')}` : ''}`);
 
     const fullTask = opts.requirements ? `${task}\n\n# REQUIREMENTS DOCUMENT\n${opts.requirements}` : task;
     this.bus.emitEvent('run.start', { message: task, data: { sessionId, models: this.router.size } });
@@ -142,6 +165,7 @@ export class Orchestrator {
       contextTokens: this.contextBudget(0.45),
       bus: this.bus,
       signal: opts.signal,
+      skillCatalogue: this.skills.catalogue(),
     });
     plan.authors.forEach((a) => this.used.add(a.replace(/ \(.*$/, '')));
     const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, plan);
@@ -228,6 +252,7 @@ export class Orchestrator {
       iterations: iteration,
       status,
       modelsUsed: [...this.used],
+      skills: { available: this.skills.size, used: [...this.skillUsage], diagnostics: this.skills.diagnostics },
     };
     this.persist(sessionId, task, plan, integration, reports);
     writeFileSync(report.reportPath, renderReport(report, diff));
@@ -280,6 +305,22 @@ export class Orchestrator {
     }
   }
 
+  /** Skill selection for one subtask: explicit > always > keyword > planner choice; lexical → recommended. */
+  private skillsFor(st: SubTask, fullTask: string) {
+    const sel = selectSkillsFor(this.skills, {
+      text: `${fullTask}\n${st.title}\n${st.description}`,
+      files: st.files,
+      explicit: this.explicitSkills,
+      planned: st.skills,
+      maxPreload: this.cfg.skills.maxPreload,
+    });
+    return { registry: this.skills, preload: sel.preload, recommended: sel.recommended, explicit: new Set(this.explicitSkills), files: st.files.length ? st.files : undefined, reasons: sel.reasons };
+  }
+
+  private recordSkills(worker: string, r: WorkerResult, reasons: Record<string, string>): void {
+    for (const s of r.skills) this.skillUsage.push({ name: s.name, worker, how: s.how, reason: s.how === 'preload' ? reasons[s.name] : 'model istedi' });
+  }
+
   private workerTask(st: SubTask, plan: Plan, fullTask: string): string {
     return `Overall goal: ${fullTask}
 ${plan.understanding ? `\nPlan summary: ${plan.understanding}\n` : ''}
@@ -293,6 +334,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
     const width = this.widthFor(mode, st);
     const models = this.router.pick('coder', width);
     const context = this.buildContext(`${st.title}\n${st.description}`, st.files);
+    const workerSkills = this.skillsFor(st, fullTask);
     const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed' };
     this.bus.emitEvent('subtask.start', { source: st.id, data: { title: st.title, models: models.map((m) => m.caps.key) } });
 
@@ -301,13 +343,14 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
         modelKeys.map(async (mk, i) => {
           const overlay = integration.fork(`${st.id}${suffix}-${i + 1}`);
           const w = new AgentWorker(
-            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context, model: mk, overlay },
+            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context, model: mk, overlay, skills: workerSkills },
             this.router,
             this.cfg,
             { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal },
           );
           const result = await w.run();
           result.models.forEach((m) => this.used.add(m));
+          this.recordSkills(overlay.id, result, workerSkills.reasons);
           return { overlay, result } as Winner;
         }),
       );
@@ -395,6 +438,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
           model: winner.result.models[0] ?? models[0]?.caps.key ?? '',
           overlay: fixOverlay,
           maxSteps: Math.ceil(this.cfg.orchestrator.maxStepsPerWorker * 0.6),
+          skills: workerSkills,
         },
         this.router,
         this.cfg,
@@ -402,6 +446,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
       );
       const fr = await fixer.run();
       fr.models.forEach((m) => this.used.add(m));
+      this.recordSkills(fixOverlay.id, fr, workerSkills.reasons);
       report.fixes++;
       if (fixOverlay.ownChanges().length === 0) break;
       const fv = await verifyOverlay(fixOverlay, this.materializer, this.cfg, signal);
@@ -506,6 +551,14 @@ export function renderReport(r: RunReport, diff: string): string {
   if (r.merge) {
     lines.push('## Projeye uygulama', '', `Yazılan: ${r.merge.written.length}, silinen: ${r.merge.deleted.length}, 3-yollu birleştirme: ${r.merge.merged3way.length}, çakışma: ${r.merge.conflicts.length}`);
     if (r.merge.conflicts.length) lines.push('', 'Çakışan dosyalar (işaretleri elle çözün):', ...r.merge.conflicts.map((c) => `- ${c}`));
+    lines.push('');
+  }
+  if (r.skills && (r.skills.used.length || r.skills.available)) {
+    lines.push("## Skill'ler", '', `Bulunan: ${r.skills.available}`);
+    if (r.skills.used.length) {
+      lines.push('', '| Skill | Çalışan | Nasıl | Neden |', '|---|---|---|---|', ...r.skills.used.map((u) => `| ${u.name} | ${u.worker} | ${u.how === 'preload' ? 'baştan yüklendi' : 'model yükledi'} | ${u.reason ?? '-'} |`));
+    } else lines.push('', 'Bu çalışmada skill kullanılmadı.');
+    if (r.skills.diagnostics.length) lines.push('', 'Uyarılar:', ...r.skills.diagnostics.map((d) => `- ${d.path}: ${d.message}`));
     lines.push('');
   }
   lines.push('## Değişiklikler', '', `Tam diff: \`${r.diffPath}\``, '');

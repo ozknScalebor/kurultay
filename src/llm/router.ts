@@ -285,7 +285,9 @@ export class Router {
         this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt } });
         if (!err.retryable || attempt === attempts) throw err;
         const backoff = Math.min(30_000, retryBaseMs * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
-        await sleep(err.kind === 'rate_limit' ? backoff * 2 : backoff, req.signal);
+        // honour Retry-After (OpenCode model-retry), but never wait more than 5 minutes per attempt
+        const wait = err.retryAfterMs !== undefined ? Math.min(5 * 60_000, Math.max(backoff, err.retryAfterMs)) : err.kind === 'rate_limit' ? backoff * 2 : backoff;
+        await sleep(wait, req.signal);
       } finally {
         slots.release();
       }

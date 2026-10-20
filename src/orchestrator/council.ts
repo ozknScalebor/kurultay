@@ -31,6 +31,18 @@ export interface CouncilVerdict {
 
 const LABELS = 'ABCDEFGHIJ';
 
+/** Parse "FINAL RANKING:\n1. Candidate B\n2. A" style text (karpathy/llm-council). */
+export function parseTextRanking(text: string, n: number): string[] {
+  const valid = LABELS.slice(0, Math.max(1, n));
+  const idx = text.search(/FINAL RANKING\s*:/i);
+  const tail = idx >= 0 ? text.slice(idx) : text;
+  const out: string[] = [];
+  const numbered = [...tail.matchAll(/^\s*\d+[.)]\s*(?:candidate|response|aday)?\s*["'(<]?([A-J])\b/gim)].map((m) => m[1].toUpperCase());
+  const loose = idx >= 0 && !numbered.length ? [...tail.matchAll(/\b(?:candidate|response|aday)\s+([A-J])\b/gi)].map((m) => m[1].toUpperCase()) : [];
+  for (const l of numbered.length ? numbered : loose) if (valid.includes(l) && !out.includes(l)) out.push(l);
+  return out;
+}
+
 /**
  * Karpathy-style LLM council for code: every reviewer sees all candidate diffs
  * ANONYMISED (A, B, C…), ranks them and lists issues; Borda points are combined
@@ -66,6 +78,13 @@ export async function councilReview(
     })
     .join('\n\n');
   const prompt = `You are a strict senior code reviewer in a review council. Several independent engineers implemented the same task. Evaluate each candidate for correctness, completeness against the acceptance criteria, safety (memory, concurrency, error handling), minimality and consistency with the codebase.
+
+What counts as an issue (Codex review rubric):
+- It is INTRODUCED by the candidate's diff (not pre-existing), discrete and actionable.
+- It meaningfully affects correctness, safety, performance or maintainability – no style nits.
+- Its impact is provable from the code shown; do not speculate about code you cannot see.
+- Give each issue a priority: 0 = must never merge (breaks build/behaviour), 1 = serious bug, 2 = normal, 3 = minor; and a confidence 0.0-1.0.
+- Prefer no issues over speculative ones.
 ${args.reviewRules ? `\nProject review rules (mandatory):\n${args.reviewRules}\n` : ''}
 # TASK
 ${args.task}
@@ -73,8 +92,8 @@ ${args.acceptance.length ? `\n# ACCEPTANCE CRITERIA\n${args.acceptance.map((a) =
 ${body}
 
 Return ONLY JSON:
-{"ranking": ["best id first", ...], "scores": {"A": 0-10, ...}, "issues": {"A": [{"text": "...", "blocking": true|false}], ...}}
-"blocking" means the change must not be merged as-is.`;
+{"ranking": ["best id first", ...], "scores": {"A": 0-10, ...}, "issues": {"A": [{"text": "...", "priority": 0-3, "confidence": 0.0-1.0}], ...}}
+If you cannot produce JSON, write your evaluation and end with a line "FINAL RANKING:" followed by a numbered list such as "1. Candidate B".`;
 
   const authors = new Set(candidates.map((c) => c.author));
   // prefer reviewers that did not author a candidate; fill up with authors (anonymity still holds)
@@ -93,8 +112,13 @@ Return ONLY JSON:
       args.bus?.warn('council', `inceleme başarısız: ${errorMessage(r.error)}`);
       continue;
     }
-    const j = tryExtractJson<{ ranking?: string[]; scores?: Record<string, number>; issues?: Record<string, Array<{ text?: string; blocking?: boolean } | string>> }>(r.value.content);
-    if (!j) continue;
+    let j = tryExtractJson<{ ranking?: string[]; scores?: Record<string, number>; issues?: Record<string, Array<{ text?: string; blocking?: boolean; priority?: number; confidence?: number } | string>> }>(r.value.content);
+    if (!j || !Array.isArray(j.ranking)) {
+      // llm-council fallback: plain-text "FINAL RANKING:" list
+      const ranking = parseTextRanking(r.value.content, shuffled.length);
+      if (!ranking.length) continue;
+      j = { ranking, scores: {}, issues: {} };
+    }
     const toId = (label: string) => byLabel.get(String(label).trim().toUpperCase().replace(/[^A-J]/g, ''))?.id;
     const ranking = (j.ranking ?? []).map(toId).filter((x): x is string => !!x);
     const scores: Record<string, number> = {};
@@ -106,7 +130,17 @@ Return ONLY JSON:
     for (const [k, list] of Object.entries(j.issues ?? {})) {
       const id = toId(k);
       if (!id || !Array.isArray(list)) continue;
-      issues[id] = list.map((x) => (typeof x === 'string' ? { text: x, blocking: false } : { text: x.text ?? '', blocking: !!x.blocking })).filter((x) => x.text);
+      issues[id] = list
+        .map((x) =>
+          typeof x === 'string'
+            ? { text: x, blocking: false }
+            : {
+                text: `${typeof x.priority === 'number' ? `[P${x.priority}] ` : ''}${x.text ?? ''}`,
+                // P0/P1 with reasonable confidence block the merge
+                blocking: !!x.blocking || (typeof x.priority === 'number' && x.priority <= 1 && (typeof x.confidence !== 'number' || x.confidence >= 0.5)),
+              },
+        )
+        .filter((x) => x.text.trim());
     }
     reviews.push({ reviewer: r.value.model, ranking, scores, issues });
   }
