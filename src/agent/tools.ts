@@ -54,7 +54,10 @@ function numbered(content: string, start: number, end: number): string {
 export function runShell(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     const isWin = process.platform === 'win32';
-    const child = spawn(isWin ? 'cmd.exe' : 'bash', isWin ? ['/d', '/s', '/c', command] : ['-lc', command], {
+    // On Windows let Node build the cmd.exe invocation itself (correct quoting of the whole command line)
+    const child = spawn(isWin ? command : 'bash', isWin ? [] : ['-lc', command], {
+      shell: isWin ? true : false,
+      windowsHide: true,
       cwd,
       env: { ...process.env, CI: '1', TERM: 'dumb', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],

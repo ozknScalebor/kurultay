@@ -5,6 +5,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [20, 22]
@@ -15,4 +16,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
-      - run: npm test
+      - run: npm run build
+      - name: test
+        shell: bash
+        run: |
+          node --test --test-reporter=tap dist/test/unit.test.js dist/test/e2e.test.js > tap.txt 2>&1 && status=0 || status=$?
+          cat tap.txt
+          if [ "$status" != "0" ]; then node scripts/gh-annotate.mjs tap.txt; exit 1; fi
