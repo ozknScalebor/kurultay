@@ -26,7 +26,9 @@ export function tmpProject(files: Record<string, string>, opts: { git?: boolean;
 }
 
 export function config(raw: Record<string, unknown>): KurultayConfig {
-  return parseConfig(raw);
+  // tests must not pick up skills from the developer's home directory
+  const skills = { includeUser: false, ...((raw.skills as Record<string, unknown> | undefined) ?? {}) };
+  return parseConfig({ ...raw, skills });
 }
 
 /** Capabilities with sensible test defaults; override anything. */

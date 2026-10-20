@@ -111,7 +111,11 @@ export function tryExtractJson<T = unknown>(text: string): T | undefined {
 
 export function slug(s: string): string {
   return s
+    .replace(/İ/g, 'i')
+    .replace(/ı/g, 'i')
     .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'x';

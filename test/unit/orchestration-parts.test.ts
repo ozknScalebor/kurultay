@@ -185,6 +185,7 @@ describe('orchestrator helpers', () => {
         sessionId: 's', sessionDir: '/x', task: 'T', mode: 'race', iterations: 2, status: 'incomplete', modelsUsed: ['a@e'], changedFiles: ['f.c'], diffPath: '/x/changes.diff', reportPath: '/x/REPORT.md',
         plan: { understanding: 'u', acceptance: ['c1'], subtasks: [], authors: ['a@e'] },
         subtasks: [{ subtask: { id: 'T1', title: 'one', description: '', files: [], dependsOn: [], critical: true }, iteration: 1, candidates: [{ worker: 'T1-1', models: ['a@e'], status: 'done', files: 1, verify: 'geçti', summary: '' }], winner: { worker: 'T1-1', models: ['a@e'] }, verdict: { ranking: [{ id: 'T1-1', author: 'a@e', points: 9 }], winnerIssues: [{ reviewer: 'b@e', text: 'leak', blocking: true }] }, fixes: 1, status: 'done' }],
+        skills: { available: 2, used: [{ name: 'driver', worker: 'w1', how: 'preload', reason: 'keyword' }], diagnostics: [] },
         requirementCheck: { complete: false, missing: ['add docs'], judges: ['b@e'] },
         merge: { written: ['f.c'], deleted: [], merged3way: [], conflicts: ['g.c'] },
       },

@@ -19,7 +19,7 @@ interface Result {
 /** Run the real CLI asynchronously (the mock server lives in this process). */
 function cli(args: string[], cwd: string, env: Record<string, string> = {}): Promise<Result> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...process.env, NO_COLOR: '1', ...env }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...process.env, NO_COLOR: '1', HOME: cwd, USERPROFILE: cwd, ...env }, timeout: 120_000 }, (err, stdout, stderr) => {
       const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : 1) : 0;
       resolve({ code, stdout, stderr });
     });
@@ -79,7 +79,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.equal(r.code, 0, r.stderr);
     const cfgPath = join(root, 'kurultay.config.json');
     assert.ok(existsSync(cfgPath));
-    for (const p of ['.kurultay/rules/genel.md', '.kurultay/rules/java.md', '.kurultay/skills/yeni-surucu-ekleme.md', '.kurultay/review_rules.md']) assert.ok(existsSync(join(root, p)), p);
+    for (const p of ['.kurultay/rules/genel.md', '.kurultay/rules/java.md', '.kurultay/skills/yeni-surucu-ekleme/SKILL.md', '.kurultay/skills/yeni-surucu-ekleme/references/arayuz-kurallari.md', '.kurultay/review_rules.md']) assert.ok(existsSync(join(root, p)), p);
     const again = await cli(['init'], root);
     assert.match(again.stdout, /zaten var/);
     // point the config at the mock server
@@ -113,6 +113,28 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /dosya özetlendi/);
     assert.ok(existsSync(join(root, '.kurultay', 'ARCHITECTURE.md')));
+    assert.ok(existsSync(join(root, '.kurultay', 'PROJECT_NOTES.md')));
+    assert.match(r.stdout, /1 akış dokümanı/);
+    assert.ok(existsSync(join(root, '.kurultay', 'flows', '01-ana-akis.md')));
+    assert.match(readFileSync(join(root, '.kurultay', 'ARCHITECTURE.md'), 'utf8'), /## Akış Dokümanları/);
+  });
+
+  it('skills lists, validates and scaffolds skills', async () => {
+    const list = await cli(['skills'], root);
+    assert.equal(list.code, 0, list.stderr);
+    assert.match(list.stdout, /yeni-surucu-ekleme/);
+    const made = await cli(['skills', 'new', 'log-format', '--description', 'Log satırı biçimi kuralları'], root);
+    assert.equal(made.code, 0, made.stderr);
+    assert.ok(existsSync(join(root, '.kurultay', 'skills', 'log-format', 'SKILL.md')));
+    const dup = await cli(['skills', 'new', 'log-format'], root);
+    assert.equal(dup.code, 1);
+    const bad = await cli(['skills', 'new', 'Bad Name'], root);
+    assert.equal(bad.code, 1);
+    writeFileSync(join(root, '.kurultay', 'skills', 'log-format', 'SKILL.md'), '---\nname: log-format\n---\nno description');
+    const broken = await cli(['skills'], root);
+    assert.equal(broken.code, 1);
+    assert.match(broken.stdout + broken.stderr, /description/);
+    writeFileSync(join(root, '.kurultay', 'skills', 'log-format', 'SKILL.md'), '---\nname: log-format\ndescription: Log satırı biçimi\n---\nKULLAN-LOG-777');
   });
 
   it('status shows models, index and sessions', async () => {
@@ -146,6 +168,13 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     const before = mock.log.length;
     await cli(['run', 'Implement clamp', '--req', 'req.md', '--dry-run', '--mode', 'single'], root);
     assert.ok(mock.log.slice(before).some((l) => JSON.stringify(l.body).includes('REQ-CLI-777')));
+  });
+
+  it('run --skill preloads the named skill into the worker prompt', async () => {
+    const before = mock.log.length;
+    const r = await cli(['run', 'Implement clamp in src/mathutil.js', '--skill', 'log-format,olmayan', '--dry-run', '--mode', 'single'], root);
+    assert.match(r.stderr + r.stdout, /olmayan/);
+    assert.ok(mock.log.slice(before).some((l) => JSON.stringify(l.body).includes('KULLAN-LOG-777')));
   });
 
   it('ask answers through the council', async () => {
