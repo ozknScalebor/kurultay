@@ -166,44 +166,46 @@ function cLike(clean: string, raw: string, lang: string): SymbolDef[] {
   const macroRe = /^\s*#\s*define\s+([A-Za-z_]\w*)/;
   const typedefRe = /^\s*typedef\s+.*?\b([A-Za-z_]\w*)\s*;\s*$/;
   const usingRe = /^\s*using\s+([A-Za-z_]\w*)\s*=/;
-  const scope: string[] = [];
+  // class/struct scope tracked by brace depth so members get the right parent
+  const scope: Array<{ name: string; depth: number }> = [];
+  let depth = 0;
   let typedefOpen = false;
-  for (let i = 0; i < lines.length; i++) {
+  const handle = (i: number): void => {
     const l = lines[i];
     let m: RegExpMatchArray | null;
     if (/^\s*typedef\s+(struct|enum|union)\b[^;]*$/.test(l)) typedefOpen = true;
     if (typedefOpen && (m = l.match(/^\s*\}\s*(?:\*\s*)?([A-Za-z_]\w*)\s*(?:,[^;]*)?;/))) {
       defs.push({ name: m[1], kind: 'type', line: i + 1, signature: `typedef … ${m[1]}` });
       typedefOpen = false;
-      continue;
+      return;
     }
     // K&R / GNU style: return type on the previous line, name at column 0, "{" on next line
     if ((m = l.match(/^([A-Za-z_]\w*)\s*\(([^;]*)\)\s*$/)) && /^\s*\{/.test(lines[i + 1] ?? '') && !CONTROL.test(m[1])) {
       const prev = (lines[i - 1] ?? '').trim();
       if (prev && /^[\w\s*]+$/.test(prev) && !/;$/.test(prev)) {
         defs.push({ name: m[1], kind: 'function', line: i + 1, signature: sig(`${rawLines[i - 1].trim()} ${rawLines[i]}`) });
-        continue;
+        return;
       }
     }
     if ((m = l.match(macroRe))) {
       defs.push({ name: m[1], kind: 'macro', line: i + 1, signature: sig(rawLines[i]) });
-      continue;
+      return;
     }
     if ((m = l.match(typeRe))) {
       const kw = m[1];
       const kind: DefKind = kw === 'namespace' ? 'namespace' : kw.startsWith('enum') ? 'enum' : kw === 'class' ? 'class' : 'struct';
       // forward declarations like "class Foo;" are skipped by the regex end anchor
       defs.push({ name: m[2], kind, line: i + 1, signature: sig(rawLines[i]) });
-      if (kind === 'class' || kind === 'struct') scope.push(m[2]);
-      continue;
+      if (kind === 'class' || kind === 'struct') scope.push({ name: m[2], depth });
+      return;
     }
     if ((m = l.match(typedefRe)) && !/\(/.test(l)) {
       defs.push({ name: m[1], kind: 'type', line: i + 1, signature: sig(rawLines[i]) });
-      continue;
+      return;
     }
     if (lang === 'cpp' && (m = l.match(usingRe))) {
       defs.push({ name: m[1], kind: 'type', line: i + 1, signature: sig(rawLines[i]) });
-      continue;
+      return;
     }
     // function definitions: "<type> name(args) [const] {" possibly with "{" on the next line
     const joined = l + ' ' + (lines[i + 1] ?? '');
@@ -211,14 +213,24 @@ function cLike(clean: string, raw: string, lang: string): SymbolDef[] {
     if (fm && !/^\s*(?:return|else|case|#)/.test(l) && !/[=;]\s*$/.test(l.trim())) {
       const name = fm[1];
       const bare = name.split('::').pop()!.replace('~', '');
-      if (CONTROL.test(bare) || KEYWORDS.has(bare) && bare !== 'main') continue;
+      if (CONTROL.test(bare) || KEYWORDS.has(bare) && bare !== 'main') return;
       // must be a definition: body opens on this or next line, and not a call statement
       const opensBody = /\)\s*(?:const)?\s*(?:noexcept)?\s*(?:override|final)?\s*(?:->[^{;]*)?\s*(?::[^;{]*)?\{/.test(joined) || (/\)\s*(?:const)?\s*$/.test(l.trim()) && /^\s*\{/.test(lines[i + 1] ?? ''));
       const hasReturnType = /^[\t ]*[\w:<>,*&~]+[\s*&]+[\w:~]/.test(l) || name.includes('::');
-      if (!opensBody || (!hasReturnType && lang === 'c')) continue;
-      const parent = name.includes('::') ? name.split('::').slice(-2, -1)[0] : scope[scope.length - 1];
+      if (!opensBody || (!hasReturnType && lang === 'c')) return;
+      const parent = name.includes('::') ? name.split('::').slice(-2, -1)[0] : scope[scope.length - 1]?.name;
       defs.push({ name: bare, kind: name.includes('::') || (lang === 'cpp' && parent && /^\s{2,}/.test(l)) ? 'method' : 'function', line: i + 1, signature: sig(rawLines[i] + (opensBody && !/\{/.test(rawLines[i]) ? '' : '')), parent });
     }
+    };
+  for (let i = 0; i < lines.length; i++) {
+    handle(i);
+    for (const ch of lines[i]) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth = Math.max(0, depth - 1);
+    }
+    // a scope ends once we are back at (or above) the depth where it was declared
+    // – but not on the declaration line itself before its body opened
+    while (scope.length && depth <= scope[scope.length - 1].depth && /\}/.test(lines[i])) scope.pop();
   }
   return defs;
 }
@@ -228,7 +240,7 @@ function javaLike(clean: string, raw: string): SymbolDef[] {
   const lines = clean.split('\n');
   const rawLines = raw.split('\n');
   const typeRe = /\b(class|interface|enum|record|struct|object|trait)\s+([A-Z_a-z]\w*)/;
-  const methodRe = /^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|internal|static|final|abstract|synchronized|native|override|virtual|async|default|sealed|open|suspend|inline|operator|partial|extern|unsafe|new)\s+)*(?:fun\s+|(?:<[^>]*>\s+)?[\w<>[\],.?]+(?:\s*<[^>]*>)?\s+)([a-zA-Z_]\w*)\s*\(([^;]*)\)?\s*(?:throws\s+[\w., ]+)?\s*(?::\s*[\w<>?,. ]+)?\s*(?:\{|=|$)/;
+  const methodRe = /^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|internal|static|final|abstract|synchronized|native|override|virtual|async|default|sealed|open|suspend|inline|operator|partial|extern|unsafe|new)\s+)*(?:fun\s+|(?:<(?:[^<>]|<[^<>]*>)*>\s+)?[\w<>[\],.?]+(?:\s*<(?:[^<>]|<[^<>]*>)*>)?\s+)([a-zA-Z_]\w*)\s*\(([^;]*)\)?\s*(?:throws\s+[\w., ]+)?\s*(?::\s*[\w<>?,. ]+)?\s*(?:\{|=|$)/;
   let currentClass: string | undefined;
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
@@ -244,7 +256,7 @@ function javaLike(clean: string, raw: string): SymbolDef[] {
     if (m && !CONTROL.test(m[1]) && !KEYWORDS.has(m[1]) && !/^\s*(new|else|throw)\b/.test(l) && !/\.\s*\w+\s*\(/.test(l.split('(')[0])) {
       // require body start on this line or the next
       const next = lines[i + 1] ?? '';
-      if (/[{=]\s*$/.test(l.trim()) || /\)\s*$/.test(l.trim()) && /^\s*\{/.test(next) || /\)\s*(throws[^{]*)?\{/.test(l) || /;\s*$/.test(l.trim()) && /\babstract\b|^\s*(?:public\s+)?(?:default\s+)?[\w<>[\]]+\s+\w+\s*\([^)]*\)\s*;/.test(l) && !!currentClass) {
+      if (/[{=]\s*$/.test(l.trim()) || /\)\s*(?::\s*[\w<>?,. ]+)?\s*=>?\s*[^=\s]/.test(l) || /\)\s*$/.test(l.trim()) && /^\s*\{/.test(next) || /\)\s*(throws[^{]*)?\{/.test(l) || /;\s*$/.test(l.trim()) && /\babstract\b|^\s*(?:public\s+)?(?:default\s+)?[\w<>[\]]+\s+\w+\s*\([^)]*\)\s*;/.test(l) && !!currentClass) {
         defs.push({ name: m[1], kind: currentClass ? 'method' : 'function', line: i + 1, signature: sig(rawLines[i]), parent: currentClass });
       }
     }

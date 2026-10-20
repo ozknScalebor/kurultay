@@ -37,6 +37,10 @@ export interface RouteOptions {
   attemptsPerModel?: number;
   /** when every model is unreachable, keep waiting up to this long for recovery (default 10 min) */
   recoveryWaitMs?: number;
+  /** base delay of the exponential retry backoff (default 1000 ms) */
+  retryBaseMs?: number;
+  /** first wait between recovery rounds, doubled each round up to 60 s (default 5 s) */
+  recoveryIntervalMs?: number;
 }
 
 export interface RouterStats {
@@ -246,7 +250,7 @@ export class Router {
   }
 
   /** Call one specific model with retries (no fallback). */
-  async callModel(h: ModelHandle, req: ChatRequest, attempts = 3): Promise<ChatResult> {
+  async callModel(h: ModelHandle, req: ChatRequest, attempts = 3, retryBaseMs = 1000): Promise<ChatResult> {
     const slots = this.slotsFor(h.caps.endpoint);
     let lastErr: LlmError | undefined;
     for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -280,7 +284,7 @@ export class Router {
         this.onFailure(h, err);
         this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt } });
         if (!err.retryable || attempt === attempts) throw err;
-        const backoff = Math.min(30_000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
+        const backoff = Math.min(30_000, retryBaseMs * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
         await sleep(err.kind === 'rate_limit' ? backoff * 2 : backoff, req.signal);
       } finally {
         slots.release();
@@ -329,7 +333,7 @@ export class Router {
       for (const h of candidates) {
         if (req.signal?.aborted) throw new LlmError('aborted', 'aborted');
         try {
-          return await this.callModel(h, req, opts.attemptsPerModel ?? 3);
+          return await this.callModel(h, req, opts.attemptsPerModel ?? 3, opts.retryBaseMs ?? 1000);
         } catch (e) {
           const err = e as LlmError;
           lastErr = err;
@@ -342,7 +346,7 @@ export class Router {
       const connectionTrouble = !lastErr || ['network', 'timeout', 'server', 'rate_limit', 'circuit_open'].includes(lastErr.kind);
       if (!connectionTrouble || Date.now() >= deadline) break;
       round++;
-      const wait = Math.min(60_000, 5000 * 2 ** Math.min(round - 1, 4));
+      const wait = Math.min(60_000, (opts.recoveryIntervalMs ?? 5000) * 2 ** Math.min(round - 1, 4), Math.max(0, deadline - Date.now()));
       this.bus?.warn('router', `Tüm modeller erişilemez durumda; ${Math.round(wait / 1000)} sn sonra tekrar denenecek`, { round });
       await sleep(wait, req.signal);
       tried.clear();

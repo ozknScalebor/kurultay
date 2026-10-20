@@ -265,10 +265,13 @@ export class ProjectIndex {
       list.push(f.path);
       groups.set(k, list);
     }
-    // split big groups one level deeper
+    // Split groups one level deeper when they are too big, or when the project is
+    // wrapped in very few top-level folders (e.g. everything under src/) so that
+    // module summaries stay meaningful.
     for (let depth = 2; depth <= 4; depth++) {
+      const wrapped = [...groups.keys()].filter((k) => k !== '').length <= 2;
       for (const [k, list] of [...groups]) {
-        if (list.length <= 60) continue;
+        if (k === '' || (list.length <= 60 && !(wrapped && list.length >= 6))) continue;
         const sub = new Map<string, string[]>();
         for (const p of list) {
           const sk = keyFor(p, depth);
