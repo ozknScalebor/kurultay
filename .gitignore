@@ -1,0 +1,6 @@
+node_modules/
+dist/
+release/
+.kurultay/
+*.log
+.DS_Store
