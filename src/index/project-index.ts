@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { readProjectFile } from '../agent/workspace.js';
 import { estimateTokens } from '../util/text.js';
 import { Bm25Index, chunkFile, type Chunk } from './bm25.js';
+import { VectorStore, chunkText, cosine, rrf, type Embedder } from './embeddings.js';
 import { buildGraph, pageRank, type Edge } from './graph.js';
 import { CODE_LANGS, scanProject, type ScanOptions } from './scanner.js';
 import { extractSymbols, type SymbolDef } from './symbols.js';
@@ -166,6 +167,80 @@ export class ProjectIndex {
     }
     this.bm25 = idx;
     return idx;
+  }
+
+  /** set when an embedding model is available (resolveEmbedder) */
+  embedder?: Embedder;
+  private vectors?: VectorStore;
+
+  private vectorStore(): VectorStore | undefined {
+    if (!this.embedder) return undefined;
+    if (!this.vectors || this.vectors.model !== this.embedder.key) this.vectors = new VectorStore(VectorStore.pathFor(this.stateDir), this.embedder.key);
+    return this.vectors;
+  }
+
+  static chunkHash(c: Pick<Chunk, 'path' | 'text'>): string {
+    return sha1(`${c.path}\n${c.text}`).slice(0, 20);
+  }
+
+  /** Embed chunks that have no vector yet (incremental); vectors of deleted chunks are dropped. */
+  async buildVectors(opts: { batch?: number; signal?: AbortSignal; onProgress?: (done: number, total: number) => void } = {}): Promise<{ embedded: number; total: number; removed: number }> {
+    const store = this.vectorStore();
+    if (!store || !this.embedder) return { embedded: 0, total: 0, removed: 0 };
+    const chunks = this.ensureBm25().all();
+    const hashes = new Set(chunks.map((c) => ProjectIndex.chunkHash(c)));
+    const removed = store.retain(hashes);
+    const todo = [...new Map(chunks.map((c) => [ProjectIndex.chunkHash(c), c])).entries()].filter(([h]) => !store.has(h));
+    const batch = Math.max(1, opts.batch ?? 32);
+    let done = 0;
+    try {
+      for (let i = 0; i < todo.length; i += batch) {
+        const part = todo.slice(i, i + batch);
+        const vecs = await this.embedder.embed(part.map(([, c]) => chunkText(c)), opts.signal);
+        part.forEach(([h], j) => store.set(h, vecs[j]));
+        done += part.length;
+        opts.onProgress?.(done, todo.length);
+        if (done % (batch * 20) === 0) store.save(); // keep progress on long first runs
+      }
+    } finally {
+      store.save();
+    }
+    return { embedded: done, total: hashes.size, removed };
+  }
+
+  /** How many chunks have vectors (0 without an embedding model). */
+  get vectorCount(): number {
+    return this.vectorStore()?.size ?? 0;
+  }
+
+  /**
+   * BM25 + embeddings fused with Reciprocal Rank Fusion. Falls back to BM25
+   * when there is no embedding model, no vectors, or the model is unreachable.
+   */
+  async hybridSearch(query: string, limit = 8, pathFilter?: string, signal?: AbortSignal): Promise<Array<Chunk & { score: number }>> {
+    const lexical = this.search(query, Math.max(limit * 4, 30), pathFilter);
+    const store = this.vectorStore();
+    if (!store || !store.size || !this.embedder) return lexical.slice(0, limit);
+    let q: Float32Array;
+    try {
+      [q] = await this.embedder.embed([query.slice(0, 4000)], signal);
+    } catch {
+      return lexical.slice(0, limit);
+    }
+    const re = pathFilter ? new RegExp(pathFilter.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')) : undefined;
+    const semantic = this.ensureBm25()
+      .all()
+      .filter((c) => !re || re.test(c.path))
+      .map((c) => {
+        const v = store.get(ProjectIndex.chunkHash(c));
+        return { ...c, score: v ? cosine(q, v) : -1 };
+      })
+      .filter((c) => c.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(limit * 4, 30));
+    return rrf([lexical, semantic], (c) => String(c.id))
+      .slice(0, limit)
+      .map(({ item, score }) => ({ ...item, score }));
   }
 
   search(query: string, limit = 8, pathFilter?: string): Array<Chunk & { score: number }> {

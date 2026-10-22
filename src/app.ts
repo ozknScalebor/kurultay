@@ -2,6 +2,8 @@ import { join, resolve } from 'node:path';
 import { kurultayHome, loadConfig, type KurultayConfig } from './config.js';
 import { Materializer } from './agent/workspace.js';
 import { ProjectIndex } from './index/project-index.js';
+import { resolveEmbedder } from './index/embeddings.js';
+import { errorMessage } from './util/async.js';
 import { readCapabilitiesFile } from './llm/models.js';
 import { Router } from './llm/router.js';
 import { ModelStats } from './llm/stats.js';
@@ -46,6 +48,23 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
     router.register(await router.discover(opts.discoverTimeoutMs ? AbortSignal.timeout(opts.discoverTimeoutMs) : undefined));
   }
   return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir, { isolation: config.tools.isolation, sandbox: config.tools.sandbox }), probed };
+}
+
+/**
+ * Semantic retrieval: find the embedding model and embed new/changed chunks
+ * (incremental). Without an embedding model search stays BM25-only.
+ */
+export async function prepareRetrieval(app: App, index: ProjectIndex, opts: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void } = {}): Promise<{ model?: string; embedded: number; vectors: number; error?: string }> {
+  index.embedder ??= await resolveEmbedder(app.config, app.bus, opts.signal);
+  if (!index.embedder) return { embedded: 0, vectors: 0 };
+  try {
+    const r = await index.buildVectors({ signal: opts.signal, onProgress: opts.onProgress });
+    return { model: index.embedder.key, embedded: r.embedded, vectors: index.vectorCount };
+  } catch (e) {
+    const error = errorMessage(e);
+    app.bus.warn('embeddings', `vektörler oluşturulamadı (${error}); arama BM25 ile devam ediyor`);
+    return { model: index.embedder.key, embedded: 0, vectors: index.vectorCount, error };
+  }
 }
 
 export function loadOrBuildIndex(app: App, rebuild = false): { index: ProjectIndex; stats: ReturnType<ProjectIndex['build']> | undefined } {

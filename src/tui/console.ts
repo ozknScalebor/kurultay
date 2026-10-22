@@ -5,7 +5,7 @@ import { basename, join } from 'node:path';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from '../agent/checkpoint.js';
 import { ProjectAnalyzer } from '../analyze/summarizer.js';
 import { runShell } from '../agent/tools.js';
-import { createApp, loadOrBuildIndex, type App } from '../app.js';
+import { createApp, loadOrBuildIndex, prepareRetrieval, type App } from '../app.js';
 import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type LlmConfig, type RunMode } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
@@ -475,13 +475,17 @@ export class KurultayConsole {
         await this.analyze(false);
       } else this.out(`  ${color.green('✓')} mimari analiz güncel (${shortPath(join(this.app.stateDir, 'ARCHITECTURE.md'))})`);
     }
+    if (this.opts.autoAnalyze !== false && this.index) await this.semantic(false);
     if (!this.app.router.size) this.out(color.yellow('  Kullanılabilir model yok: /models ile durumu görün, /endpoint ile ekleyin.'));
     const skills = SkillRegistry.discover(path, { extraPaths: this.app.config.skills.paths, disabled: this.app.config.skills.disabled, includeUser: this.app.config.skills.includeUser });
     if (skills.size) this.out(color.dim(`  ${skills.size} skill: ${skills.visible().map((s) => s.name).slice(0, 8).join(', ')}${skills.size > 8 ? '…' : ''}`));
   }
 
+  private embedder: ProjectIndex['embedder'];
+
   private reindex(quiet = false): void {
     const { index, stats } = loadOrBuildIndex(this.app!);
+    index.embedder = this.embedder;
     this.index = index;
     const s = index.stats();
     if (!quiet || (stats && stats.added + stats.changed + stats.removed > 0)) {
@@ -538,6 +542,19 @@ export class KurultayConsole {
     }
   }
 
+  /** Embedding vectors for semantic search (incremental); quiet = only report problems / new vectors. */
+  private async semantic(quiet: boolean): Promise<void> {
+    if (!this.index || !this.app) return;
+    const index = this.index;
+    const r = await this.withAbort('Anlamsal indeks', (signal) => prepareRetrieval(this.app!, index, { signal }));
+    this.embedder = index.embedder;
+    if (!r) return;
+    if (!r.model) {
+      if (!quiet) this.out(color.dim('  anlamsal arama: embedding modeli bulunamadı (BM25 kullanılıyor)'));
+    } else if (r.error) this.out(color.yellow(`  anlamsal arama: ${r.model} kullanılamadı – ${r.error}`));
+    else if (!quiet || r.embedded) this.out(`  ${color.green('✓')} anlamsal arama: ${r.model} · ${r.vectors} parça${r.embedded ? color.dim(` (${r.embedded} yeni)`) : ''}`);
+  }
+
   private async analyze(force: boolean): Promise<void> {
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok; analiz yapılamaz.'));
@@ -570,6 +587,7 @@ export class KurultayConsole {
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok.'));
     this.reindex(true);
+    if (this.embedder) await this.semantic(true);
     const m = expandMentions(task, (p) => this.index?.files.some((f) => f.path === p) ?? false);
     const text = m.files.length ? `${m.text}\n\nFiles explicitly referenced by the user: ${m.files.join(', ')}` : m.text;
     app.config.orchestrator.confirmMerge = !this.settings.autoApply && !this.settings.dryRun;
