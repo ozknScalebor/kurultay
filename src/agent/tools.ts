@@ -7,6 +7,7 @@ import type { EventBus } from '../util/events.js';
 import { truncateMiddle } from '../util/text.js';
 import { EditError, applyReplacement } from './edits.js';
 import { postEditCheck } from './syntax.js';
+import { renderSyntaxResult, syntaxCheck } from './compile-check.js';
 import { safeRelPath, type Materializer, type Overlay } from './workspace.js';
 
 export interface ToolContext {
@@ -303,7 +304,7 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.overlay.write(path, content);
       ctx.writtenFiles?.add(path);
       ctx.bus?.emitEvent('tool.write', { source: ctx.workerId, data: { path } });
-      const warn = postEditCheck(path, before, content);
+      const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal))].filter(Boolean).join('\n');
       return { output: `${before !== undefined ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)${warn ? '\n' + warn : ''}` };
     },
   },
@@ -338,7 +339,7 @@ const TOOLS: Record<string, ToolDef> = {
         ctx.overlay.write(path, next);
         ctx.writtenFiles?.add(path);
         ctx.bus?.emitEvent('tool.edit', { source: ctx.workerId, data: { path } });
-        const warn = postEditCheck(path, cur, next);
+        const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal))].filter(Boolean).join('\n');
         return { output: `${r.note}Düzenlendi: ${path}${warn ? '\n' + warn : ''}` };
       } catch (e) {
         if (e instanceof EditError) {
