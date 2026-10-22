@@ -87,6 +87,8 @@ export interface OrchestratorConfig {
   maxConsecutiveErrors?: number;
   /** ask before merging results into the working tree */
   confirmMerge: boolean;
+  /** tell workers to reproduce bugs with a failing test first and to leave tests behind (default true) */
+  testFirst?: boolean;
 }
 
 export interface IndexConfig {
@@ -111,6 +113,11 @@ export interface ToolsConfig {
    * with the overlay applied temporarily (serialised; reuses existing build dirs)
    */
   isolation: 'sandbox' | 'inplace';
+  /**
+   * compiler check after every edit: "auto" (C/C++ via compile_commands.json or the
+   * local compiler, Java via javac), "off", or {".ext": "command {file}"}
+   */
+  syntaxCheck: 'auto' | 'off' | Record<string, string>;
   sandbox: { size: number; exclude: string[]; link: string[] };
 }
 
@@ -164,6 +171,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     requireReadBeforeEdit: true,
     commandTimeoutMs: 10 * 60_000,
     isolation: 'sandbox',
+    syntaxCheck: 'auto',
     sandbox: { size: 4, exclude: ['.git', '.kurultay', '.svn', '.hg', 'build', 'out', 'target', 'bin', 'obj', 'cmake-build-debug', 'cmake-build-release', '.gradle', '.idea', '.vs', '__pycache__', '.pytest_cache', 'dist', 'coverage'], link: ['node_modules'] },
     denyPatterns: [
       '\\brm\\s+-rf\\s+/(\\s|$)',

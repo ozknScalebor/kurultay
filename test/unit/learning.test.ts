@@ -79,6 +79,12 @@ describe('learned model quality', () => {
     for (const role of ['planner', 'coder', 'reviewer', 'judge']) assert.ok(roles.has(role), `${role} outcome recorded: ${JSON.stringify(saved)}`);
     const coder = Object.values(saved.models).map((m) => m.roles.coder).filter(Boolean);
     assert.ok(coder.some((c) => c.ok > 0), 'the verified winner counts as a success');
+    const prompts = s.log.map((l) => JSON.stringify(l.body));
+    assert.ok(prompts.some((p) => p.includes('TESTING (required)') && p.includes('node test.js')), 'workers get test-first guidance with the test command');
+    const quiet = { ...cfg, orchestrator: { ...cfg.orchestrator, testFirst: false } };
+    const before = s.log.length;
+    await new Orchestrator(root, quiet, router, new Materializer(root, join(root, '.kurultay')), index, recordingBus()).run('Implement clamp in src/mathutil.js', { mode: 'single' });
+    assert.ok(!s.log.slice(before).some((l) => JSON.stringify(l.body).includes('TESTING (required)')), 'testFirst=false turns it off');
   });
 });
 
