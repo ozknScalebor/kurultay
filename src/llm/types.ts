@@ -30,6 +30,8 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  /** constrain the answer to this JSON schema when the server supports it (falls back to jsonMode) */
+  jsonSchema?: { name: string; schema: Record<string, unknown> };
   stop?: string[];
   /** stream tokens (default true) */
   stream?: boolean;

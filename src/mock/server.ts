@@ -20,6 +20,8 @@ export interface MockModel {
   thinks?: boolean;
   /** reject requests carrying `tools` with HTTP 400 (servers without function calling) */
   rejectTools?: boolean;
+  /** answer 400 to response_format json_schema (server without constrained decoding) */
+  rejectSchema?: boolean;
   /** ignore stream=true and always answer with a single JSON body */
   noStream?: boolean;
   /** do not advertise the context window in GET /models (forces the probe ladder) */
@@ -266,6 +268,10 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     }
     if (body.tools?.length && !model.tools && /strict-tools/.test(model.id)) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'tools are not supported for this model' } }));
+      return;
+    }
+    if (model.rejectSchema && (body as { response_format?: { type?: string } }).response_format?.type === 'json_schema') {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'response_format type json_schema is not supported' } }));
       return;
     }
     if (model.latencyMs) await new Promise((r) => setTimeout(r, model.latencyMs));

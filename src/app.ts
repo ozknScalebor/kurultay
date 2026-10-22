@@ -4,6 +4,7 @@ import { Materializer } from './agent/workspace.js';
 import { ProjectIndex } from './index/project-index.js';
 import { readCapabilitiesFile } from './llm/models.js';
 import { Router } from './llm/router.js';
+import { ModelStats } from './llm/stats.js';
 import { EventBus } from './util/events.js';
 
 export interface App {
@@ -18,12 +19,14 @@ export interface App {
   probed: boolean;
 }
 
-export async function createApp(opts: { root?: string; config?: string; bus?: EventBus; requireModels?: boolean; discoverTimeoutMs?: number } = {}): Promise<App> {
+export async function createApp(opts: { root?: string; config?: string; bus?: EventBus; requireModels?: boolean; discoverTimeoutMs?: number; learn?: boolean } = {}): Promise<App> {
   const root = resolve(opts.root ?? process.cwd());
   const { config, path } = loadConfig(root, opts.config);
   const stateDir = join(root, config.stateDir);
   const bus = opts.bus ?? new EventBus();
   const router = new Router(config, bus);
+  // learned per-role quality, shared by every project of this user
+  if (opts.learn !== false) router.learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
   const caps = readCapabilitiesFile(join(stateDir, 'capabilities.json'));
   let probed = false;
   if (caps?.models.length) {

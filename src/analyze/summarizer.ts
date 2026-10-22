@@ -6,6 +6,7 @@ import type { Router } from '../llm/router.js';
 import { errorMessage, mapLimit, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, slug, truncateTokens, tryExtractJson } from '../util/text.js';
+import { FILE_SUMMARY_SCHEMA, FLOWS_SCHEMA } from '../llm/schemas.js';
 
 export interface AnalyzeOptions {
   /** re-summarize everything even if hashes match */
@@ -104,6 +105,7 @@ export class ProjectAnalyzer {
       }
     }
     this.bus?.emitEvent('analyze.done', { data: { usage: this.usage, failures: this.failures } });
+    this.router.learned?.save();
     return {
       filesSummarized: todo.length,
       modules: modules.length,
@@ -162,12 +164,13 @@ Return ONLY JSON: {"files":[{"path":"<exact path>","summary":"...","tags":["shor
 ${body}`;
       try {
         const r = await this.router.chat(
-          { messages: [{ role: 'user', content: prompt }], temperature: 0.1, jsonMode: true, purpose: 'summary.file', signal, maxTokens: Math.min(4096, 300 * batch.length + 400) },
+          { messages: [{ role: 'user', content: prompt }], temperature: 0.1, jsonMode: true, jsonSchema: FILE_SUMMARY_SCHEMA, purpose: 'summary.file', signal, maxTokens: Math.min(4096, 300 * batch.length + 400) },
           { role: 'summarizer' },
         );
         this.track(r.model);
         const parsed = tryExtractJson<{ files?: Array<{ path?: string; summary?: string; tags?: string[] }> }>(r.content);
         const list = parsed?.files ?? (Array.isArray(parsed) ? (parsed as Array<{ path?: string; summary?: string }>) : []);
+        this.router.recordOutcome(r.model, 'summarizer', batch.filter((f) => list.some((x) => x.path && x.summary && (x.path === f.path || f.path.endsWith(x.path)))).length / batch.length);
         for (const f of batch) {
           const hit = list.find((x) => x.path === f.path) ?? list.find((x) => x.path && f.path.endsWith(x.path)) ?? (batch.length === 1 ? list[0] : undefined);
           if (hit?.summary) {
@@ -452,7 +455,7 @@ ${truncateTokens(modules.map((m) => `### ${m.name || '(kök)'}\n${truncateTokens
 
 Files:
 ${truncateTokens(this.index.files.map((f) => `${f.path}${f.summary ? ' — ' + f.summary.split('\n')[0].slice(0, 100) : ''}`).join('\n'), Math.floor(budget * 0.35))}`;
-    const r = await this.router.chat({ messages: [{ role: 'user', content: structurePrompt }], temperature: 0.1, jsonMode: true, purpose: 'analyze.flows.structure', signal, maxTokens: 2500 }, { role: 'planner' });
+    const r = await this.router.chat({ messages: [{ role: 'user', content: structurePrompt }], temperature: 0.1, jsonMode: true, jsonSchema: FLOWS_SCHEMA, purpose: 'analyze.flows.structure', signal, maxTokens: 2500 }, { role: 'planner' });
     this.track(r.model);
     const parsed = tryExtractJson<{ flows?: Array<{ title?: string; description?: string; files?: string[]; importance?: string }> }>(r.content);
     const flows = (parsed?.flows ?? [])

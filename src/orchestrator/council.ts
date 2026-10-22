@@ -1,4 +1,5 @@
 import type { Router } from '../llm/router.js';
+import { REVIEW_SCHEMA } from '../llm/schemas.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { truncateTokens, tryExtractJson } from '../util/text.js';
@@ -117,21 +118,24 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
       // a non-author reviewer that fails is replaced by another NON-author, never by the author
       const exclude = outsiders.includes(r) ? authors : undefined;
       return router.chat(
-        { messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 2500, purpose: 'council.review', signal: args.signal },
+        { messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: REVIEW_SCHEMA, maxTokens: 2500, purpose: 'council.review', signal: args.signal },
         { prefer: [r.caps.key], role: 'reviewer', exclude },
       );
     }),
   );
   const reviews: Review[] = [];
-  for (const r of results) {
+  for (const [ri, r] of results.entries()) {
     if (!r.ok) {
       args.bus?.warn('council', `inceleme başarısız: ${errorMessage(r.error)}`);
+      router.recordOutcome(reviewers[ri].caps.key, 'reviewer', false);
       continue;
     }
     let j = tryExtractJson<{ ranking?: string[]; scores?: Record<string, number>; issues?: Record<string, Array<{ text?: string; blocking?: boolean; priority?: number; confidence?: number } | string>> }>(r.value.content);
-    if (!j || !Array.isArray(j.ranking)) {
+    if (j && Array.isArray(j.ranking)) router.recordOutcome(r.value.model, 'reviewer', true);
+    else {
       // llm-council fallback: plain-text "FINAL RANKING:" list
       const ranking = parseTextRanking(r.value.content, shuffled.length);
+      router.recordOutcome(r.value.model, 'reviewer', ranking.length > 0 ? 0.5 : false);
       if (!ranking.length) continue;
       j = { ranking, scores: {}, issues: {} };
     }
