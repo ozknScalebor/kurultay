@@ -89,6 +89,21 @@ flowchart TB
 - **Native tool calling desteklemeyen** veya `tools` alanını reddeden sunucularda otomatik olarak prompt tabanlı araç çağrısına geçilir.
 - **Çökme güvenliği**: Build/test sırasında aday değişiklikler geçici olarak diske yazılır. Bu işlem bir journal ile korunur; yarıda kesilirse bir sonraki çalıştırmada orijinal dosyalar geri yüklenir. Bu süre boyunca diğer çalışanlar her zaman orijinal (pristine) içeriği görür.
 - **Sizin değişiklikleriniz korunur**: Ajan çalışırken bir dosyayı siz de düzenlediyseniz sonuç 3-yollu birleştirilir. Çakışma olursa git tarzı işaretler eklenir ve raporda listelenir.
+- **Kesilen cevaplar** (`finish_reason=length`): JSON/araç çağrısı yarım kaldıysa daha yüksek `max_tokens` ile bir kez yeniden istenir; düz metin cevaplarda model kaldığı yerden devam ettirilir (en çok 2 tur). Düşünen (reasoning) modellere varsayılan olarak daha geniş çıktı bütçesi verilir.
+- **Model başına bağlam bütçesi**: her istem, onu okuyacak modelin bağlam penceresine göre hazırlanır; filodaki küçük bir model 128K modellerin bağlamını daraltmaz.
+
+### Kalite: kanıt, ölçüm ve öğrenme
+
+| Özellik | Ne yapar |
+|---|---|
+| **Yalıtılmış paralel derleme** | Her çalışanın build/test komutları `.kurultay/sandboxes/sb-N` altındaki kendi kopyasında çalışır (copy-on-write klon, `node_modules` bağlantı); gerçek proje yalnızca son birleştirmede değişir. `tools.isolation: "inplace"` eski davranışa döner |
+| **Düzenleme sonrası derleyici kontrolü** | C/C++: `compile_commands.json` bayraklarıyla `-fsyntax-only` (başlıklar onları içeren bir çeviri birimi üzerinden; eksik başlıklar boş taslakla değiştirilir). Java: `javac -sourcepath` (`tools.javaRelease: 8` ile Java 8 API sınırı). Yapılandırılmışsa önce **LSP** tanılamaları (clangd, jdtls…). Yalnızca düzenlenen dosyadaki gerçek hatalar modele geri verilir |
+| **Önce test** | Çalışan istemi hata düzeltmelerinde önce hatayı yeniden üreten bir test yazmayı, her değişiklikte test bırakmayı ve mevcut testleri zayıflatmamayı ister (`orchestrator.testFirst: false` kapatır) |
+| **Zorlanmış JSON** | Plan, inceleme, hakem ve özet istekleri `response_format: json_schema` ile gider (vLLM/llama.cpp/SGLang kısıtlı çözümleme). Desteklemeyen sunucu otomatik olarak `json_object`e düşürülür |
+| **Sonuçlardan öğrenen model seçimi** | Her rol için başarı/başarısızlık (`~/.kurultay/model-stats.json`) probe puanıyla harmanlanır; sürekli başarısız olan model o rolde geri plana düşer |
+| **Anlamsal arama** | Endpoint'te bir embedding modeli (bge, e5, nomic-embed, Qwen3-Embedding…) varsa kod parçaları vektörlenir (artımlı) ve arama BM25 + kosinüs benzerliğini **RRF** ile birleştirir: "sıcaklık eşiği nerede kontrol ediliyor?" sorusu `MAX_TEMPERATURE` kodunu bulur |
+| **Değerlendirme düzeneği** | `kurultay eval <görev-seti>` her görevi temiz bir kopyada çalıştırır, ajan bitince gizli testleri ekler; başarı, istek, token ve süreyi mod bazında `EVAL.md`/`results.json` olarak raporlar. `--validate` görevlerin temelde kaldığını, referans çözümle geçtiğini doğrular |
+| **Gözlemlenebilirlik** | `REPORT.md` model başına istek / giriş-çıkış token / ortalama yanıt / hata / kesilme tablosu içerir; `kurultay stats` ve konsolda `/stats` |
 
 ---
 
@@ -100,14 +115,14 @@ flowchart TB
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # yalnızca derleme araçları (typescript)
-npm test          # ≈240 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
+npm test          # ≈290 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
 npm run pack:offline
 ```
 
 `release/` klasörü oluşur:
 
-- `kurultay-0.1.0.tgz`: Hedef makinede `npm install -g ./kurultay-0.1.0.tgz` ile kurulur. Çalışma zamanı bağımlılığı olmadığı için internet gerektirmez.
-- `kurultay-0.1.0-portable-<os>-<arch>/`: **Node.js kurulu olmayan** makineler için. İçinde Node çalıştırıcısı vardır; `./kurultay` (Windows'ta `kurultay.cmd`) ile çalışır. Hedef makineyle aynı işletim sistemi ve mimaride paketleyin.
+- `kurultay-<sürüm>.tgz`: Hedef makinede `npm install -g ./kurultay-<sürüm>.tgz` ile kurulur. Çalışma zamanı bağımlılığı olmadığı için internet gerektirmez.
+- `kurultay-<sürüm>-portable-<os>-<arch>/`: **Node.js kurulu olmayan** makineler için. İçinde Node çalıştırıcısı vardır; `./kurultay` (Windows'ta `kurultay.cmd`) ile çalışır. Hedef makineyle aynı işletim sistemi ve mimaride paketleyin.
 
 Bu klasörü USB ile kapalı ağa taşımanız yeterli.
 
@@ -153,7 +168,9 @@ uart-driver ❯ /
 - **Düz metin**: soru ise (`… nerede?`, `nasıl çalışır`, `açıkla …`) modeller konsey olarak cevaplar ve sonraki sorular önceki cevapları bilir; iş ise planlanıp tüm modellere dağıtılır, sonunda projeye uygulamak için onay istenir. `/ask`, `/run` veya `/intent` ile sabitlenebilir. `!komut` kabuk komutu çalıştırır.
 - Çalışan bir iş **Ctrl+C** ile durdurulur (yarım değişiklikler geri alınır). O sırada yazılanlar bir sonraki isteme aktarılır.
 - **Arayüz**: cevaplar ve raporlar Markdown olarak işlenir (başlık, liste, tablo, renklendirilmiş kod bloğu). İstemin altında durum satırı vardır: git dalı, mod, hazır model sayısı, oturum. Uzun işlerde dönen gösterge, geçen süre ve süren LLM isteği sayısı görünür.
-- Temel komutlar: `/models`, `/llm` (zaman aşımı ayarları, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
+- **Plan modu** (`/plan on`): kod yazılmadan önce plan gösterilir; Enter onaylar, `h` iptal eder, başka bir şey yazarsanız planlayıcılar planı geri bildiriminize göre yeniden hazırlar.
+- **Bütçe ve sürdürme**: `orchestrator.maxTokens` / `maxMinutes` dolunca iş projeye dokunmadan durur. Yarıda kalan (bütçe, Ctrl+C, çökme) bir görev `/continue-run` ile kaldığı alt görevden sürer; bitmiş alt görevler tekrar çalışmaz.
+- Temel komutlar: `/models`, `/llm` (zaman aşımı ayarları, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
 
 #### Oturumlar
 
@@ -170,7 +187,7 @@ uart-driver ❯ /
 
 Her uygulamadan önce değişen dosyaların önceki hâli oturum klasörüne (`checkpoint.json`) yazılır; geri alma bu kontrol noktasını kullanır. `.kurultay/` klasörü git'e hiç işlenmez (`.git/info/exclude`).
 
-LLM ayarları ve yetenek profilleri kullanıcı başına tutulur (`~/.kurultay/`; `KURULTAY_HOME` ile değiştirilebilir), böylece her proje için yeniden ölçüm gerekmez. Projede `kurultay.config.json` varsa o kullanılır.
+LLM ayarları ve yetenek profilleri kullanıcı başına tutulur (`~/.kurultay/`; `KURULTAY_HOME` ile değiştirilebilir), böylece her proje için yeniden ölçüm gerekmez. Projede `kurultay.config.json` varsa o kullanılır; **endpoint içermiyorsa** kullanıcı yapılandırmasını genişletir (proje yalnızca build/test komutlarını ve kurallarını taşır).
 
 ### Komut satırı
 
@@ -193,13 +210,16 @@ GPU'nuz yoksa veya önce denemek istiyorsanız sahte LLM sunucusunu kullanabilir
 | `kurultay rewind [oturum]` | Bir görevin projeye uyguladığı değişiklikleri geri alır (varsayılan son görev; `--yes`, sonradan değişen dosyalar için `--force`) |
 | `kurultay init` | Yapılandırma ve kural şablonlarını oluşturur; build/test komutlarını tahmin eder (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
 | `kurultay probe [--deep] [--quick]` | Yetenek analizi. `--deep` 256K bağlama ve 16 eşzamanlı isteğe kadar ölçer; `--quick` benchmark'ı atlar |
-| `kurultay index` | Yalnızca statik indeks (LLM gerekmez) |
+| `kurultay index [--embed]` | Statik indeks (LLM gerekmez); `--embed` anlamsal arama vektörlerini de üretir |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Paralel özetleme, mimari dokümanı, `PROJECT_NOTES.md` ve en önemli N akışın dokümanı (`--flows 0` kapatır). Artımlıdır: yalnızca değişen dosyalar yeniden özetlenir |
 | `kurultay skills` | Bulunan skill'leri listeler ve spesifikasyona göre doğrular. `skills new <ad> --description "..."` yeni skill klasörü oluşturur |
-| `kurultay run "<görev>"` | `--mode auto\|single\|split\|race\|council`, `--req gereksinim.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui` |
+| `kurultay run "<görev>"` | `--mode auto\|single\|split\|race\|council`, `--req gereksinim.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui`, `--approve-plan`, `--max-tokens N`, `--max-minutes N` |
+| `kurultay run --resume [oturum]` | Yarıda kalan / bütçesi dolan görevi kaldığı alt görevden sürdürür |
+| `kurultay eval <görev-seti>` | Gizli testlerle kalite ölçümü: `--modes single,race,council`, `--tasks a,b`, `--repeat N`, `--out <klasör>`, `--keep`, `--validate` |
+| `kurultay stats [--runs N]` | Son görevlerin model başına istek/token/süre tablosu ve öğrenilen başarı oranları |
 | `kurultay ask "<soru>"` | Proje hakkında soru; modeller ayrı ayrı cevaplar, başkan model birleştirir |
 | `kurultay map [--tokens N] [--focus a,b]` | Repo haritası (Aider tarzı) |
-| `kurultay search "<sorgu>"` | BM25 kod araması |
+| `kurultay search "<sorgu>"` | Kod araması (BM25; vektörler varsa BM25 + embedding, RRF) |
 | `kurultay status` | Modeller, indeks ve son oturumlar |
 
 `--ui` seçeneği `http://127.0.0.1:7420` adresinde, harici kaynak kullanmayan **canlı bir pano** açar. Panoda her modelin yükü ve her çalışanın adımları yan yana izlenir.
@@ -236,6 +256,27 @@ Tam örnek: [`examples/kurultay.config.example.json`](examples/kurultay.config.e
   "stickyFailover": true          // çalışan düşen modele geri dönmesin
 }
 ```
+
+Diğer bölümler:
+
+```jsonc
+"orchestrator": { "approvePlan": false, "maxTokens": 0, "maxMinutes": 0, "testFirst": true },
+"tools": {
+  "isolation": "sandbox",               // "inplace": komutlar gerçek ağaçta, sırayla
+  "sandbox": { "size": 4 },
+  "syntaxCheck": "auto",                // "off" veya {".py": "python -m py_compile {file}"}
+  "javaRelease": 8,                      // Java 8 projelerinde javac --release 8
+  "commandPolicy": "deny",              // "allow": yalnızca izin listesindeki komutlar (allowPatterns ile genişler)
+  "scrubEnv": true,                      // *KEY*, *TOKEN*, *SECRET*, *PASSWORD* değişkenleri model komutlarına geçmez
+  "osSandbox": "off"                     // "auto"/"bwrap": Linux'ta bubblewrap — salt okunur sistem, ağ yok
+},
+"embeddings": { "mode": "auto" },       // veya { "endpoint": "gpu1", "model": "bge-m3" }
+"mcp": { "servers": { "jira": { "command": "node", "args": ["jira-mcp.js"], "readOnlyTools": ["search"] } } },
+"lsp": { "servers": { "clangd": { "command": "clangd", "extensions": [".c", ".cpp", ".h", ".hpp"] } } }
+```
+
+- **MCP**: stdio MCP sunucularının araçları çalışanlara `mcp__<sunucu>__<araç>` adıyla sunulur; salt okunur olanlar (`readOnlyHint` veya `readOnlyTools`) inceleyicilere de açılır. Konsolda `/mcp`.
+- **LSP**: yapılandırılan dil sunucusu proje başına bir kez başlatılır ve her düzenlemeden sonra tanılamaları alınır; başlatılamazsa derleyici kontrolüne düşülür.
 
 ## Kurallar ve skill'ler
 
@@ -291,7 +332,10 @@ sessions/<id>/                       plan.json, events.jsonl, session.json, chan
 ## Güvenlik
 
 - Ajanlar yalnızca proje kökü içinde dosya okuyup yazabilir. `.git` ve `.kurultay` korunur.
-- Komutlar `tools.denyPatterns` ile filtrelenir. Varsayılan olarak `rm -rf /`, `mkfs`, `dd`, `git push`, `curl | sh` gibi komutlar reddedilir. İsterseniz `tools.allowCommands: false` ile komut çalıştırmayı tamamen kapatabilirsiniz.
+- Komutlar `tools.denyPatterns` ile filtrelenir. Varsayılan olarak `rm -rf /`, `mkfs`, `dd`, `git push`, `curl | sh` gibi komutlar reddedilir. `tools.commandPolicy: "allow"` ile yalnızca izin listesindeki komutlar çalışır (her `&&`, `|`, `;` parçası ayrı denetlenir; `$(…)` ve proje dışına yönlendirme reddedilir). `tools.allowCommands: false` komut çalıştırmayı tamamen kapatır.
+- Model komutlarına API anahtarı, token ve parola içeren ortam değişkenleri geçirilmez (`tools.scrubEnv`, istisnalar `tools.envPassthrough`).
+- Linux'ta `tools.osSandbox: "auto"` ile komutlar bubblewrap içinde çalışır: sistem salt okunur, yalnızca çalışanın sandbox kopyası ve `/tmp` yazılabilir, ağ kapalı.
+- Komutlar çalışan başına sandbox kopyalarında çalışır; gerçek projeye yalnızca onaylanan birleştirme yazar.
 - `confirmMerge: true` ayarıyla değişiklikler projeye uygulanmadan önce onay istenir. `--dry-run` ile sonuç yalnızca `changes.diff` olarak bırakılır.
 
 ## Kütüphane olarak kullanım
@@ -304,18 +348,31 @@ const report = await new Orchestrator(app.root, app.config, app.router, app.mate
   .run('Görev metni', { mode: 'race' });
 ```
 
+## Örnek projeler ve görev setleri
+
+[`samples/`](samples/) altında Kurultay'ı kendi modellerinizle denemek için iki orta büyüklükte, bilerek hatalı proje var:
+**Java 8 envanter/sipariş** (bağımlılıksız `Build.java`, JDK yeterli) ve **C++17 telemetri** (CMake + CTest, ASan/UBSan).
+Her birinde 8 hata + 2 özellik görevi ([java](samples/java-envanter/GOREVLER.md), [c++](samples/cpp-telemetri/GOREVLER.md)), gizli kabul testleri ve referans çözümleri vardır:
+
+```bash
+kurultay eval samples/evals/java-envanter --modes single,race,council
+kurultay eval samples/evals/cpp-telemetri --validate
+```
+
 ## Sınırlamalar ve yol haritası
 
-- Sembol çıkarıcı native derleme gerektirmemek için regex/sezgisel tabanlıdır. C, C++, Java, Kotlin, C#, Python, JS/TS, Go ve Rust desteklenir. Yol haritasında: isteğe bağlı `web-tree-sitter` (WASM) ve `clangd`/`jdtls` LSP entegrasyonu.
-- Gömme (embedding) tabanlı vektör arama henüz yok; şimdilik BM25 + repo haritası kullanılıyor. Yol haritasında: yerel embedding endpoint'i ile hibrit arama.
-- Oturum sürdürme (`--resume`) için durum `session.json` dosyasına kaydediliyor; CLI komutu henüz eklenmedi.
-- Yerel modellerle kalite, modellerin kendisiyle sınırlıdır. Kurultay'ın race + test + konsey yaklaşımı tek bir zayıf modelin hatalarını eler, ancak hiçbir model çözemiyorsa sonuç `incomplete` olur ve rapor eksikleri listeler.
+- Sembol çıkarıcı native derleme gerektirmemek için regex/sezgisel tabanlıdır (C, C++, Java, Kotlin, C#, Python, JS/TS, Go, Rust). Daha hassas tanılama için LSP sunucusu bağlanabilir; isteğe bağlı `web-tree-sitter` (WASM) yol haritasında.
+- **IDE eklentisi yok** (VS Code/JetBrains). Kurultay terminal konsolu, CLI, web panosu ve kütüphane olarak çalışır; IDE entegrasyonu bilinçli olarak kapsam dışında bırakıldı.
+- MCP istemcisi yalnızca stdio taşıyıcısını ve araçları (`tools/*`) destekler; kaynaklar (resources), istemler (prompts) ve HTTP taşıyıcısı yok.
+- İşletim sistemi düzeyinde komut yalıtımı (bubblewrap) yalnızca Linux'ta; Windows/macOS'ta sandbox kopyaları + komut politikası kullanılır.
+- Yerel modellerle kalite, modellerin kendisiyle sınırlıdır. Kurultay'ın race + test + konsey yaklaşımı tek bir zayıf modelin hatalarını eler, ancak hiçbir model çözemiyorsa sonuç `incomplete` olur ve rapor eksikleri listeler. Hangi modun sizin modellerinizle daha iyi çalıştığını `kurultay eval` ile ölçün.
 
 ## Geliştirme ve testler
 
 ```bash
 npm ci
-npm test                  # birim + entegrasyon + CLI (≈240 test)
+npm test                  # birim + entegrasyon + CLI (≈290 test)
+npm run lint              # ESLint (yüzen promise, kullanılmayan kod, güvensiz kalıplar)
 npm run test:unit         # yalnızca birim testleri
 npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
 npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
@@ -325,20 +382,21 @@ npm run test:coverage     # kapsam eşikleri: satır ≥ %96, dal ≥ %88, fonks
 
 | Katman | Ne test ediliyor |
 |---|---|
-| `test/unit` | Kontrol noktaları, konuşma kaydı, Markdown işleyici, durum satırı ve etkinlik göstergesi, git yardımcıları; konsol altyapısı (tuş ayrıştırma, bracketed paste, satır editörü, geçmiş, öneri menüsü, satır kaydırma, ekran), router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
-| `test/integration` | Etkileşimli konsol (oturum kaydı, devam, dallanma, geri sarma, git worktree; LLM paneli, zorunlu çalışma alanı, otomatik indeks/yetenek/analiz, soru-iş ayrımı, onay, ayar ve endpoint düzenleme, tamamlama, Ctrl+C ile iptal), ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
+| `test/unit` | Sandbox havuzu (bariyerle paralellik kanıtı), derleyici kontrolü (gcc/clang/javac, compile_commands, Windows yolları), komut politikası ve ortam temizleme, öğrenen model istatistikleri ve json_schema düşüşü; kontrol noktaları, konuşma kaydı, Markdown işleyici, durum satırı ve etkinlik göstergesi, git yardımcıları; konsol altyapısı (tuş ayrıştırma, bracketed paste, satır editörü, geçmiş, öneri menüsü, satır kaydırma, ekran), router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
+| `test/integration` | Değerlendirme düzeneği, plan onayı / bütçe / sürdürme, MCP ve LSP (sahte sunucularla), anlamsal arama (sahte embedding), bağlam bütçesi ve kesilme kurtarma; etkileşimli konsol (oturum kaydı, devam, dallanma, geri sarma, git worktree; LLM paneli, zorunlu çalışma alanı, otomatik indeks/yetenek/analiz, soru-iş ayrımı, onay, ayar ve endpoint düzenleme, tamamlama, Ctrl+C ile iptal), ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
 | `test/cli` | konsol (boru üzerinden), `init`, `probe`, `index`, `analyze` (akış dokümanları, proje notları), `skills`, `run` (`--skill`, `--req`), `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
 | `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
 
 ### CI pipeline (`.github/workflows/ci.yml`)
 
 ```
-statik kontroller ─┬─ birim       (Linux/Windows/macOS × Node 20/22)
-                   ├─ entegrasyon (Linux/Windows × Node 20/22)
-                   └─ CLI         (Linux/Windows/macOS)
-                          └─┬─ kapsam eşiği
-                            └─ offline paket (Linux/Windows/macOS → artefakt)
-                                  └─ sürüm yayını (v* etiketi → GitHub Release)
+statik kontroller (tip, ESLint, paket içeriği) ─┬─ birim       (Linux/Windows/macOS × Node 20/22)
+                                                ├─ entegrasyon (Linux/Windows × Node 20/22)
+                                                ├─ CLI         (Linux/Windows/macOS)
+                                                └─ örnek projeler (JDK 8 + GCC: 20 görev --validate)
+                                                       └─┬─ kapsam eşiği
+                                                         └─ offline paket (Linux/Windows/macOS → artefakt)
+                                                               └─ sürüm yayını (GitHub Release)
 ```
 
 **Sürüm çıkarmak:** `v0.2.0` gibi bir etiket gönderin ya da `package.json` sürümünü artırıp commit mesajına `[release]` yazarak `main`e gönderin. Tüm testler geçtikten sonra Linux/Windows/macOS offline paketleri GitHub Release'e eklenir.

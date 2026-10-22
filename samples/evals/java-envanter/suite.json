@@ -2,7 +2,7 @@
   "name": "java-envanter",
   "description": "Java 8 envanter/sipariş projesi: 8 hata + 2 özellik. Gizli testler hidden/<görev>/ altında, referans çözümler solutions/<görev>/ altında.",
   "project": "../../java-envanter",
-  "check": "javac -d .build/tools tools/Build.java && java -cp .build/tools Build test",
+  "check": "javac -d tools tools/Build.java && java -cp tools Build test",
   "tasks": [
     {
       "id": "B1-kademe-indirimi",

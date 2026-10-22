@@ -12,9 +12,9 @@ Mevcut testlerin hepsi geçer; hatalar test edilmeyen yollarda.
 Yalnızca bir JDK (8 veya üstü). Maven, Gradle, JUnit, internet gerekmez.
 
 ```bash
-javac -d .build/tools tools/Build.java
-java -cp .build/tools Build test      # derle + testleri çalıştır
-java -cp .build/tools Build run       # demo (şu an B2 hatası yüzünden açılmıyor)
+javac -d tools tools/Build.java
+java -cp tools Build test      # derle + testleri çalıştır
+java -cp tools Build run       # demo (şu an B2 hatası yüzünden açılmıyor)
 ```
 
 ## Yapı
