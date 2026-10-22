@@ -1,5 +1,5 @@
 import { join, resolve } from 'node:path';
-import { loadConfig, type KurultayConfig } from './config.js';
+import { kurultayHome, loadConfig, type KurultayConfig } from './config.js';
 import { Materializer } from './agent/workspace.js';
 import { ProjectIndex } from './index/project-index.js';
 import { readCapabilitiesFile } from './llm/models.js';
@@ -18,7 +18,7 @@ export interface App {
   probed: boolean;
 }
 
-export async function createApp(opts: { root?: string; config?: string; bus?: EventBus; requireModels?: boolean } = {}): Promise<App> {
+export async function createApp(opts: { root?: string; config?: string; bus?: EventBus; requireModels?: boolean; discoverTimeoutMs?: number } = {}): Promise<App> {
   const root = resolve(opts.root ?? process.cwd());
   const { config, path } = loadConfig(root, opts.config);
   const stateDir = join(root, config.stateDir);
@@ -29,9 +29,18 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   if (caps?.models.length) {
     router.register(caps.models.filter((m) => m.reachable));
     probed = true;
+  } else {
+    // capability profiles are about the models, not the project: reuse the per-user cache
+    const shared = readCapabilitiesFile(join(kurultayHome(), 'capabilities.json'));
+    const endpoints = new Set(config.endpoints.filter((e) => !e.disabled).map((e) => e.name));
+    const usable = (shared?.models ?? []).filter((m) => m.reachable && endpoints.has(m.endpoint));
+    if (usable.length) {
+      router.register(usable);
+      probed = true;
+    }
   }
   if (router.size === 0 && opts.requireModels !== false) {
-    router.register(await router.discover());
+    router.register(await router.discover(opts.discoverTimeoutMs ? AbortSignal.timeout(opts.discoverTimeoutMs) : undefined));
   }
   return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir), probed };
 }

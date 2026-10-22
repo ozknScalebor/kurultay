@@ -572,7 +572,12 @@ export function renderReport(r: RunReport, diff: string): string {
       lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${c.files} dosya, doğrulama: ${c.verify ?? '-'}${win}`);
     }
     if (s.verdict) {
-      lines.push('', `İnceleyen modeller: ${s.verdict.reviewers.join(', ') || '-'} — ${s.verdict.independent ? 'bağımsız (kodu yazan model incelemedi)' : '⚠ bağımsız inceleme yapılamadı (kodu yazan modeller dışında kullanılabilir model yok)'}`);
+      const how = s.verdict.independent
+        ? 'bağımsız (kodu yazan model incelemedi)'
+        : s.candidates.length > 1 && s.verdict.reviewers.length
+          ? 'kısmen bağımsız (inceleyenler aynı zamanda aday yazarı; kendi adaylarına verdikleri oy sayılmadı)'
+          : '⚠ bağımsız inceleme yapılamadı (kodu yazan modeller dışında kullanılabilir model yok)';
+      lines.push('', `İnceleyen modeller: ${s.verdict.reviewers.join(', ') || '-'} — ${how}`);
     }
     if (s.verdict?.ranking.length) lines.push('', `Konsey sıralaması: ${s.verdict.ranking.map((x) => `${x.id} (${x.points})`).join(' > ')}`);
     if (s.verdict?.winnerIssues.length) lines.push('', 'İnceleme bulguları:', ...s.verdict.winnerIssues.map((i) => `- ${i.blocking ? '**[engelleyici]** ' : ''}${i.text} — _${i.reviewer}_`));

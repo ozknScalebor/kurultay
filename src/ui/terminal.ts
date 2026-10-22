@@ -17,10 +17,11 @@ function time(ts: number): string {
 }
 
 /** Human-readable live log of what every model/worker is doing. */
-export function attachTerminal(bus: EventBus, opts: { verbose?: boolean } = {}): () => void {
+export function attachTerminal(bus: EventBus, opts: { verbose?: boolean; write?: (line: string) => void } = {}): () => void {
+  const write = opts.write ?? ((line: string) => process.stderr.write(line + '\n'));
   const handler = (e: KEvent) => {
     const line = format(e, !!opts.verbose);
-    if (line) process.stderr.write(line + '\n');
+    if (line) write(line);
   };
   bus.on('event', handler);
   return () => bus.off('event', handler);
@@ -60,6 +61,8 @@ function format(e: KEvent, verbose: boolean): string | undefined {
       return `${time(e.ts)} ${src}başladı (${d.model})`;
     case 'worker.tool':
       return `${time(e.ts)} ${src}${color.dim(`${d.tool} ${JSON.stringify(d.args).slice(0, 120)}`)}`;
+    case 'model.quarantine':
+      return verbose ? `${time(e.ts)} ${src}${color.yellow(`karantina ${Math.round(Number(d.ms) / 1000)} sn`)}` : undefined;
     case 'worker.end':
       return `${time(e.ts)} ${src}${d.status === 'done' ? color.green('bitti') : color.yellow(String(d.status))} · ${d.steps} adım · ${d.files} dosya · ${(d.models as string[]).join(', ')}`;
     case 'tool.command':
