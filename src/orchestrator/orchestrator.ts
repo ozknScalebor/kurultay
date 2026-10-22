@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { KurultayConfig, RunMode } from '../config.js';
 import { diffStat } from '../agent/diff.js';
@@ -31,6 +31,57 @@ export interface RunOptions {
   skills?: string[];
   /** use this registry instead of discovering skills (tests / embedding) */
   skillRegistry?: SkillRegistry;
+  /**
+   * Plan approval (Claude Code / Qwen Code "plan mode"): called with the plan
+   * before any code is written. true = go, false = cancel, text = feedback that
+   * makes the planners revise the plan.
+   */
+  approvePlan?: (plan: Plan, info: { mode: RunMode; round: number }) => Promise<boolean | string>;
+  /** overrides config.orchestrator.maxTokens / maxMinutes for this run */
+  budget?: { tokens?: number; minutes?: number };
+}
+
+/** Per-model consumption (REPORT.md table, /stats). */
+export interface ModelUsage {
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  ms: number;
+  errors: number;
+  truncated: number;
+}
+
+export interface RunUsage {
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** wall-clock seconds spent in this run, across resumes */
+  seconds: number;
+  byModel: Record<string, ModelUsage>;
+}
+
+/** What is written to session.json after every subtask – enough to resume. */
+export interface SessionState {
+  version: 2;
+  sessionId: string;
+  task: string;
+  fullTask: string;
+  mode: RunMode;
+  plan: Plan;
+  overlay: ReturnType<Overlay['toJSON']>;
+  reports: SubtaskReport[];
+  iteration: number;
+  /** the current iteration's queue has started (resume continues it instead of starting the next) */
+  inProgress: boolean;
+  queue: SubTask[];
+  doneIds: string[];
+  finalVerify?: VerifyResult;
+  requirementCheck?: RunReport['requirementCheck'];
+  phase: 'running' | 'stopped' | 'finished';
+  stopReason?: string;
+  usage: RunUsage;
+  options: { dryRun?: boolean; skills?: string[] };
+  savedAt?: string;
 }
 
 export interface SkillUsage {
@@ -70,7 +121,11 @@ export interface RunReport {
   diffPath: string;
   reportPath: string;
   iterations: number;
-  status: 'completed' | 'incomplete' | 'failed' | 'dry-run';
+  status: 'completed' | 'incomplete' | 'failed' | 'dry-run' | 'cancelled';
+  /** why the run stopped early (budget); continue with `kurultay run --resume <id>` */
+  stopReason?: string;
+  resumed?: boolean;
+  usage?: RunUsage;
   modelsUsed: string[];
   skills: { available: number; used: SkillUsage[]; diagnostics: SkillDiagnostic[] };
 }
@@ -151,8 +206,8 @@ export class Orchestrator {
     return 1;
   }
 
-  async run(task: string, opts: RunOptions = {}): Promise<RunReport> {
-    const sessionId = opts.sessionId ?? new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  /** Shared start-up of run() and resume(). */
+  private begin(sessionId: string, opts: RunOptions, task: string): void {
     this.sessionDir = join(this.stateDir, 'sessions', sessionId);
     mkdirSync(this.sessionDir, { recursive: true });
     this.bus.attachLog(join(this.sessionDir, 'events.jsonl'));
@@ -166,84 +221,270 @@ export class Orchestrator {
     this.explicitSkills = [...(opts.skills ?? []), ...this.skills.mentioned(task).map((s) => s.name)];
     for (const n of opts.skills ?? []) if (!this.skills.get(n)) this.bus.warn('skills', `istenen skill bulunamadı: ${n}`);
     if (this.skills.size) this.bus.info('skills', `${this.skills.size} skill bulundu${this.explicitSkills.length ? `; seçilen: ${this.explicitSkills.join(', ')}` : ''}`);
+    this.stopReason = undefined;
+  }
 
+  async run(task: string, opts: RunOptions = {}): Promise<RunReport> {
+    const sessionId = opts.sessionId ?? new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    this.begin(sessionId, opts, task);
     const fullTask = opts.requirements ? `${task}\n\n# REQUIREMENTS DOCUMENT\n${opts.requirements}` : task;
     this.bus.emitEvent('run.start', { message: task, data: { sessionId, models: this.router.size } });
+    const meter = this.startMeter(emptyUsage(), opts);
+    try {
+      const signal = anySignal(opts.signal, meter.signal);
+      let planned: { plan: Plan; mode: RunMode } | undefined;
+      try {
+        planned = await this.planWithApproval(fullTask, opts, signal);
+      } catch (e) {
+        if (!this.stopReason) throw e;
+      }
+      const st: SessionState = {
+        version: 2,
+        sessionId,
+        task,
+        fullTask,
+        mode: planned?.mode ?? 'single',
+        plan: planned?.plan ?? { understanding: '', acceptance: [], subtasks: [], authors: [] },
+        overlay: new Overlay('integration', this.root).toJSON(),
+        reports: [],
+        iteration: 0,
+        inProgress: false,
+        queue: planned?.plan.subtasks ?? [],
+        doneIds: [],
+        phase: 'running',
+        usage: meter.usage,
+        options: { dryRun: opts.dryRun, skills: opts.skills },
+      };
+      if (!planned) {
+        // cancelled at plan approval, or the budget ran out while planning
+        st.phase = 'finished'; // nothing was started – nothing to resume
+        st.stopReason = this.stopReason;
+        return this.finish(st, new Overlay('integration', this.root), this.stopReason ? 'incomplete' : 'cancelled', meter);
+      }
+      writeFileSync(join(this.sessionDir, 'plan.json'), JSON.stringify(planned.plan, null, 2));
+      return await this.drive(st, opts, meter);
+    } finally {
+      meter.dispose();
+    }
+  }
 
-    // ---- 1. plan (council of planners)
-    const drafts = Math.min(3, this.router.size);
-    const planners = [...this.router.pick('planner', drafts), ...this.router.pick('judge', 1)].map((h) => h.caps.key);
-    const context = this.buildContext(fullTask, [], this.contextBudget(0.3, planners));
-    const plan = await makePlan(this.router, fullTask, context, {
-      drafts,
-      contextTokens: this.contextBudget(0.45, planners),
-      bus: this.bus,
-      signal: opts.signal,
-      skillCatalogue: this.skills.catalogue(),
-    });
-    plan.authors.forEach((a) => this.used.add(a.replace(/ \(.*$/, '')));
-    const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, plan);
-    this.bus.emitEvent('run.plan', { data: { mode, subtasks: plan.subtasks.map((s) => s.title), acceptance: plan.acceptance } });
-    writeFileSync(join(this.sessionDir, 'plan.json'), JSON.stringify(plan, null, 2));
+  /**
+   * Continue an interrupted run (Ctrl+C, crash, budget) from session.json:
+   * finished subtasks are kept, the current iteration continues with the rest.
+   */
+  async resume(sessionId: string | undefined, opts: RunOptions = {}): Promise<RunReport> {
+    const id = sessionId ?? Orchestrator.resumable(this.root, this.cfg.stateDir)[0]?.id;
+    if (!id) throw new Error('Sürdürülecek yarım kalmış görev yok.');
+    const file = join(this.stateDir, 'sessions', id, 'session.json');
+    if (!existsSync(file)) throw new Error(`Oturum bulunamadı: ${id}`);
+    const st = JSON.parse(readFileSync(file, 'utf8')) as SessionState;
+    if (st.version !== 2) throw new Error(`${id} eski biçimde kaydedilmiş; sürdürülemez.`);
+    if (st.phase === 'finished') throw new Error(`${id} zaten tamamlanmış.`);
+    this.begin(id, { ...opts, skills: opts.skills ?? st.options.skills }, st.task);
+    st.phase = 'running';
+    st.stopReason = undefined;
+    const left = st.inProgress ? st.queue.filter((t) => !st.doneIds.includes(t.id)).length : st.queue.length;
+    this.bus.info('orchestrator', `${id} sürdürülüyor: iterasyon ${st.iteration}, ${left} alt görev kaldı`);
+    this.bus.emitEvent('run.start', { message: st.task, data: { sessionId: id, models: this.router.size, resumed: true } });
+    const meter = this.startMeter(st.usage ?? emptyUsage(), opts);
+    try {
+      return await this.drive(st, { ...opts, dryRun: opts.dryRun ?? st.options.dryRun }, meter, true);
+    } finally {
+      meter.dispose();
+    }
+  }
 
-    const integration = new Overlay('integration', this.root);
-    const reports: SubtaskReport[] = [];
-    let queue: SubTask[] = plan.subtasks;
-    let finalVerify: VerifyResult | undefined;
-    let reqCheck: RunReport['requirementCheck'];
-    let iteration = 0;
+  /** Sessions that can be resumed, newest first. */
+  static resumable(root: string, stateDir = '.kurultay'): Array<{ id: string; task: string; iteration: number; left: number; stopReason?: string; savedAt?: string }> {
+    const dir = join(root, stateDir, 'sessions');
+    if (!existsSync(dir)) return [];
+    const out: ReturnType<typeof Orchestrator.resumable> = [];
+    for (const id of readdirSync(dir).sort().reverse()) {
+      try {
+        const st = JSON.parse(readFileSync(join(dir, id, 'session.json'), 'utf8')) as SessionState;
+        if (st.version !== 2 || st.phase === 'finished') continue;
+        out.push({ id, task: st.task, iteration: st.iteration, left: st.inProgress ? st.queue.filter((t) => !st.doneIds.includes(t.id)).length : st.queue.length, stopReason: st.stopReason, savedAt: st.savedAt });
+      } catch {
+        /* not a resumable session */
+      }
+    }
+    return out;
+  }
 
-    // ---- 2. execute → verify → requirement check loop
-    while (queue.length && iteration < this.cfg.orchestrator.maxIterations) {
-      iteration++;
-      this.bus.emitEvent('run.iteration', { data: { iteration, subtasks: queue.length } });
-      await this.executeDag(queue, integration, mode, plan, fullTask, iteration, reports, opts.signal);
-      this.persist(sessionId, task, plan, integration, reports);
+  private stopReason: string | undefined;
 
-      finalVerify = await verifyOverlay(integration, this.materializer, this.cfg, opts.signal);
-      this.bus.emitEvent('run.verify', { data: { ok: finalVerify.ok, skipped: finalVerify.skipped } });
+  /** Count tokens/time per model and stop the run when the budget is exhausted. */
+  private startMeter(usage: RunUsage, opts: RunOptions) {
+    const tokens = opts.budget?.tokens ?? this.cfg.orchestrator.maxTokens ?? 0;
+    const minutes = opts.budget?.minutes ?? this.cfg.orchestrator.maxMinutes ?? 0;
+    const ctrl = new AbortController();
+    const base = usage.seconds;
+    const t0 = Date.now();
+    const model = (k: string) => (usage.byModel[k] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0 });
+    const check = () => {
+      usage.seconds = Math.round((base + (Date.now() - t0) / 1000) * 10) / 10;
+      if (this.stopReason) return;
+      const used = usage.tokensIn + usage.tokensOut;
+      if (tokens > 0 && used >= tokens) this.stopReason = `token bütçesi doldu (${used} / ${tokens})`;
+      else if (minutes > 0 && usage.seconds >= minutes * 60) this.stopReason = `süre bütçesi doldu (${(usage.seconds / 60).toFixed(1)} / ${minutes} dk)`;
+      if (this.stopReason) {
+        this.bus.warn('orchestrator', `${this.stopReason}; çalışma durduruluyor (devam: kurultay run --resume)`);
+        ctrl.abort(new Error(this.stopReason));
+      }
+    };
+    const onEvent = (e: { type: string; source?: string; data?: Record<string, unknown> }) => {
+      if (e.type === 'llm.response') {
+        const m = model(e.source ?? '?');
+        const i = Number(e.data?.in ?? 0);
+        const o = Number(e.data?.out ?? 0);
+        usage.requests++;
+        usage.tokensIn += i;
+        usage.tokensOut += o;
+        m.requests++;
+        m.tokensIn += i;
+        m.tokensOut += o;
+        m.ms += Number(e.data?.ms ?? 0);
+        check();
+      } else if (e.type === 'llm.error') model(e.source ?? '?').errors++;
+      else if (e.type === 'llm.truncated') model(e.source ?? '?').truncated++;
+    };
+    this.bus.on('event', onEvent);
+    const timer = minutes > 0 ? setInterval(check, 1000) : undefined;
+    timer?.unref();
+    return {
+      usage,
+      signal: ctrl.signal,
+      dispose: () => {
+        if (timer) clearInterval(timer);
+        this.bus.off('event', onEvent);
+        usage.seconds = Math.round((base + (Date.now() - t0) / 1000) * 10) / 10;
+      },
+    };
+  }
 
-      reqCheck = await this.requirementCheck(fullTask, plan, integration, finalVerify, reports, opts.signal);
-      this.bus.emitEvent('run.requirements', { data: reqCheck });
-      if (reqCheck.complete && (finalVerify.skipped || finalVerify.ok)) break;
+  /** Plan with the council of planners; with approvePlan the user may revise it before any code is written. */
+  private async planWithApproval(fullTask: string, opts: RunOptions, signal: AbortSignal | undefined): Promise<{ plan: Plan; mode: RunMode } | undefined> {
+    let feedback = '';
+    let prev: Plan | undefined;
+    for (let round = 1; round <= 10; round++) {
+      const text = prev
+        ? `${fullTask}\n\n# USER FEEDBACK ON THE PREVIOUS PLAN (must be followed)\n${feedback}\n\n# PREVIOUS PLAN (revise it)\n${prev.subtasks.map((s) => `- ${s.id} ${s.title}: ${s.description.split('\n')[0]}`).join('\n')}`
+        : fullTask;
+      const drafts = Math.min(3, this.router.size);
+      const planners = [...this.router.pick('planner', drafts), ...this.router.pick('judge', 1)].map((h) => h.caps.key);
+      const context = this.buildContext(text, [], this.contextBudget(0.3, planners));
+      const plan = await makePlan(this.router, text, context, {
+        drafts,
+        contextTokens: this.contextBudget(0.45, planners),
+        bus: this.bus,
+        signal,
+        skillCatalogue: this.skills.catalogue(),
+      });
+      plan.authors.forEach((a) => this.used.add(a.replace(/ \(.*$/, '')));
+      const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, plan);
+      this.bus.emitEvent('run.plan', { data: { mode, subtasks: plan.subtasks.map((s) => s.title), acceptance: plan.acceptance, round } });
+      if (!opts.approvePlan) return { plan, mode };
+      const answer = await opts.approvePlan(plan, { mode, round });
+      if (answer === false) {
+        this.bus.info('orchestrator', 'plan reddedildi; görev iptal edildi');
+        return undefined;
+      }
+      if (answer === true || !answer.trim()) return { plan, mode };
+      feedback = feedback ? `${feedback}\n${answer.trim()}` : answer.trim();
+      prev = plan;
+      this.bus.emitEvent('run.replan', { message: answer.trim(), data: { round } });
+    }
+    return undefined;
+  }
 
-      // follow-up work for the next iteration
-      const followups: SubTask[] = reqCheck.missing.map((m, i) => ({
-        id: `F${iteration}.${i + 1}`,
-        title: m.slice(0, 80),
-        description: `Previous work is already applied. Complete this missing requirement:\n${m}`,
-        files: [],
-        dependsOn: [],
-        critical: false,
-      }));
-      if (!finalVerify.skipped && !finalVerify.ok) {
-        followups.unshift({
-          id: `V${iteration}`,
-          title: 'Derleme/test hatalarını düzelt',
-          description: `The combined changes fail verification. Fix the failures without reverting the intended functionality:\n${verifyFailureText(finalVerify)}`,
+  /** execute → verify → requirement-check loop, then merge; persists after every subtask. */
+  private async drive(st: SessionState, opts: RunOptions, meter: ReturnType<Orchestrator['startMeter']>, resumed = false): Promise<RunReport> {
+    const signal = anySignal(opts.signal, meter.signal);
+    const integration = Overlay.fromJSON(this.root, st.overlay);
+    const save = () => this.persist(st, integration);
+    try {
+      for (;;) {
+        if (!st.inProgress) {
+          if (!st.queue.length || st.iteration >= this.cfg.orchestrator.maxIterations) break;
+          st.iteration++;
+          st.doneIds = [];
+          st.inProgress = true;
+          this.bus.emitEvent('run.iteration', { data: { iteration: st.iteration, subtasks: st.queue.length } });
+          save();
+        }
+        const todo = st.queue.filter((t) => !st.doneIds.includes(t.id));
+        await this.executeDag(todo, integration, st.mode, st.plan, st.fullTask, st.iteration, st.reports, signal, (id) => {
+          st.doneIds.push(id);
+          save();
+        });
+        if (signal?.aborted) throw signal.reason ?? new Error('iptal edildi');
+
+        const finalVerify = await verifyOverlay(integration, this.materializer, this.cfg, signal);
+        st.finalVerify = finalVerify;
+        this.bus.emitEvent('run.verify', { data: { ok: finalVerify.ok, skipped: finalVerify.skipped } });
+        const reqCheck = await this.requirementCheck(st.fullTask, st.plan, integration, finalVerify, st.reports, signal);
+        if (signal?.aborted) throw signal.reason ?? new Error('iptal edildi');
+        st.requirementCheck = reqCheck;
+        this.bus.emitEvent('run.requirements', { data: reqCheck });
+        st.inProgress = false;
+        if (reqCheck.complete && (finalVerify.skipped || finalVerify.ok)) {
+          st.queue = [];
+          save();
+          break;
+        }
+        // follow-up work for the next iteration
+        const followups: SubTask[] = reqCheck.missing.map((m, i) => ({
+          id: `F${st.iteration}.${i + 1}`,
+          title: m.slice(0, 80),
+          description: `Previous work is already applied. Complete this missing requirement:\n${m}`,
           files: [],
           dependsOn: [],
-          critical: true,
-        });
+          critical: false,
+        }));
+        if (!finalVerify.skipped && !finalVerify.ok) {
+          followups.unshift({
+            id: `V${st.iteration}`,
+            title: 'Derleme/test hatalarını düzelt',
+            description: `The combined changes fail verification. Fix the failures without reverting the intended functionality:\n${verifyFailureText(finalVerify)}`,
+            files: [],
+            dependsOn: [],
+            critical: true,
+          });
+        }
+        // merge follow-ups touching the same concern into a single task when there are many
+        st.queue = followups.length > 3 ? [{ ...followups[0], id: `F${st.iteration}`, title: 'Eksikleri tamamla', description: followups.map((f) => `- ${f.description}`).join('\n'), critical: true }] : followups;
+        save();
       }
-      // merge follow-ups touching the same concern into a single task when there are many
-      queue = followups.length > 3 ? [{ ...followups[0], id: `F${iteration}`, title: 'Eksikleri tamamla', description: followups.map((f) => `- ${f.description}`).join('\n'), critical: true }] : followups;
+    } catch (e) {
+      st.phase = 'stopped';
+      st.stopReason = this.stopReason ?? errorMessage(e);
+      meter.dispose();
+      save();
+      if (!this.stopReason) throw e; // user abort / error: the session stays resumable
+      return this.finish(st, integration, 'incomplete', meter, resumed);
     }
+    return this.finish(st, integration, undefined, meter, resumed, opts);
+  }
 
-    // ---- 3. merge into the project
+  /** Merge (unless stopped/cancelled/dry-run), write REPORT.md and session.json. */
+  private async finish(st: SessionState, integration: Overlay, forced: RunReport['status'] | undefined, meter: ReturnType<Orchestrator['startMeter']>, resumed = false, opts: RunOptions = {}): Promise<RunReport> {
     const changedFiles = integration.changedFiles();
     const diff = integration.diff();
     const diffPath = join(this.sessionDir, 'changes.diff');
     writeFileSync(diffPath, diff);
+    const reqCheck = st.requirementCheck;
+    const finalVerify = st.finalVerify;
     let merge: MergeReport | undefined;
     let checkpointPath: string | undefined;
-    let status: RunReport['status'] = reqCheck?.complete && (!finalVerify || finalVerify.skipped || finalVerify.ok) ? 'completed' : changedFiles.length ? 'incomplete' : 'failed';
-    if (opts.dryRun) status = 'dry-run';
+    let status: RunReport['status'] = forced ?? (reqCheck?.complete && (!finalVerify || finalVerify.skipped || finalVerify.ok) ? 'completed' : changedFiles.length ? 'incomplete' : 'failed');
+    if (forced) {
+      /* stopped or cancelled: nothing is written to the project */
+    } else if (opts.dryRun) status = 'dry-run';
     else if (changedFiles.length) {
       let go = true;
       if (this.cfg.orchestrator.confirmMerge && opts.confirm) {
-        const st = diffStat(diff);
-        go = await opts.confirm(`${changedFiles.length} dosya, +${st.added}/-${st.removed} satır. Projeye uygulansın mı?`);
+        const ds = diffStat(diff);
+        go = await opts.confirm(`${changedFiles.length} dosya, +${ds.added}/-${ds.removed} satır. Projeye uygulansın mı?`);
       }
       if (go) {
         // everything applied is recorded so it can be rewound later (/rewind, kurultay rewind)
@@ -251,19 +492,20 @@ export class Orchestrator {
         merge = await this.materializer.merge(integration, opts.signal, recorder);
         if (recorder.size) {
           checkpointPath = join(this.sessionDir, 'checkpoint.json');
-          recorder.save(checkpointPath, `${sessionId}: ${task.split('\n')[0].slice(0, 120)}`);
+          recorder.save(checkpointPath, `${st.sessionId}: ${st.task.split('\n')[0].slice(0, 120)}`);
         }
         this.bus.emitEvent('run.merge', { data: { ...merge } });
       } else status = 'dry-run';
     }
-
+    if (!(forced === 'incomplete' && st.phase === 'stopped')) st.phase = 'finished';
+    meter.dispose();
     const report: RunReport = {
-      sessionId,
+      sessionId: st.sessionId,
       sessionDir: this.sessionDir,
-      task,
-      mode,
-      plan,
-      subtasks: reports,
+      task: st.task,
+      mode: st.mode,
+      plan: st.plan,
+      subtasks: st.reports,
       finalVerify,
       requirementCheck: reqCheck,
       merge,
@@ -271,20 +513,24 @@ export class Orchestrator {
       changedFiles,
       diffPath,
       reportPath: join(this.sessionDir, 'REPORT.md'),
-      iterations: iteration,
+      iterations: st.iteration,
       status,
+      stopReason: st.stopReason,
+      resumed: resumed || undefined,
+      usage: st.usage,
       modelsUsed: [...this.used],
       skills: { available: this.skills.size, used: [...this.skillUsage], diagnostics: this.skills.diagnostics },
     };
-    this.persist(sessionId, task, plan, integration, reports);
+    this.persist(st, integration);
     this.router.learned?.save();
     writeFileSync(report.reportPath, renderReport(report, diff));
-    this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length } });
+    this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length, stopReason: report.stopReason } });
     return report;
   }
 
   /** Run subtasks respecting depends_on; independent ones run concurrently. */
-  private async executeDag(tasks: SubTask[], integration: Overlay, mode: RunMode, plan: Plan, fullTask: string, iteration: number, reports: SubtaskReport[], signal?: AbortSignal): Promise<void> {
+  private async executeDag(tasks: SubTask[], integration: Overlay, mode: RunMode, plan: Plan, fullTask: string, iteration: number, reports: SubtaskReport[], signal?: AbortSignal, onDone?: (id: string) => void): Promise<void> {
+    if (!tasks.length) return;
     const done = new Set<string>();
     const failed = new Set<string>();
     const pending = new Map(tasks.map((t) => [t.id, t]));
@@ -303,19 +549,24 @@ export class Orchestrator {
           failed.add(id);
           reports.push({ subtask: t, iteration, candidates: [], fixes: 0, status: 'failed' });
           this.bus.warn('orchestrator', `${id} atlandı: bağımlılığı başarısız`);
+          onDone?.(id);
           continue;
         }
-        if (!deps.every((d) => done.has(d))) continue;
+        if (!deps.every((d) => done.has(d) || !tasks.some((x) => x.id === d))) continue; // deps outside this batch finished before a resume
         pending.delete(id);
         const p = this.runSubtask(t, integration, mode, plan, fullTask, iteration, signal)
           .then((r) => {
+            if (signal?.aborted) return; // interrupted: rerun on resume
             reports.push(r);
             (r.status === 'done' ? done : failed).add(id);
+            onDone?.(id);
           })
           .catch((e) => {
             failed.add(id);
+            if (signal?.aborted) return;
             reports.push({ subtask: t, iteration, candidates: [], fixes: 0, status: 'failed' });
             this.bus.error('orchestrator', `${id} hata: ${errorMessage(e)}`);
+            onDone?.(id);
           })
           .finally(() => running.delete(id));
         running.set(id, p);
@@ -567,12 +818,20 @@ Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement a
     return { complete: complete || missing.length === 0, missing: complete ? [] : missing, judges: valid.map((v) => v.model) };
   }
 
-  private persist(sessionId: string, task: string, plan: Plan, integration: Overlay, reports: SubtaskReport[]): void {
-    writeFileSync(
-      join(this.sessionDir, 'session.json'),
-      JSON.stringify({ sessionId, task, plan, overlay: integration.toJSON(), reports, savedAt: new Date().toISOString() }, null, 1),
-    );
+  private persist(st: SessionState, integration: Overlay): void {
+    st.overlay = integration.toJSON();
+    st.savedAt = new Date().toISOString();
+    writeFileSync(join(this.sessionDir, 'session.json'), JSON.stringify(st, null, 1));
   }
+}
+
+function emptyUsage(): RunUsage {
+  return { requests: 0, tokensIn: 0, tokensOut: 0, seconds: 0, byModel: {} };
+}
+
+function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const list = signals.filter((x): x is AbortSignal => !!x);
+  return list.length > 1 ? AbortSignal.any(list) : list[0];
 }
 
 const BUG_WORDS = /\b(fix|bug|crash|wrong|incorrect|broken|regression|leak|overflow|race|deadlock|hata|düzelt|yanlış|çök|sızıntı|taşma|bozuk)/i;
@@ -606,6 +865,9 @@ export function renderReport(r: RunReport, diff: string): string {
     `- **Mod:** ${r.mode} · **İterasyon:** ${r.iterations}`,
     `- **Değişen dosyalar:** ${r.changedFiles.length} (+${st.added} / -${st.removed})`,
     `- **Kullanılan modeller:** ${r.modelsUsed.join(', ') || '-'}`,
+    ...(r.usage ? [`- **Tüketim:** ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış token · ${fmtDuration(r.usage.seconds)}${r.resumed ? ' (sürdürülen oturum dahil)' : ''}`] : []),
+    ...(r.stopReason ? [`- **Durduruldu:** ${r.stopReason} — kaldığı yerden devam: \`kurultay run --resume ${r.sessionId}\``] : []),
+    ...(r.status === 'cancelled' ? ['- **İptal:** plan onaylanmadı, kod yazılmadı'] : []),
     '',
     '## Görev',
     '',
@@ -661,6 +923,37 @@ export function renderReport(r: RunReport, diff: string): string {
     if (r.skills.diagnostics.length) lines.push('', 'Uyarılar:', ...r.skills.diagnostics.map((d) => `- ${d.path}: ${d.message}`));
     lines.push('');
   }
+  if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model kullanımı', '', ...renderUsageTable(r.usage), '');
   lines.push('## Değişiklikler', '', `Tam diff: \`${r.diffPath}\``, '');
+  return lines.join('\n');
+}
+
+/** Markdown table of per-model consumption (REPORT.md, /stats). */
+export function renderUsageTable(u: RunUsage): string[] {
+  const rows = Object.entries(u.byModel).sort((a, b) => b[1].tokensIn + b[1].tokensOut - (a[1].tokensIn + a[1].tokensOut));
+  return [
+    '| Model | İstek | Giriş token | Çıkış token | Ort. yanıt | Hata | Kesilme |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...rows.map(([k, m]) => `| ${k} | ${m.requests} | ${fmtTokens(m.tokensIn)} | ${fmtTokens(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' sn' : '-'} | ${m.errors} | ${m.truncated} |`),
+  ];
+}
+
+export function fmtTokens(n: number): string {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}K` : String(n);
+}
+
+export function fmtDuration(sec: number): string {
+  return sec >= 3600 ? `${Math.floor(sec / 3600)} sa ${Math.round((sec % 3600) / 60)} dk` : sec >= 60 ? `${Math.floor(sec / 60)} dk ${Math.round(sec % 60)} sn` : `${sec.toFixed(1)} sn`;
+}
+
+/** Plan as shown for approval (console /plan, run --approve-plan). */
+export function renderPlan(plan: Plan, mode: RunMode): string {
+  const lines = [`Plan (${mode} modu, ${plan.subtasks.length} alt görev; yazarlar: ${plan.authors.join(', ') || '-'})`];
+  if (plan.understanding) lines.push('', plan.understanding);
+  for (const s of plan.subtasks) {
+    lines.push('', `${s.id}. ${s.title}${s.critical ? ' [kritik]' : ''}${s.dependsOn.length ? ` (önce: ${s.dependsOn.join(', ')})` : ''}`, ...s.description.split('\n').map((l) => `   ${l}`));
+    if (s.files.length) lines.push(`   dosyalar: ${s.files.join(', ')}`);
+  }
+  if (plan.acceptance.length) lines.push('', 'Kabul kriterleri:', ...plan.acceptance.map((a) => `  - ${a}`));
   return lines.join('\n');
 }

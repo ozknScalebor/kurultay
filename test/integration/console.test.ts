@@ -358,4 +358,34 @@ describe('Kurultay console', () => {
     assert.match(readFileSync(join(proj, 'src/mathutil.js'), 'utf8'), /TODO/, 'project untouched after cancel');
     await slow.close();
   });
+
+  it('plan mode asks before writing code; /stats and /continue-run', async () => {
+    home();
+    const proj = tmpProject({ ...CLAMP_PROJECT });
+    const { code, out } = await session(
+      [proj, '/stats', '/continue-run', '/plan on', 'Implement clamp in src/mathutil.js', 'kenar durumlarını da test et', '', 'e', '/stats', '/plan off', '/exit'],
+      { cwd: proj },
+    );
+    assert.equal(code, 0, out);
+    assert.match(out, /henüz görev çalıştırılmadı/);
+    assert.match(out, /Sürdürülecek yarım kalmış görev yok/);
+    assert.match(out, /plan onayı: açık/);
+    assert.match(out, /Plan \(\w+ modu[\s\S]*Plan onaylansın mı\?[\s\S]*kenar durumlarını da test et\nPlan geri bildirimle yeniden hazırlanıyor[\s\S]*Plan onaylansın mı\?/);
+    assert.match(out, /Sonuç: completed/);
+    assert.match(out, /Tüketim: \d+ istek/);
+    assert.match(out, /Son görev: .* \d+ istek[\s\S]*Model[\s\S]*mock-coder/);
+    assert.match(out, /plan onayı: kapalı/);
+  });
+
+  it('a run stopped by its budget is continued with /continue-run', async () => {
+    const h = home();
+    writeFileSync(join(h, 'config.json'), JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], verify: { test: 'node test.js' }, skills: { includeUser: false }, orchestrator: { maxTokens: 1 } }));
+    const proj = tmpProject({ ...CLAMP_PROJECT });
+    const { code, out } = await session([proj, '/auto-apply on', 'Implement clamp in src/mathutil.js', '/continue-run', '/continue-run 1', '/continue-run bogus-id', '/exit'], { cwd: proj });
+    assert.equal(code, 0, out);
+    assert.match(out, /Durduruldu: token bütçesi doldu.*\/continue-run/);
+    assert.ok((out.match(/Sonuç: incomplete/g) ?? []).length >= 3, out);
+    assert.match(out, /Oturum bulunamadı: bogus-id/);
+    assert.match(readFileSync(join(proj, 'src/mathutil.js'), 'utf8'), /TODO/, 'stopped runs never touch the project');
+  });
 });
