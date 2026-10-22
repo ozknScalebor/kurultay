@@ -3,7 +3,8 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { ProjectAnalyzer } from './analyze/summarizer.js';
-import { createApp, loadOrBuildIndex, prepareRetrieval, type App } from './app.js';
+import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from './app.js';
+import { closeLspServers } from './lsp/client.js';
 import { VectorStore } from './index/embeddings.js';
 import { ConfigError, SAMPLE_CONFIG, kurultayHome, loadConfig, type RunMode } from './config.js';
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
@@ -243,6 +244,7 @@ async function cmdRun(app: App, args: Args) {
     ctrl.abort(new Error('kullanıcı iptal etti'));
   };
   process.once('SIGINT', onSig);
+  let mcp: Awaited<ReturnType<typeof startMcp>>;
   try {
     const { index } = loadOrBuildIndex(app);
     await prepareRetrieval(app, index, { signal: ctrl.signal });
@@ -250,6 +252,8 @@ async function cmdRun(app: App, args: Args) {
     const reqFile = typeof args.flags.req === 'string' ? args.flags.req : undefined;
     const requirements = reqFile ? readFileSync(resolve(reqFile), 'utf8') : undefined;
     const orch = new Orchestrator(app.root, app.config, app.router, app.materializer, index, app.bus);
+    mcp = await startMcp(app);
+    orch.external = mcp;
     if (args.flags.yes || args.flags.y) app.config.orchestrator.confirmMerge = false;
     const opts = {
       mode: (args.flags.mode as RunMode) || undefined,
@@ -280,6 +284,8 @@ async function cmdRun(app: App, args: Args) {
     if (report.status !== 'completed') process.exitCode = 2;
   } finally {
     process.off('SIGINT', onSig);
+    mcp?.close();
+    await closeLspServers();
     stop();
   }
 }

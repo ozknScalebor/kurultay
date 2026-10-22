@@ -8,6 +8,7 @@ import { DEFAULT_MOCK_MODELS, startMockServer, type MockServerHandle } from '../
 import { KurultayConsole, type ConsoleOptions } from '../../src/tui/console.js';
 import { stripAnsi } from '../../src/tui/keys.js';
 import { CLAMP_PROJECT, tmpProject } from '../helpers.js';
+import { FAKE_MCP, script } from '../fixtures.js';
 
 let mock: MockServerHandle;
 const prevHome = process.env.KURULTAY_HOME;
@@ -387,5 +388,16 @@ describe('Kurultay console', () => {
     assert.ok((out.match(/Sonuç: incomplete/g) ?? []).length >= 3, out);
     assert.match(out, /Oturum bulunamadı: bogus-id/);
     assert.match(readFileSync(join(proj, 'src/mathutil.js'), 'utf8'), /TODO/, 'stopped runs never touch the project');
+  });
+
+  it('/mcp lists the tools of the configured MCP servers', async () => {
+    const h = home();
+    writeFileSync(join(h, 'config.json'), JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], skills: { includeUser: false }, mcp: { servers: { tracker: { command: process.execPath, args: [script(FAKE_MCP)] } } } }));
+    const proj = tmpProject({ ...CLAMP_PROJECT });
+    const { code, out } = await session([proj, '/mcp', '/mcp restart', '/exit'], { cwd: proj });
+    assert.equal(code, 0, out);
+    assert.match(out, /✓ MCP: 3 araç \(tracker\)/);
+    assert.match(out, /mcp__tracker__lookup_ticket \(salt okunur\)\s+\[MCP tracker\] Read a ticket/);
+    assert.match(out, /mcp__tracker__create_ticket\s+\[MCP tracker\]/);
   });
 });
