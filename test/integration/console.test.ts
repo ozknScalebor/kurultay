@@ -114,7 +114,7 @@ describe('Kurultay console', () => {
     assert.match(out, /Projeye uygulansın mı\? \[e\/H\] e/);
     assert.match(out, /Sonuç: completed · 1 dosya/);
     assert.match(readFileSync(join(proj, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/);
-    assert.match(out, /\+  return Math\.min/);
+    assert.match(out, /\+ {2}return Math\.min/);
     assert.match(out, /Kurultay Çalışma Raporu\n═+/, 'report rendered as markdown');
     assert.match(out, /Geri almak için: \/rewind/);
     assert.match(out, / 1\) clamp fonksiyonu nerede\?\s+3 tur/, 'conversation saved with its turns');
@@ -268,7 +268,7 @@ describe('Kurultay console', () => {
     assert.match(first.out, /Bu oturumda henüz tur yok/);
     assert.match(first.out, /Geri alınacak tur yok/);
     assert.match(first.out, /Dallandırılacak bir konuşma yok/);
-    assert.match(first.out, /#1 soru  clamp nerede\?\n\s+#2 görev Implement clamp in src\/mathutil\.js \[1 dosya uygulandı\]/);
+    assert.match(first.out, /#1 soru {2}clamp nerede\?\n\s+#2 görev Implement clamp in src\/mathutil\.js \[1 dosya uygulandı\]/);
     assert.match(first.out, /✓ dal oluşturuldu: deneme dalı/);
     assert.match(first.out, /● {2}1\) deneme dalı\s+2 tur .*⑂/, 'branch is current and points to its parent');
     assert.match(first.out, /2\) clamp nerede\?\s+2 tur/);

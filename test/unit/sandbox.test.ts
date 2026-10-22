@@ -18,24 +18,27 @@ describe('sandboxes (isolated parallel builds)', () => {
     const o2 = new Overlay('w2', root);
     o2.write('a.txt', 'two');
     o2.write('new.txt', 'n');
+    // event-based proof of parallelism (no timing assumptions): each command waits at a
+    // barrier until the other one has started; run one at a time they would both time out
+    const barrier = tmpProject({});
+    const waitAtBarrier = node(
+      `const fs=require('fs'),p=require('path'),d=${JSON.stringify(barrier)};fs.writeFileSync(p.join(d,String(process.pid)),'');` +
+        `const t=Date.now();while(fs.readdirSync(d).length<2&&Date.now()-t<8000)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);` +
+        `console.log(fs.readFileSync('a.txt','utf8')+':'+(fs.readdirSync(d).length>=2?'together':'alone'))`,
+    );
     const seen: string[] = [];
-    const spans: Array<[number, number]> = [];
     await Promise.all(
       [o1, o2].map((o) =>
         m.execute(o, async (cwd) => {
           assert.notEqual(cwd, root);
           assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'orig', 'the real project is never modified');
-          const start = Date.now();
-          const r = await runShell(node("setTimeout(()=>console.log(require('fs').readFileSync('a.txt','utf8')),400)"), cwd, 10_000);
+          const r = await runShell(waitAtBarrier, cwd, 15_000);
           seen.push(r.output.trim());
-          spans.push([start, Date.now()]);
           return r;
         }),
       ),
     );
-    assert.deepEqual(seen.sort(), ['one', 'two']);
-    const [a, b] = spans.sort((x, y) => x[0] - y[0]);
-    assert.ok(b[0] < a[1], `the two commands overlapped in time (${JSON.stringify(spans)})`);
+    assert.deepEqual(seen.sort(), ['one:together', 'two:together'], 'both commands were running at the same time, each in its own copy');
     const sb = join(root, '.kurultay', 'sandboxes', 'sb-1');
     assert.ok(!existsSync(join(sb, 'build')), 'build outputs are not copied');
     assert.ok(lstatSync(join(sb, 'node_modules')).isSymbolicLink(), 'node_modules is linked');
