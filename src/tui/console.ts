@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { cpSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { modifiedSince, readCheckpoint, rewindCheckpoint } from '../agent/checkpoint.js';
 import { ProjectAnalyzer } from '../analyze/summarizer.js';
 import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex, type App } from '../app.js';
@@ -18,7 +20,10 @@ import { attachTerminal, color } from '../ui/terminal.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus } from '../util/events.js';
 import { truncateTokens } from '../util/text.js';
+import { branchConversation, findConversation, listConversations, loadConversation, newConversation, relativeTime, saveConversation, type Conversation, type Turn } from './conversation.js';
 import type { Completion, Suggestion } from './editor.js';
+import { renderMarkdown } from './markdown.js';
+import { commitWorktree, createWorktree, currentBranch, listWorktrees, mergeWorktree, realPath, removeWorktree, repoRoot, worktreeDiff, type WorktreeInfo } from './worktree.js';
 import { banner, helpText, llmPanel, type EndpointHealth } from './panels.js';
 import { Screen, type TermIO } from './screen.js';
 import { checkWorkspace, completePath, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath, type ConsoleState } from './state.js';
@@ -36,6 +41,10 @@ export interface ConsoleOptions {
   forceInteractive?: boolean;
   /** endpoint health-check timeout (ms) */
   healthTimeoutMs?: number;
+  /** resume a saved conversation: true = the latest one, string = id / list number */
+  resume?: string | true;
+  /** start inside a new git worktree with this name */
+  worktree?: string;
 }
 
 interface Command {
@@ -102,6 +111,12 @@ export class KurultayConsole {
   private dashboard: Server | undefined;
   private askHistory: AskTurn[] = [];
   private lastReport: RunReport | undefined;
+  /** the conversation being recorded (saved after every turn) */
+  private conversation: Conversation | undefined;
+  /** main repository root while working inside a worktree */
+  private mainRoot: string | undefined;
+  private mainConfig: string | undefined;
+  private activeRequests = 0;
   private exitRequested = false;
   private readonly commands: Command[];
   readonly settings = {
@@ -124,6 +139,63 @@ export class KurultayConsole {
       this.exitRequested = true;
     };
     this.commands = this.buildCommands();
+    // in-flight LLM requests for the activity line
+    this.bus.on('event', (e: { type: string }) => {
+      if (e.type === 'llm.request') this.activeRequests++;
+      else if (e.type === 'llm.response' || e.type === 'llm.error') this.activeRequests = Math.max(0, this.activeRequests - 1);
+    });
+  }
+
+  /** Markdown → terminal text (colours only on a real terminal). */
+  private md(text: string): string {
+    return renderMarkdown(text, { width: Math.min(this.screen.columns - 2, 120), ansi: this.screen.interactive && !process.env.NO_COLOR });
+  }
+
+  /** Where conversations live: the main repository even while inside a worktree. */
+  private get convStateDir(): string {
+    const root = this.mainRoot ?? this.app!.root;
+    return join(root, this.app!.config.stateDir);
+  }
+
+  private snapshotSettings(): Conversation['settings'] {
+    const s = this.settings;
+    return { mode: s.mode, intent: s.intent, dryRun: s.dryRun, autoApply: s.autoApply, skills: [...s.skills] };
+  }
+
+  private recordTurn(t: Omit<Turn, 'n' | 'at'>): void {
+    if (!this.app) return;
+    this.conversation ??= newConversation(this.mainRoot ?? this.app.root, this.snapshotSettings());
+    const c = this.conversation;
+    c.turns.push({ ...t, n: (c.turns[c.turns.length - 1]?.n ?? 0) + 1, at: new Date().toISOString() });
+    c.settings = this.snapshotSettings();
+    try {
+      saveConversation(this.convStateDir, c);
+    } catch (e) {
+      this.out(color.yellow(`konuşma kaydedilemedi: ${errorMessage(e)}`));
+    }
+  }
+
+  private footer(): string {
+    const parts: string[] = [];
+    const br = this.workspace ? currentBranch(this.workspace) : undefined;
+    if (br) parts.push(`⎇ ${br}${this.mainRoot ? ' (worktree)' : ''}`);
+    parts.push(`mod ${this.settings.mode ?? this.config?.orchestrator.defaultMode ?? 'auto'}`);
+    if (this.router) {
+      const st = this.router.stats();
+      const ready = st.filter((x) => !x.circuitOpen).length;
+      parts.push(`${ready}/${st.length} model hazır`);
+    }
+    if (this.settings.dryRun) parts.push('dry-run');
+    if (this.settings.skills.length) parts.push(`skill: ${this.settings.skills.join(',')}`);
+    const c = this.conversation;
+    parts.push(c?.turns.length ? `oturum: ${(c.title || c.id).slice(0, 30)} (${c.turns.length} tur)` : 'yeni oturum');
+    // the path goes last: the most useful facts survive when the line is cut to the terminal width
+    if (this.workspace) parts.push(shortPath(this.workspace));
+    return parts.join(' · ');
+  }
+
+  private makeApp(root: string): Promise<App> {
+    return createApp({ root, config: this.opts.config ?? (this.mainRoot ? this.mainConfig : undefined), bus: this.bus, requireModels: true, discoverTimeoutMs: this.opts.healthTimeoutMs ?? 8000 });
   }
 
   private out(s = ''): void {
@@ -145,6 +217,8 @@ export class KurultayConsole {
       this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
       this.out('');
       if (!(await this.selectWorkspace())) return 0;
+      if (this.opts.resume) await this.resume(this.opts.resume === true ? '1' : this.opts.resume);
+      if (this.opts.worktree) await this.worktreeCommand(`new ${this.opts.worktree}`);
       this.out(color.dim(`Soru sorun veya yapılacak işi yazın. Komutlar için ${color.cyan('/')} yazın.`));
       await this.loop();
       return 0;
@@ -168,7 +242,7 @@ export class KurultayConsole {
     while (!this.exitRequested) {
       const name = basename(this.workspace ?? '') || 'kurultay';
       const flags = [this.settings.mode ?? '', this.settings.dryRun ? 'dry-run' : ''].filter(Boolean).join(' ');
-      const line = await this.screen.readLine(`${color.cyan(name)}${flags ? color.dim(` [${flags}]`) : ''} ${color.bold('❯')} `, (t, c) => this.complete(t, c));
+      const line = await this.screen.readLine(`${color.cyan(name)}${flags ? color.dim(` [${flags}]`) : ''} ${color.bold('❯')} `, (t, c) => this.complete(t, c), () => this.footer());
       if (line === null) break;
       await this.handle(line);
       this.state.history = this.screen.history;
@@ -361,19 +435,27 @@ export class KurultayConsole {
   }
 
   /** Open a workspace: load its config, index it, and (optionally) probe and analyze automatically. */
-  async openWorkspace(path: string): Promise<void> {
+  async openWorkspace(path: string, o: { keepConversation?: boolean } = {}): Promise<void> {
     this.detachLog?.();
     this.out(`${color.bold('Çalışma alanı')}: ${shortPath(path)}`);
-    rememberWorkspace(this.state, path);
-    saveState(this.state);
-    this.app = await createApp({ root: path, config: this.opts.config, bus: this.bus, requireModels: true, discoverTimeoutMs: this.opts.healthTimeoutMs ?? 8000 });
+    if (!o.keepConversation) {
+      this.mainRoot = undefined;
+      rememberWorkspace(this.state, path);
+      saveState(this.state);
+    }
+    this.app = await this.makeApp(path);
     this.config = this.app.config;
     if (this.app.configPath !== this.configPath) this.out(color.dim(`  yapılandırma: ${shortPath(this.app.configPath)}`));
     this.configPath = this.app.configPath;
     this.router = this.app.router;
     this.probed = this.app.probed;
     this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l) });
-    this.askHistory = [];
+    if (!o.keepConversation) {
+      this.askHistory = [];
+      this.conversation = undefined;
+      const prev = listConversations(join(path, this.app.config.stateDir))[0];
+      if (prev && !this.opts.resume) this.out(color.dim(`  son oturum: "${prev.title}" (${prev.turns.length} tur, ${relativeTime(prev.updatedAt)}) — devam etmek için /resume`));
+    }
 
     if (this.opts.autoIndex !== false) this.reindex();
     if (this.opts.autoProbe !== false && !this.probed && this.app.router.size > 0) {
@@ -412,6 +494,7 @@ export class KurultayConsole {
       ctrl.abort(new Error('kullanıcı iptal etti'));
     };
     const release = this.screen.busy(stop);
+    const endActivity = this.screen.activity(label, () => (this.activeRequests ? `${this.activeRequests} LLM isteği sürüyor` : ''));
     // in line mode (no raw terminal) Ctrl+C arrives as SIGINT
     if (!this.screen.interactive) process.once('SIGINT', stop);
     try {
@@ -424,6 +507,7 @@ export class KurultayConsole {
       this.out(color.red(`${label} başarısız: ${errorMessage(e)}`));
       return undefined;
     } finally {
+      endActivity();
       release();
       process.off('SIGINT', stop);
     }
@@ -438,7 +522,7 @@ export class KurultayConsole {
     const ok = file.models.filter((m) => m.reachable);
     this.out(`  ${color.green('✓')} yetenek analizi: ${ok.length}/${file.models.length} model erişilebilir`);
     if (this.app) {
-      this.app = await createApp({ root: this.app.root, config: this.opts.config, bus: this.bus, requireModels: true, discoverTimeoutMs: 8000 });
+      this.app = await this.makeApp(this.app.root);
       this.router = this.app.router;
       this.probed = this.app.probed;
     } else {
@@ -470,8 +554,9 @@ export class KurultayConsole {
     const r = await this.withAbort('Soru', (signal) => askProject(app, this.index!, m.text + extra, { history: this.askHistory, signal }));
     if (!r) return;
     this.askHistory.push({ question: m.text, answer: r.answer });
+    this.recordTurn({ kind: 'ask', input: question, output: r.answer, models: r.members });
     this.out('');
-    this.out(r.answer.trim());
+    this.out(this.md(r.answer.trim()));
     this.out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
   }
 
@@ -501,8 +586,218 @@ export class KurultayConsole {
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
     if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} dosya daha`));
     if (report.merge?.conflicts.length) this.out(color.yellow(`Çakışmalar: ${report.merge.conflicts.join(', ')}`));
-    this.out(color.dim(`Rapor: ${shortPath(report.reportPath)} (/report) · Diff: /diff`));
+    this.out(color.dim(`Rapor: ${shortPath(report.reportPath)} (/report) · Diff: /diff${report.checkpointPath ? ' · Geri almak için: /rewind' : ''}`));
+    this.recordTurn({
+      kind: 'run',
+      input: task,
+      output: `${report.status} · ${report.changedFiles.length} dosya · ${report.iterations} iterasyon`,
+      models: report.modelsUsed,
+      run: { sessionId: report.sessionId, sessionDir: report.sessionDir, status: report.status, changedFiles: report.changedFiles, checkpointPath: report.checkpointPath },
+    });
     this.reindex(true);
+  }
+
+  // ------------------------------------------------------------------ sessions: resume / branch / rewind / worktree
+
+  private conversationList(): Conversation[] {
+    return this.app ? listConversations(this.convStateDir) : [];
+  }
+
+  private printConversations(): void {
+    const list = this.conversationList();
+    if (!list.length) return this.out(color.dim('Kayıtlı oturum yok. Soru sorun veya görev verin; her tur otomatik kaydedilir.'));
+    list.slice(0, 15).forEach((c, i) => {
+      const cur = c.id === this.conversation?.id ? color.green('●') : ' ';
+      const parent = c.parent ? color.dim(` ⑂ ${c.parent.id.slice(0, 19)} #${c.parent.turn}`) : '';
+      this.out(`${cur} ${color.cyan(String(i + 1).padStart(2))}) ${c.title || '(başlıksız)'}  ${color.dim(`${c.turns.length} tur · ${relativeTime(c.updatedAt)} · ${c.id}`)}${parent}`);
+    });
+    this.out(color.dim('Devam etmek için /resume <numara>, dallandırmak için /branch'));
+  }
+
+  private applyConversation(c: Conversation): void {
+    this.conversation = c;
+    const s = c.settings;
+    this.settings.mode = s.mode;
+    this.settings.intent = s.intent;
+    this.settings.dryRun = s.dryRun;
+    this.settings.autoApply = s.autoApply;
+    this.settings.skills = [...s.skills];
+    this.askHistory = c.turns.filter((t) => t.kind === 'ask').map((t) => ({ question: t.input, answer: t.output }));
+  }
+
+  /** Continue a saved conversation: settings, question history and a short recap. */
+  async resume(ref: string): Promise<void> {
+    const list = this.conversationList();
+    if (!list.length) return this.out(color.dim('Devam edilecek kayıtlı oturum yok.'));
+    const c = findConversation(list, ref);
+    if (!c) return this.out(color.yellow(`Oturum bulunamadı: ${ref}. Liste için /sessions`));
+    this.applyConversation(c);
+    this.out(`${color.green('✓')} oturuma devam: ${color.bold(c.title || c.id)} ${color.dim(`(${c.turns.length} tur, ${relativeTime(c.updatedAt)})`)}`);
+    for (const t of c.turns.slice(-3)) {
+      this.out(color.dim(`  #${t.n} ${t.kind === 'ask' ? 'soru' : 'görev'}: `) + t.input.split('\n')[0].slice(0, 100));
+      this.out(color.dim(`     → ${t.output.replace(/\s+/g, ' ').slice(0, 160)}`));
+    }
+  }
+
+  private branch(title: string): void {
+    const c = this.conversation;
+    if (!c?.turns.length) return this.out(color.yellow('Dallandırılacak bir konuşma yok (henüz tur yok).'));
+    saveConversation(this.convStateDir, c);
+    const b = branchConversation(c, c.turns.length, title);
+    saveConversation(this.convStateDir, b);
+    this.applyConversation(b);
+    this.out(`${color.green('✓')} dal oluşturuldu: ${color.bold(b.title)} ${color.dim(b.id)}`);
+    this.out(color.dim(`  ana konuşmaya dönmek için: /resume ${c.id}  (kod dallanmaz; ayrı kod için /worktree new <ad>)`));
+  }
+
+  private history(): void {
+    const c = this.conversation;
+    if (!c?.turns.length) return this.out(color.dim('Bu oturumda henüz tur yok.'));
+    for (const t of c.turns) {
+      const applied = t.run?.checkpointPath ? (readCheckpoint(t.run.checkpointPath)?.rewoundAt ? color.dim(' [geri alındı]') : color.yellow(` [${t.run.changedFiles.length} dosya uygulandı]`)) : '';
+      this.out(`  ${color.cyan(`#${t.n}`)} ${t.kind === 'ask' ? 'soru ' : 'görev'} ${t.input.split('\n')[0].slice(0, 90)}${applied}`);
+    }
+  }
+
+  /**
+   * Rewind to just before turn `n`: undo every change applied by that turn and
+   * the later ones (newest first), and drop those turns from the conversation.
+   */
+  async rewind(arg: string): Promise<void> {
+    const c = this.conversation;
+    if (!c?.turns.length) return this.out(color.dim('Geri alınacak tur yok.'));
+    let ref = arg.trim();
+    if (!ref) {
+      this.history();
+      const a = await this.screen.readLine(`Hangi turun öncesine dönülsün? [1-${c.turns[c.turns.length - 1].n}, boş = vazgeç] ❯ `);
+      ref = (a ?? '').trim();
+      if (!ref) return this.out(color.dim('Vazgeçildi.'));
+    }
+    const n = Number(ref.replace(/^#/, ''));
+    if (!Number.isInteger(n) || !c.turns.some((t) => t.n === n)) return this.out(color.yellow(`Geçersiz tur: ${ref}`));
+    const undo = c.turns.filter((t) => t.n >= n && t.run?.checkpointPath && existsSync(t.run.checkpointPath) && !readCheckpoint(t.run.checkpointPath)?.rewoundAt).reverse();
+    const root = this.app!.root;
+    if (undo.length) {
+      const files = [...new Set(undo.flatMap((t) => Object.keys(readCheckpoint(t.run!.checkpointPath!)?.files ?? {})))];
+      this.out(`${undo.length} görevin uyguladığı ${files.length} dosya eski hâline dönecek: ${files.slice(0, 12).join(', ')}${files.length > 12 ? ' …' : ''}`);
+      // only the newest checkpoint of each file is compared with the disk: older ones were changed by later turns on purpose
+      const seen = new Set<string>();
+      const touched: string[] = [];
+      for (const t of undo) {
+        const cp = readCheckpoint(t.run!.checkpointPath!)!;
+        for (const f of modifiedSince(root, cp)) if (!seen.has(f)) touched.push(f);
+        for (const f of Object.keys(cp.files)) seen.add(f);
+      }
+      if (touched.length) this.out(color.yellow(`Uyarı: şu dosyalar uygulamadan sonra değişmiş, sizin değişiklikleriniz kaybolabilir: ${touched.join(', ')}`));
+      if (!(await this.screen.confirm('Geri alınsın mı?'))) return this.out(color.dim('Vazgeçildi.'));
+      for (const t of undo) {
+        const r = rewindCheckpoint(root, t.run!.checkpointPath!, { force: true });
+        this.out(`  ${color.green('↶')} #${t.n}: ${r.restored.length} dosya geri yüklendi`);
+      }
+    }
+    const dropped = c.turns.filter((t) => t.n >= n).length;
+    c.turns = c.turns.filter((t) => t.n < n);
+    saveConversation(this.convStateDir, c);
+    this.applyConversation(c);
+    this.out(`${color.green('✓')} #${n} öncesine dönüldü (${dropped} tur konuşmadan çıkarıldı${undo.length ? ', kod geri alındı' : ''}).`);
+    this.reindex(true);
+  }
+
+  private currentWorktrees(): WorktreeInfo[] {
+    const root = this.mainRoot ?? this.app!.root;
+    return listWorktrees(root);
+  }
+
+  /** /worktree new|list|exit|diff|merge|remove */
+  async worktreeCommand(arg: string): Promise<void> {
+    const [sub = 'list', ...rest] = arg.trim().split(/\s+/).filter(Boolean);
+    const name = rest.join(' ');
+    const main = this.mainRoot ?? this.app!.root;
+    if (!repoRoot(main)) return this.out(color.yellow('Bu çalışma alanı bir git deposu değil; worktree kullanılamaz.'));
+    const find = (n: string): WorktreeInfo | undefined => {
+      const all = this.currentWorktrees();
+      if (!n && this.mainRoot) return all.find((w) => w.path === realPath(this.app!.root));
+      return all.find((w) => w.slug === n || w.branch === n);
+    };
+    try {
+      switch (sub) {
+        case 'new':
+        case 'add': {
+          if (!name) return this.out(color.yellow('Kullanım: /worktree new <ad>'));
+          const wt = createWorktree(main, name);
+          // reuse the main workspace's index, analysis and capability profile instead of recomputing
+          const src = join(main, this.app!.config.stateDir);
+          const dst = join(wt.path, this.app!.config.stateDir);
+          for (const item of ['index', 'ARCHITECTURE.md', 'INDEX.md', 'modules', 'flows', 'PROJECT_NOTES.md', 'capabilities.json', 'CAPABILITIES.md', 'rules', 'skills', 'review_rules.md']) {
+            if (existsSync(join(src, item))) cpSync(join(src, item), join(dst, item), { recursive: true });
+          }
+          this.mainConfig = existsSync(join(main, 'kurultay.config.json')) ? join(main, 'kurultay.config.json') : this.mainConfig;
+          this.mainRoot = main;
+          this.out(`${color.green('✓')} worktree: ${shortPath(wt.path)} (dal ${wt.branch})`);
+          await this.openWorkspace(wt.path, { keepConversation: true });
+          this.out(color.dim('  bitince: /worktree diff · /worktree merge · /worktree exit'));
+          return;
+        }
+        case 'list': {
+          const all = this.currentWorktrees();
+          this.out(`${color.bold('Ana depo')}: ${shortPath(main)} ${color.dim(`(⎇ ${currentBranch(main) ?? '?'})`)}${this.mainRoot ? '' : color.green('  ● şu an burada')}`);
+          if (!all.length) return this.out(color.dim('  worktree yok — /worktree new <ad>'));
+          for (const w of all) this.out(`  ${w.path === realPath(this.app!.root) ? color.green('●') : ' '} ${color.cyan(w.slug)}  ${color.dim(`${w.branch}${w.dirty ? ' · kaydedilmemiş değişiklik var' : ''}`)}`);
+          return;
+        }
+        case 'exit': {
+          if (!this.mainRoot) return this.out(color.dim('Zaten ana depodasınız.'));
+          const back = this.mainRoot;
+          this.mainRoot = undefined;
+          await this.openWorkspace(back, { keepConversation: true });
+          this.out(color.dim('  worktree korunuyor: /worktree list'));
+          return;
+        }
+        case 'diff': {
+          const wt = find(name);
+          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Hangi worktree? /worktree diff <ad>'));
+          const d = worktreeDiff(main, wt);
+          this.out(d.trim() ? this.md('```diff\n' + d + '\n```') : color.dim('(fark yok)'));
+          return;
+        }
+        case 'merge': {
+          const wt = find(name);
+          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Hangi worktree? /worktree merge <ad>'));
+          if (!(await this.screen.confirm(`${wt.branch} dalı ${shortPath(main)} içindeki ${currentBranch(main) ?? 'mevcut'} dalına birleştirilsin mi?`))) return this.out(color.dim('Vazgeçildi.'));
+          const r = mergeWorktree(main, wt);
+          if (!r.ok) return this.out(color.red(`Birleştirme başarısız (geri alındı):\n${r.output}`));
+          this.out(`${color.green('✓')} ${wt.branch} birleştirildi.`);
+          if (this.mainRoot) {
+            this.mainRoot = undefined;
+            await this.openWorkspace(main, { keepConversation: true });
+          } else this.reindex(true);
+          return;
+        }
+        case 'commit': {
+          const wt = find(name);
+          if (!wt) return this.out(color.yellow('Hangi worktree?'));
+          this.out(commitWorktree(wt, `kurultay: ${wt.slug}`) ? `${color.green('✓')} kaydedildi (${wt.branch})` : color.dim('Kaydedilecek değişiklik yok.'));
+          return;
+        }
+        case 'remove':
+        case 'rm': {
+          const wt = find(name);
+          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Kullanım: /worktree remove <ad>'));
+          if (!(await this.screen.confirm(`${wt.slug} worktree'si ve ${wt.branch} dalı silinsin mi?${wt.dirty ? ' (kaydedilmemiş değişiklikler kaybolur)' : ''}`))) return this.out(color.dim('Vazgeçildi.'));
+          if (this.mainRoot && wt.path === realPath(this.app!.root)) {
+            this.mainRoot = undefined;
+            await this.openWorkspace(main, { keepConversation: true });
+          }
+          removeWorktree(main, wt);
+          this.out(`${color.green('✓')} ${wt.slug} silindi.`);
+          return;
+        }
+        default:
+          this.out(color.yellow('Kullanım: /worktree new <ad> | list | diff [ad] | merge [ad] | commit [ad] | exit | remove <ad>'));
+      }
+    } catch (e) {
+      this.out(color.red(errorMessage(e)));
+    }
   }
 
   private async shell(command: string): Promise<void> {
@@ -590,7 +885,7 @@ export class KurultayConsole {
 
   private async reloadModels(): Promise<void> {
     if (this.app) {
-      this.app = await createApp({ root: this.app.root, config: this.opts.config, bus: this.bus, requireModels: true, discoverTimeoutMs: 8000 });
+      this.app = await this.makeApp(this.app.root);
       this.config = this.app.config;
       this.configPath = this.app.configPath;
     }
@@ -794,9 +1089,9 @@ export class KurultayConsole {
         },
       },
       {
-        name: 'sessions',
+        name: 'runs',
         ws: true,
-        description: 'son görev oturumları',
+        description: 'son görev çalıştırmaları (rapor klasörleri)',
         run: () => {
           if (!existsSync(sessionsDir())) return this.out(color.dim('Henüz oturum yok.'));
           const list = readdirSync(sessionsDir()).sort().slice(-10);
@@ -822,7 +1117,7 @@ export class KurultayConsole {
           const dir = lastSession();
           const p = dir && join(dir, 'REPORT.md');
           if (!p || !existsSync(p)) return this.out(color.dim('Rapor yok.'));
-          this.out(readFileSync(p, 'utf8'));
+          this.out(this.md(readFileSync(p, 'utf8')));
         },
       },
       {
@@ -869,14 +1164,64 @@ export class KurultayConsole {
           }
         },
       },
+      { name: 'sessions', ws: true, description: 'kayıtlı konuşma oturumları', run: () => this.printConversations() },
+      {
+        name: 'resume',
+        aliases: ['continue'],
+        ws: true,
+        args: '[numara|id]',
+        description: 'kayıtlı bir oturuma devam et (soru geçmişi ve ayarlarla)',
+        complete: (a) =>
+          this.conversationList()
+            .slice(0, 15)
+            .map((c, i) => ({ value: String(i + 1), label: `${i + 1}) ${c.title || c.id}`, description: `${c.turns.length} tur · ${relativeTime(c.updatedAt)}` }))
+            .filter((x) => !a || x.value.startsWith(a)),
+        run: async (a) => {
+          if (!a) return this.printConversations();
+          await this.resume(a);
+        },
+      },
+      { name: 'branch', aliases: ['fork'], ws: true, args: '[başlık]', description: 'konuşmayı buradan dallandır (yeni oturum, öncekisi korunur)', run: (a) => this.branch(a) },
+      { name: 'history', ws: true, description: 'bu oturumun turları', run: () => this.history() },
+      {
+        name: 'rewind',
+        aliases: ['undo'],
+        ws: true,
+        args: '[tur]',
+        description: 'bir turun öncesine dön: uygulanan değişiklikleri ve sonraki turları geri al',
+        complete: (a) => (this.conversation?.turns ?? []).map((t) => ({ value: String(t.n), label: `#${t.n}`, description: t.input.split('\n')[0].slice(0, 60) })).filter((x) => x.value.startsWith(a)).reverse(),
+        run: (a) => this.rewind(a),
+      },
+      {
+        name: 'worktree',
+        aliases: ['wt'],
+        ws: true,
+        args: '[new <ad>|list|diff|merge|commit|exit|remove <ad>]',
+        description: 'git worktree: ayrı dalda çalış, farkı gör, birleştir',
+        complete: (a) => {
+          const parts = a.split(/\s+/);
+          const subs: Array<[string, string]> = [['new ', 'yeni worktree + dal'], ['list', 'listele'], ['diff ', 'farkı göster'], ['merge ', 'ana dala birleştir'], ['commit ', 'değişiklikleri kaydet'], ['exit', 'ana depoya dön'], ['remove ', 'sil']];
+          if (parts.length <= 1) return subs.filter(([v]) => v.startsWith(parts[0])).map(([v, d]) => ({ value: v, label: v.trim(), description: d }));
+          if (['diff', 'merge', 'commit', 'remove', 'rm'].includes(parts[0]) && this.app) {
+            try {
+              return this.currentWorktrees().filter((w) => w.slug.startsWith(parts[1])).map((w) => ({ value: `${parts[0]} ${w.slug}`, label: w.slug, description: w.branch }));
+            } catch {
+              return [];
+            }
+          }
+          return [];
+        },
+        run: (a) => this.worktreeCommand(a),
+      },
       {
         name: 'clear',
         aliases: ['new'],
-        description: 'ekranı ve soru geçmişini temizle',
+        description: 'ekranı temizle ve yeni oturum başlat (önceki kayıtlı kalır)',
         run: () => {
           this.askHistory = [];
+          this.conversation = undefined;
           if (this.screen.interactive) this.screen.write('\x1b[2J\x1b[H');
-          this.out(color.dim('Konuşma geçmişi temizlendi.'));
+          this.out(color.dim('Yeni oturum başladı (öncekine /resume ile dönebilirsiniz).'));
         },
       },
       {

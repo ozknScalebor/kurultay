@@ -201,6 +201,22 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(noTty.stdout, /Komutlar:/, 'without a terminal the bare command prints help');
   });
 
+  it('rewind undoes what the last applied run changed', async () => {
+    assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min/);
+    const r = await cli(['rewind', '--yes'], root);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /1 dosya eski hâline dönecek: src\/mathutil\.js/);
+    assert.match(r.stdout, /✓ 1 dosya geri yüklendi/);
+    assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /TODO/);
+    const again = await cli(['rewind', '--yes'], root);
+    assert.equal(again.code, 1);
+    assert.match(again.stderr, /zaten geri alınmış/);
+    const none = await cli(['rewind', 'nope'], root);
+    assert.match(none.stderr, /Geri alınabilir oturum bulunamadı: nope/);
+    const noTty = await cli(['rewind'], tmpProject({ 'a.c': '' }));
+    assert.match(noTty.stderr, /geri alınabilir bir görev yok/);
+  });
+
   it('reports unreachable endpoints clearly', async () => {
     const dead = tmpProject({ 'a.c': 'int a;', 'kurultay.config.json': JSON.stringify({ endpoints: [{ name: 'dead', baseUrl: 'http://127.0.0.1:9/v1' }] }) });
     const r = await cli(['run', 'something'], dead);

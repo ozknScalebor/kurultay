@@ -4,6 +4,7 @@ import type { KurultayConfig, RunMode } from '../config.js';
 import { diffStat } from '../agent/diff.js';
 import { loadProjectRules, renderRules, selectRules, type ProjectRules } from '../agent/rules.js';
 import { AgentWorker, type WorkerResult } from '../agent/worker.js';
+import { CheckpointRecorder } from '../agent/checkpoint.js';
 import { Overlay, type Materializer, type MergeReport } from '../agent/workspace.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
@@ -62,6 +63,8 @@ export interface RunReport {
   finalVerify?: VerifyResult;
   requirementCheck?: { complete: boolean; missing: string[]; judges: string[] };
   merge?: MergeReport;
+  /** pre-apply snapshot for rewinding (absent when nothing was applied) */
+  checkpointPath?: string;
   changedFiles: string[];
   diffPath: string;
   reportPath: string;
@@ -226,6 +229,7 @@ export class Orchestrator {
     const diffPath = join(this.sessionDir, 'changes.diff');
     writeFileSync(diffPath, diff);
     let merge: MergeReport | undefined;
+    let checkpointPath: string | undefined;
     let status: RunReport['status'] = reqCheck?.complete && (!finalVerify || finalVerify.skipped || finalVerify.ok) ? 'completed' : changedFiles.length ? 'incomplete' : 'failed';
     if (opts.dryRun) status = 'dry-run';
     else if (changedFiles.length) {
@@ -235,7 +239,13 @@ export class Orchestrator {
         go = await opts.confirm(`${changedFiles.length} dosya, +${st.added}/-${st.removed} satır. Projeye uygulansın mı?`);
       }
       if (go) {
-        merge = await this.materializer.merge(integration, opts.signal);
+        // everything applied is recorded so it can be rewound later (/rewind, kurultay rewind)
+        const recorder = new CheckpointRecorder(this.root);
+        merge = await this.materializer.merge(integration, opts.signal, recorder);
+        if (recorder.size) {
+          checkpointPath = join(this.sessionDir, 'checkpoint.json');
+          recorder.save(checkpointPath, `${sessionId}: ${task.split('\n')[0].slice(0, 120)}`);
+        }
         this.bus.emitEvent('run.merge', { data: { ...merge } });
       } else status = 'dry-run';
     }
@@ -250,6 +260,7 @@ export class Orchestrator {
       finalVerify,
       requirementCheck: reqCheck,
       merge,
+      checkpointPath,
       changedFiles,
       diffPath,
       reportPath: join(this.sessionDir, 'REPORT.md'),

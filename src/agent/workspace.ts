@@ -1,3 +1,4 @@
+import type { CheckpointRecorder } from './checkpoint.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { Semaphore } from '../util/async.js';
@@ -332,7 +333,7 @@ export class Materializer {
     }
   }
 
-  async merge(overlay: Overlay, signal?: AbortSignal): Promise<MergeReport> {
+  async merge(overlay: Overlay, signal?: AbortSignal, checkpoint?: CheckpointRecorder): Promise<MergeReport> {
     await this.lock.acquire(signal);
     const report: MergeReport = { written: [], deleted: [], merged3way: [], conflicts: [] };
     try {
@@ -345,6 +346,7 @@ export class Materializer {
         const abs = join(this.root, p);
         const disk = existsSync(abs) ? readFileSync(abs, 'utf8') : undefined;
         if (mine === disk) continue;
+        checkpoint?.before(p);
         if (disk === base) {
           if (mine === undefined) {
             unlinkSync(abs);
@@ -354,6 +356,7 @@ export class Materializer {
             writeFileSync(abs, mine);
             report.written.push(p);
           }
+          checkpoint?.after(p);
           continue;
         }
         // file changed on disk since the worker read it → 3-way merge
@@ -363,6 +366,7 @@ export class Materializer {
         }
         const m = merge3(base ?? '', mine, disk);
         writeFileSync(abs, m.content);
+        checkpoint?.after(p);
         if (m.ok) report.merged3way.push(p);
         else report.conflicts.push(p);
       }

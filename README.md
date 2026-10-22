@@ -100,7 +100,7 @@ flowchart TB
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # yalnızca derleme araçları (typescript)
-npm test          # ≈230 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
+npm test          # ≈240 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
 npm run pack:offline
 ```
 
@@ -152,7 +152,23 @@ uart-driver ❯ /
 - **`/` yazınca komut menüsü açılır**; yazdıkça süzülür, ↑/↓ ile seçilir, Tab/Enter ile çalışır. Komut argümanları (`/mode r` → `race`), `@dosya` ve `$skill` de tamamlanır.
 - **Düz metin**: soru ise (`… nerede?`, `nasıl çalışır`, `açıkla …`) modeller konsey olarak cevaplar ve sonraki sorular önceki cevapları bilir; iş ise planlanıp tüm modellere dağıtılır, sonunda projeye uygulamak için onay istenir. `/ask`, `/run` veya `/intent` ile sabitlenebilir. `!komut` kabuk komutu çalıştırır.
 - Çalışan bir iş **Ctrl+C** ile durdurulur (yarım değişiklikler geri alınır). O sırada yazılanlar bir sonraki isteme aktarılır.
-- Temel komutlar: `/models`, `/llm` (zaman aşımı ayarları, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/sessions`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
+- **Arayüz**: cevaplar ve raporlar Markdown olarak işlenir (başlık, liste, tablo, renklendirilmiş kod bloğu). İstemin altında durum satırı vardır: git dalı, mod, hazır model sayısı, oturum. Uzun işlerde dönen gösterge, geçen süre ve süren LLM isteği sayısı görünür.
+- Temel komutlar: `/models`, `/llm` (zaman aşımı ayarları, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
+
+#### Oturumlar
+
+| Komut | Ne yapar |
+|---|---|
+| (otomatik) | Her soru ve görev turu `.kurultay/conversations/` altına kaydedilir |
+| `/sessions` | Kayıtlı oturumlar (dallar ve hangisinden ayrıldıkları ile) |
+| `/resume [n]`, `kurultay --continue`, `kurultay --resume <id>` | Oturuma devam: soru geçmişi, mod, skill ve diğer ayarlar geri gelir, son turların özeti gösterilir |
+| `/history` | Bu oturumun turları; projeye değişiklik uygulayanlar işaretli |
+| `/rewind [tur]` | O turun öncesine döner: o ve sonraki görevlerin projeye uyguladığı değişiklikler geri alınır, turlar konuşmadan çıkarılır. Sonradan elle değiştirilmiş dosyalar için uyarı ve onay. Komut satırından: `kurultay rewind [oturum]` |
+| `/branch [başlık]` | Konuşmayı buradan dallandırır; önceki dal `/resume` ile geri gelir |
+| `/worktree new <ad>` | Projenin git worktree'sini `.kurultay/worktrees/<ad>` altında `kurultay/<ad>` dalında açar ve oraya geçer. İndeks, analiz ve yetenek profili kopyalanır, yeniden hesaplanmaz. `kurultay --worktree <ad>` ile de başlatılır |
+| `/worktree diff · merge · commit · exit · remove · list` | Farkı gör, ana dala birleştir (onaylı, çakışmada geri alınır), ana depoya dön, sil |
+
+Her uygulamadan önce değişen dosyaların önceki hâli oturum klasörüne (`checkpoint.json`) yazılır; geri alma bu kontrol noktasını kullanır. `.kurultay/` klasörü git'e hiç işlenmez (`.git/info/exclude`).
 
 LLM ayarları ve yetenek profilleri kullanıcı başına tutulur (`~/.kurultay/`; `KURULTAY_HOME` ile değiştirilebilir), böylece her proje için yeniden ölçüm gerekmez. Projede `kurultay.config.json` varsa o kullanılır.
 
@@ -174,6 +190,7 @@ GPU'nuz yoksa veya önce denemek istiyorsanız sahte LLM sunucusunu kullanabilir
 | Komut | Açıklama |
 |---|---|
 | `kurultay` / `kurultay console` | Etkileşimli konsol (`--workspace <klasör>`, `--no-probe`, `--no-analyze`) |
+| `kurultay rewind [oturum]` | Bir görevin projeye uyguladığı değişiklikleri geri alır (varsayılan son görev; `--yes`, sonradan değişen dosyalar için `--force`) |
 | `kurultay init` | Yapılandırma ve kural şablonlarını oluşturur; build/test komutlarını tahmin eder (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
 | `kurultay probe [--deep] [--quick]` | Yetenek analizi. `--deep` 256K bağlama ve 16 eşzamanlı isteğe kadar ölçer; `--quick` benchmark'ı atlar |
 | `kurultay index` | Yalnızca statik indeks (LLM gerekmez) |
@@ -298,7 +315,7 @@ const report = await new Orchestrator(app.root, app.config, app.router, app.mate
 
 ```bash
 npm ci
-npm test                  # birim + entegrasyon + CLI (≈230 test)
+npm test                  # birim + entegrasyon + CLI (≈240 test)
 npm run test:unit         # yalnızca birim testleri
 npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
 npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
@@ -308,8 +325,8 @@ npm run test:coverage     # kapsam eşikleri: satır ≥ %96, dal ≥ %88, fonks
 
 | Katman | Ne test ediliyor |
 |---|---|
-| `test/unit` | Konsol altyapısı (tuş ayrıştırma, bracketed paste, satır editörü, geçmiş, öneri menüsü, satır kaydırma, ekran), router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
-| `test/integration` | Etkileşimli konsol (LLM paneli, zorunlu çalışma alanı, otomatik indeks/yetenek/analiz, soru-iş ayrımı, onay, ayar ve endpoint düzenleme, tamamlama, Ctrl+C ile iptal), ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
+| `test/unit` | Kontrol noktaları, konuşma kaydı, Markdown işleyici, durum satırı ve etkinlik göstergesi, git yardımcıları; konsol altyapısı (tuş ayrıştırma, bracketed paste, satır editörü, geçmiş, öneri menüsü, satır kaydırma, ekran), router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
+| `test/integration` | Etkileşimli konsol (oturum kaydı, devam, dallanma, geri sarma, git worktree; LLM paneli, zorunlu çalışma alanı, otomatik indeks/yetenek/analiz, soru-iş ayrımı, onay, ayar ve endpoint düzenleme, tamamlama, Ctrl+C ile iptal), ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
 | `test/cli` | konsol (boru üzerinden), `init`, `probe`, `index`, `analyze` (akış dokümanları, proje notları), `skills`, `run` (`--skill`, `--req`), `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
 | `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
 
