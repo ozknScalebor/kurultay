@@ -7,6 +7,8 @@ export interface Candidate {
   /** worker id */
   id: string;
   author: string;
+  /** every model that wrote part of this candidate (after failovers there can be several) */
+  authors?: string[];
   diff: string;
   summary: string;
   /** 0..1 from build/test (undefined = no verify configured) */
@@ -27,6 +29,8 @@ export interface CouncilVerdict {
   reviews: Review[];
   /** issues raised against the winner by any reviewer */
   winnerIssues: Array<{ reviewer: string; text: string; blocking: boolean }>;
+  /** true when no review came from a model that wrote the reviewed code */
+  independent?: boolean;
 }
 
 const LABELS = 'ABCDEFGHIJ';
@@ -95,16 +99,28 @@ Return ONLY JSON:
 {"ranking": ["best id first", ...], "scores": {"A": 0-10, ...}, "issues": {"A": [{"text": "...", "priority": 0-3, "confidence": 0.0-1.0}], ...}}
 If you cannot produce JSON, write your evaluation and end with a line "FINAL RANKING:" followed by a numbered list such as "1. Candidate B".`;
 
-  const authors = new Set(candidates.map((c) => c.author));
-  // prefer reviewers that did not author a candidate; fill up with authors (anonymity still holds)
-  let reviewers = router.pick('reviewer', args.reviewers, [...authors]);
-  if (reviewers.length < args.reviewers) reviewers = [...reviewers, ...router.pick('reviewer', args.reviewers - reviewers.length, reviewers.map((r) => r.caps.key))];
+  const authors = [...new Set(candidates.flatMap((c) => [c.author, ...(c.authors ?? [])]).filter(Boolean))];
+  // Reviewers must not have written the code they judge. With several candidates the
+  // council may fill up with authors (each still reviews anonymously, and other
+  // candidates); a single candidate is never reviewed by its own author.
+  const outsiders = router.pick('reviewer', args.reviewers, authors);
+  let reviewers = outsiders;
+  if (reviewers.length < args.reviewers && candidates.length > 1) reviewers = [...reviewers, ...router.pick('reviewer', args.reviewers - reviewers.length, reviewers.map((r) => r.caps.key))];
+  if (!reviewers.length) {
+    args.bus?.warn('council', `bağımsız gözden geçiren yok: kodu yazan model(ler) (${authors.join(', ')}) dışında kullanılabilir model kalmadı; inceleme atlandı`);
+    return { ranking: candidates.map((c) => ({ id: c.id, author: c.author, points: 0, verifyScore: c.verifyScore })), reviews: [], winnerIssues: [], winner: candidates[0], independent: false };
+  }
   args.bus?.info('council', `${candidates.length} aday, ${reviewers.length} gözden geçiren: ${reviewers.map((r) => r.caps.key).join(', ')}`);
 
   const results = await settle(
-    reviewers.map((r) =>
-      router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 2500, purpose: 'council.review', signal: args.signal }, { prefer: [r.caps.key], role: 'reviewer' }),
-    ),
+    reviewers.map((r) => {
+      // a non-author reviewer that fails is replaced by another NON-author, never by the author
+      const exclude = outsiders.includes(r) ? authors : undefined;
+      return router.chat(
+        { messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 2500, purpose: 'council.review', signal: args.signal },
+        { prefer: [r.caps.key], role: 'reviewer', exclude },
+      );
+    }),
   );
   const reviews: Review[] = [];
   for (const r of results) {
@@ -152,9 +168,14 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
     if (c.verifyScore !== undefined) points.set(c.id, points.get(c.id)! + c.verifyScore * 20 + (c.verifyOk ? 5 : 0));
     if (!c.diff.trim()) points.set(c.id, points.get(c.id)! - 50);
   }
+  const authorsOf = (id: string) => {
+    const c = candidates.find((x) => x.id === id);
+    return c ? [c.author, ...(c.authors ?? [])] : [];
+  };
   for (const rv of reviews) {
-    rv.ranking.forEach((id, i) => points.set(id, (points.get(id) ?? 0) + (n - i)));
-    for (const [id, s] of Object.entries(rv.scores)) points.set(id, (points.get(id) ?? 0) + s / 2);
+    // a reviewer never votes for code it wrote itself (its issues still count)
+    rv.ranking.filter((id) => !authorsOf(id).includes(rv.reviewer)).forEach((id, i) => points.set(id, (points.get(id) ?? 0) + (n - i)));
+    for (const [id, s] of Object.entries(rv.scores)) if (!authorsOf(id).includes(rv.reviewer)) points.set(id, (points.get(id) ?? 0) + s / 2);
     for (const [id, list] of Object.entries(rv.issues)) points.set(id, (points.get(id) ?? 0) - 3 * list.filter((x) => x.blocking).length);
   }
   const ranking = candidates
@@ -164,7 +185,9 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   const winnerIssues = winner
     ? reviews.flatMap((rv) => (rv.issues[winner.id] ?? []).map((i) => ({ reviewer: rv.reviewer, text: i.text, blocking: i.blocking })))
     : [];
-  return { winner, ranking, reviews, winnerIssues };
+  const winnerAuthors = winner ? authorsOf(winner.id) : authors;
+  const independent = reviews.length > 0 && reviews.every((rv) => !winnerAuthors.includes(rv.reviewer));
+  return { winner, ranking, reviews, winnerIssues, independent };
 }
 
 /** Council Q&A over the project (kurultay ask): N answers → anonymous peer ranking → chairman. */

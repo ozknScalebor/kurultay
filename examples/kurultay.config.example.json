@@ -19,7 +19,8 @@
       "baseUrl": "http://10.10.0.20:8080/v1",
       "apiKey": "none",
       "models": ["qwen3-coder-30b-a3b"],
-      "maxConcurrency": 2
+      "maxConcurrency": 2,
+      "firstTokenTimeoutMs": 300000
     },
     {
       "name": "ollama",
@@ -59,6 +60,15 @@
     "allowCommands": true,
     "commandTimeoutMs": 600000,
     "requireReadBeforeEdit": true
+  },
+  "llm": {
+    "firstTokenTimeoutMs": 180000,
+    "prefillMsPerToken": 2,
+    "idleTimeoutMs": 90000,
+    "timeoutMs": 600000,
+    "timeoutRetries": 0,
+    "timeoutCooldownMs": 120000,
+    "stickyFailover": true
   },
   "skills": {
     "paths": ["~/ortak-skilller"],

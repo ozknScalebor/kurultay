@@ -36,6 +36,10 @@ export interface ChatRequest {
   onToken?: (chunk: string) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** abort when no token arrived within this time (streaming only; 0/undefined = off) */
+  firstTokenTimeoutMs?: number;
+  /** abort when the stream is silent for this long after it started (streaming only) */
+  idleTimeoutMs?: number;
   /** free-form label for logs/telemetry ("probe", "summary", "worker-2"...) */
   purpose?: string;
 }

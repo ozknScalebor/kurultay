@@ -15,7 +15,12 @@ export interface EndpointConfig {
   models?: string[];
   /** Max simultaneous requests to this endpoint (shared by its models). 0 = probe decides */
   maxConcurrency?: number;
+  /** total time limit per request (overrides llm.timeoutMs) */
   timeoutMs?: number;
+  /** overrides llm.firstTokenTimeoutMs for this endpoint */
+  firstTokenTimeoutMs?: number;
+  /** overrides llm.idleTimeoutMs for this endpoint */
+  idleTimeoutMs?: number;
   headers?: Record<string, string>;
   disabled?: boolean;
 }
@@ -31,6 +36,32 @@ export interface ModelOverride {
   temperature?: number;
   /** extra body fields merged into every request (e.g. {"top_k": 20}) */
   extraBody?: Record<string, unknown>;
+  /** per-model timeouts (override endpoint and llm settings) */
+  timeoutMs?: number;
+  firstTokenTimeoutMs?: number;
+  idleTimeoutMs?: number;
+}
+
+/**
+ * Request watchdogs and what happens when a model stops answering.
+ * Ideas: Codex stream_idle_timeout_ms, OpenCode/Kilo chunkTimeout,
+ * oh-my-openagent runtime fallback.
+ */
+export interface LlmConfig {
+  /** hard limit for one request, ms */
+  timeoutMs: number;
+  /** no first token (content, reasoning or tool call) within this time → timeout; 0 = off */
+  firstTokenTimeoutMs: number;
+  /** extra first-token allowance per prompt token (long prompts need prefill time), ms */
+  prefillMsPerToken: number;
+  /** stream silent for this long after it started → timeout; 0 = off */
+  idleTimeoutMs: number;
+  /** how often a timed-out request is retried on the SAME model before failing over (default 0) */
+  timeoutRetries: number;
+  /** a model that timed out is skipped by every worker for this long (doubles on repeats, ×8 max); 0 = off */
+  timeoutCooldownMs: number;
+  /** a worker whose model failed continues on the replacement and never returns to the failed one */
+  stickyFailover: boolean;
 }
 
 export interface VerifyConfig {
@@ -95,6 +126,7 @@ export interface KurultayConfig {
   index: IndexConfig;
   tools: ToolsConfig;
   skills: SkillsConfig;
+  llm: LlmConfig;
   /** UI language */
   language: 'tr' | 'en';
   /** where per-project state lives (relative to project root) */
@@ -136,6 +168,15 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     ],
   },
   skills: { paths: [], disabled: [], includeUser: true, maxPreload: 3 },
+  llm: {
+    timeoutMs: 10 * 60_000,
+    firstTokenTimeoutMs: 180_000,
+    prefillMsPerToken: 2,
+    idleTimeoutMs: 90_000,
+    timeoutRetries: 0,
+    timeoutCooldownMs: 120_000,
+    stickyFailover: true,
+  },
   language: 'tr',
   stateDir: '.kurultay',
 };
@@ -185,6 +226,11 @@ export function validateConfig(cfg: KurultayConfig): void {
   }
   const modes: RunMode[] = ['auto', 'single', 'split', 'race', 'council'];
   if (!modes.includes(cfg.orchestrator.defaultMode)) throw new ConfigError(`Geçersiz defaultMode: ${cfg.orchestrator.defaultMode}`);
+  for (const k of ['timeoutMs', 'firstTokenTimeoutMs', 'prefillMsPerToken', 'idleTimeoutMs', 'timeoutRetries', 'timeoutCooldownMs'] as const) {
+    const v = cfg.llm[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new ConfigError(`llm.${k} sıfır veya pozitif bir sayı olmalı (değer: ${JSON.stringify(v)})`);
+  }
+  if (cfg.llm.timeoutMs < 1000) throw new ConfigError('llm.timeoutMs en az 1000 ms olmalı');
 }
 
 export function findConfigFile(projectRoot: string, explicit?: string): string | undefined {

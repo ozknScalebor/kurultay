@@ -16,7 +16,12 @@ after(async () => {
 type Script = (step: number, q: MockRequest) => MockReply | undefined;
 
 /** Build a worker against a mock model whose agent turns follow `script`. */
-async function setup(models: Array<Partial<MockModel> & { id: string; script?: Script }>, files: Record<string, string> = { 'src/a.c': 'int a = 1;\n' }, capsOver: Record<string, Partial<ReturnType<typeof caps>>> = {}) {
+async function setup(
+  models: Array<Partial<MockModel> & { id: string; script?: Script }>,
+  files: Record<string, string> = { 'src/a.c': 'int a = 1;\n' },
+  capsOver: Record<string, Partial<ReturnType<typeof caps>>> = {},
+  cfgOver: Record<string, unknown> = {},
+) {
   const mocks: MockModel[] = models.map((m) => ({
     quality: 'good',
     tools: true,
@@ -27,7 +32,7 @@ async function setup(models: Array<Partial<MockModel> & { id: string; script?: S
   const s = await startMockServer(mocks);
   servers.push(s);
   const root = tmpProject(files);
-  const cfg = config({ endpoints: [{ name: 'e', baseUrl: s.url }], orchestrator: { maxStepsPerWorker: 12 } });
+  const cfg = config({ endpoints: [{ name: 'e', baseUrl: s.url }], orchestrator: { maxStepsPerWorker: 12 }, ...cfgOver });
   const bus = recordingBus();
   const router = routerFor(cfg, mocks.map((m) => caps(m.id, 'e', { nativeTools: m.tools, ...(capsOver[m.id] ?? {}) })), bus);
   const index = new ProjectIndex(root, join(root, '.kurultay'));
@@ -266,6 +271,75 @@ describe('AgentWorker', () => {
     const { w } = make('small2');
     const r = await w.run();
     assert.equal(r.summary, 'after fallback');
+  });
+
+  it('continues on another model when the current one stops answering, and never goes back', async () => {
+    const calls: Record<string, number> = { flaky: 0, backup: 0 };
+    let backupSaw: MockRequest | undefined;
+    const { make, bus } = await setup(
+      [
+        {
+          id: 'flaky',
+          script: (n) => {
+            calls.flaky++;
+            // answers the first step, then hangs forever
+            return n === 0 ? call('read_file', { path: 'src/a.c' }) : { hangMs: 3000 };
+          },
+        },
+        {
+          id: 'backup',
+          tools: false,
+          script: (n, q) => {
+            calls.backup++;
+            backupSaw ??= q;
+            return [
+              text('<tool_call>{"name":"edit_file","arguments":{"path":"src/a.c","old_text":"int a = 1;","new_text":"int a = 2;"}}</tool_call>'),
+              text('<tool_call>{"name":"finish","arguments":{"summary":"done by backup"}}</tool_call>'),
+            ][n - 1];
+          },
+        },
+      ],
+      undefined,
+      { flaky: { roleScores: { planner: 1, coder: 1, summarizer: 1, reviewer: 1, judge: 1, fast: 1 } }, backup: { nativeTools: false } },
+      // quarantine off: the worker itself must stick with the replacement
+      { llm: { firstTokenTimeoutMs: 200, prefillMsPerToken: 0, timeoutCooldownMs: 0 } },
+    );
+    const { w, overlay } = make('flaky');
+    const t0 = Date.now();
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.equal(r.summary, 'done by backup');
+    assert.equal(overlay.read('src/a.c'), 'int a = 2;\n');
+    assert.equal(calls.flaky, 2, 'the hung model is not asked again after the failover');
+    assert.equal(r.finalModel, 'backup@e');
+    assert.equal(r.failovers.length, 1);
+    assert.deepEqual([r.failovers[0].from, r.failovers[0].to, r.failovers[0].step], ['flaky@e', 'backup@e', 2]);
+    assert.match(r.failovers[0].reason, /ilk token/);
+    assert.ok(r.interventions.includes('failover:flaky@e->backup@e'));
+    assert.ok(bus.types().includes('worker.failover'));
+    assert.ok(Date.now() - t0 < 2500, 'detected in well under the total timeout');
+    // the text-only backup received the history in the text protocol, with tool instructions
+    const msgs = backupSaw!.messages as Array<{ role: string; content: string | null; tool_calls?: unknown }>;
+    assert.ok(msgs.every((m) => m.role !== 'tool' && !m.tool_calls));
+    assert.match(msgs[0].content ?? '', /<tool_call>/);
+    assert.ok(msgs.some((m) => /<tool_result name="read_file">/.test(m.content ?? '')));
+  });
+
+  it('retries earlier failed models once when every replacement fails too', async () => {
+    let flakyHits = 0;
+    const { make } = await setup(
+      [
+        { id: 'first', script: (n) => (flakyHits++, n === 0 ? call('read_file', { path: 'src/a.c' }) : n === 1 && flakyHits === 2 ? { hangMs: 3000 } : call('finish', { summary: 'recovered' })) },
+        { id: 'second', script: (n) => (n >= 1 ? { status: 400, error: 'broken' } : undefined) },
+      ],
+      undefined,
+      { first: { roleScores: { planner: 1, coder: 1, summarizer: 1, reviewer: 1, judge: 1, fast: 1 } } },
+      { llm: { firstTokenTimeoutMs: 200, prefillMsPerToken: 0, timeoutCooldownMs: 0 } },
+    );
+    const { w } = make('first');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.equal(r.summary, 'recovered');
   });
 
   it('falls back to another model when its model dies mid-task and reports both', async () => {

@@ -73,12 +73,14 @@ flowchart TB
 | `analyze` | Dosya partileri **tüm modellerin toplam slot sayısı** kadar paralel özetlenir; hızlı model daha çok iş alır (yük duyarlı router). Mimari dokümanı için N model bağımsız taslak yazar, hakem model birleştirir. |
 | Planlama | En iyi 3 planlayıcı paralel taslak üretir, hakem birleştirir. |
 | Yürütme | **split**: bağımsız alt görevler farklı modellerde aynı anda çalışır. **race**: aynı alt görevi N model yarışarak çözer. **council**: race + her durumda tam konsey incelemesi. **auto**: tek alt görevde race, çok alt görevde split (kritik olanlar 2 modelle). |
-| İnceleme | Tüm gözden geçirenler paralel çalışır; adaylar A/B/C olarak anonimleştirilir ve sıraları karıştırılır. |
+| İnceleme | Tüm gözden geçirenler paralel çalışır; adaylar A/B/C olarak anonimleştirilir ve sıraları karıştırılır. Kodu yazan model kendi kodunu incelemez (tek adayda hiç, konseyde kendi adayına oy veremez); düzeltmeler yazar olmayan bir modelce yeniden incelenir. |
 | Gereksinim kontrolü | 2 hakem paralel karar verir; ikisinin de "tamam" demesi gerekir. |
 
 ### Dayanıklılık
 
-- **Bağlantı koparsa** üstel backoff ile tekrar denenir. Model düşerse iş diğer modele devredilir. Tüm modeller düşerse 10 dakikaya kadar bekleyip yeniden denenir (devre kesiciler sıfırlanır).
+- **Model yanıt vermezse** (takılma, zaman aşımı): her istek üç saatle izlenir — ilk token süresi (varsayılan 180 sn + uzun istemler için ek pay), akış sessizlik süresi (90 sn) ve toplam süre (10 dk). Süre dolan model aynı istekte tekrar denenmez, **karantinaya alınır** (2 dk, tekrarlarda 16 dk'ya kadar uzar) ve hiçbir çalışan ona istek göndermez.
+- **Çalışan kalıcı olarak model değiştirir**: görevi yürüten model düşerse görev, bağlamı sığan en iyi yedek modelle kaldığı yerden sürer; düşen model o görevde bir daha kullanılmaz. Yedek model native araç çağrısı desteklemiyorsa konuşma geçmişi metin protokolüne çevrilir. Değişimler raporda listelenir.
+- **Bağlantı koparsa** üstel backoff ile tekrar denenir. Tüm modeller düşerse 10 dakikaya kadar bekleyip yeniden denenir (devre kesiciler sıfırlanır).
 - **Bağlam taşarsa** prompt'u sığdıran modellere yönlendirilir. Uzun çalışmalarda condenser önce eski araç çıktılarını kırpar, sonra geçmişi yapılandırılmış bir devir notuna (hedef / yapılanlar / kararlar / dosyalar / sıradaki adımlar) dönüştürür; not her yoğunlaştırmada artımlı güncellenir.
 - **Sunucu `429`/`503` + `Retry-After` dönerse** istenen süre kadar beklenir.
 - **Döngü koruması**: aynı çağrı aynı sonuçla 3. kez yapıldığında uyarı verilir, 5. kezde çalışan durdurulur. A-B-A-B gidip gelmeler, uzun salt-okuma keşifleri ve üst üste başarısız çağrılar da yakalanır.
@@ -98,7 +100,7 @@ flowchart TB
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # yalnızca derleme araçları (typescript)
-npm test          # ≈190 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
+npm test          # ≈205 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
 npm run pack:offline
 ```
 
@@ -158,6 +160,19 @@ Tam örnek: [`examples/kurultay.config.example.json`](examples/kurultay.config.e
 - `models` boş bırakılırsa liste `GET /models` ile keşfedilir. Embedding ve reranker modelleri otomatik olarak elenir.
 - `maxConcurrency: 0` ise endpoint'in paralellik limitini probe belirler.
 - `apiKey` alanında `${ORTAM_DEGISKENI:-varsayılan}` sözdizimi kullanılabilir.
+- Zaman aşımları `llm` bölümünde ayarlanır; aynı alanlar (`timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs`) endpoint veya model bazında da verilebilir:
+
+```jsonc
+"llm": {
+  "firstTokenTimeoutMs": 180000,  // ilk token için süre (0 = kapalı)
+  "prefillMsPerToken": 2,         // uzun istemlerde istem token'ı başına ek süre
+  "idleTimeoutMs": 90000,         // akış bu kadar sessiz kalırsa kes
+  "timeoutMs": 600000,            // tek istek için üst sınır
+  "timeoutRetries": 0,            // takılan modelde kaç kez daha denensin
+  "timeoutCooldownMs": 120000,    // takılan modelin karantina süresi (0 = kapalı)
+  "stickyFailover": true          // çalışan düşen modele geri dönmesin
+}
+```
 
 ## Kurallar ve skill'ler
 
@@ -237,7 +252,7 @@ const report = await new Orchestrator(app.root, app.config, app.router, app.mate
 
 ```bash
 npm ci
-npm test                  # birim + entegrasyon + CLI (≈190 test)
+npm test                  # birim + entegrasyon + CLI (≈205 test)
 npm run test:unit         # yalnızca birim testleri
 npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
 npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
@@ -247,8 +262,8 @@ npm run test:coverage     # kapsam eşikleri: satır ≥ %96, dal ≥ %88, fonks
 
 | Katman | Ne test ediliyor |
 |---|---|
-| `test/unit` | Router (seçim, retry, devre kesici, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
-| `test/integration` | Ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
+| `test/unit` | Router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
+| `test/integration` | Ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
 | `test/cli` | `init`, `probe`, `index`, `analyze` (akış dokümanları, proje notları), `skills`, `run` (`--skill`, `--req`), `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
 | `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
 
