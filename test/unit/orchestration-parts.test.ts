@@ -184,13 +184,13 @@ describe('orchestrator helpers', () => {
       {
         sessionId: 's', sessionDir: '/x', task: 'T', mode: 'race', iterations: 2, status: 'incomplete', modelsUsed: ['a@e'], changedFiles: ['f.c'], diffPath: '/x/changes.diff', reportPath: '/x/REPORT.md',
         plan: { understanding: 'u', acceptance: ['c1'], subtasks: [], authors: ['a@e'] },
-        subtasks: [{ subtask: { id: 'T1', title: 'one', description: '', files: [], dependsOn: [], critical: true }, iteration: 1, candidates: [{ worker: 'T1-1', models: ['a@e'], status: 'done', files: 1, verify: 'geçti', summary: '' }], winner: { worker: 'T1-1', models: ['a@e'] }, verdict: { ranking: [{ id: 'T1-1', author: 'a@e', points: 9 }], winnerIssues: [{ reviewer: 'b@e', text: 'leak', blocking: true }] }, fixes: 1, status: 'done' }],
+        subtasks: [{ subtask: { id: 'T1', title: 'one', description: '', files: [], dependsOn: [], critical: true }, iteration: 1, candidates: [{ worker: 'T1-1', models: ['a@e'], status: 'done', files: 1, verify: 'geçti', summary: '' }], winner: { worker: 'T1-1', models: ['a@e'] }, verdict: { ranking: [{ id: 'T1-1', author: 'a@e', points: 9 }], winnerIssues: [{ reviewer: 'b@e', text: 'leak', blocking: true }], reviewers: ['b@e'], independent: true }, fixes: 1, fixReviews: [{ round: 1, reviewers: ['c@e'], blocking: 0, independent: true }], failovers: [{ worker: 'T1-1', from: 'x@e', to: 'a@e', step: 2, reason: 'ilk token gelmedi' }], status: 'done' }],
         skills: { available: 2, used: [{ name: 'driver', worker: 'w1', how: 'preload', reason: 'keyword' }], diagnostics: [] },
         requirementCheck: { complete: false, missing: ['add docs'], judges: ['b@e'] },
         merge: { written: ['f.c'], deleted: [], merged3way: [], conflicts: ['g.c'] },
       },
       '--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-a\n+b\n',
     );
-    for (const want of ['**Durum:** incomplete', '(+1 / -1)', '🏆', '**[engelleyici]** leak', 'Düzeltme turu: 1', '- add docs', 'çakışma: 1', '- g.c', '- c1']) assert.ok(md.includes(want), want);
+    for (const want of ['**Durum:** incomplete', '(+1 / -1)', '🏆', '**[engelleyici]** leak', 'Düzeltme turu: 1', 'İnceleyen modeller: b@e — bağımsız', '1. düzeltme yeniden incelendi (c@e): engelleyici bulgu yok', 'adım 2: x@e → a@e (ilk token gelmedi)', '- add docs', 'çakışma: 1', '- g.c', '- c1']) assert.ok(md.includes(want), want);
   });
 });

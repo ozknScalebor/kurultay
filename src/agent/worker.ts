@@ -53,8 +53,12 @@ export interface WorkerResult {
   tokens: { in: number; out: number };
   /** skills used by this worker and how they were loaded */
   skills: Array<{ name: string; how: 'preload' | 'tool' }>;
-  /** guard interventions (loop warnings, toolshim, condense) */
+  /** guard interventions (loop warnings, toolshim, condense, failover) */
   interventions: string[];
+  /** model switches during the run: the failed model is never used again by this worker */
+  failovers: Array<{ from: string; to: string; step: number; reason: string }>;
+  /** model the worker ended on (after failovers) */
+  finalModel: string;
 }
 
 const BASE_SYSTEM = `You are a senior software engineer working autonomously inside an existing codebase, as one member of a team of AI models (a "kurultay").
@@ -86,6 +90,12 @@ export class AgentWorker {
   private messages: ChatMessage[] = [];
   private usedModels = new Set<string>();
   private nativeTools: boolean;
+  /** model this worker currently talks to (changes on failover) */
+  private currentModel: string;
+  /** models that failed for this worker – never preferred again (sticky failover) */
+  private readonly failedModels = new Set<string>();
+  private readonly failovers: WorkerResult['failovers'] = [];
+  private step = 0;
   private readonly toolCtx: ToolContext;
   private tokens = { in: 0, out: 0 };
   private readonly guard: LoopGuard;
@@ -106,6 +116,7 @@ export class AgentWorker {
     private readonly signal = deps.signal,
   ) {
     const handle = router.get(spec.model);
+    this.currentModel = spec.model;
     this.nativeTools = handle?.caps.nativeTools ?? true;
     const allowed = spec.readOnly ? new Set(READ_ONLY_TOOLS) : undefined;
     const loaded = new Set<string>();
@@ -135,7 +146,7 @@ export class AgentWorker {
   }
 
   private handle(): ModelHandle | undefined {
-    return this.router.get(this.spec.model);
+    return this.router.get(this.currentModel);
   }
 
   private contextWindow(): number {
@@ -236,26 +247,82 @@ export class AgentWorker {
   }
 
   private async callModel(): Promise<ChatResult> {
-    const req = {
+    const req = () => ({
       messages: this.messages,
       tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills }) : undefined,
       temperature: 0.2,
       purpose: `worker:${this.spec.id}`,
       signal: this.signal,
       onToken: (t: string) => this.bus?.emitEvent('worker.token', { source: this.spec.id, data: { t } }),
-    };
-    try {
-      return await this.router.chat(req, { prefer: [this.spec.model], role: 'coder', fallback: true });
-    } catch (e) {
-      // some servers reject the tools field → switch to prompt-based tools once
-      if (this.nativeTools && e instanceof LlmError && e.kind === 'bad_request' && /tool|function/i.test(e.message)) {
+    });
+    const toolsRejected = (e: unknown) => this.nativeTools && e instanceof LlmError && e.kind === 'bad_request' && /tool|function/i.test(e.message);
+
+    if (this.cfg.llm?.stickyFailover === false) {
+      // legacy behaviour: the router may answer from another model; the next step starts from the preferred one again
+      try {
+        return await this.router.chat(req(), { prefer: [this.currentModel], role: 'coder', fallback: true });
+      } catch (e) {
+        if (!toolsRejected(e)) throw e;
         this.bus?.warn(this.spec.id, 'native tool calling reddedildi; prompt tabanlı araç çağrısına geçiliyor');
-        this.nativeTools = false;
-        this.messages[0] = { role: 'system', content: this.systemPrompt() };
-        return this.router.chat({ ...req, tools: undefined, messages: this.messages }, { prefer: [this.spec.model], role: 'coder', fallback: true });
+        this.switchToTextTools();
+        return this.router.chat(req(), { prefer: [this.currentModel], role: 'coder', fallback: true });
       }
-      throw e;
     }
+
+    // Sticky failover: talk to ONE model. If it fails (timeout, crash, quarantine), pick a replacement,
+    // adapt the transcript to it, and continue the task there – never bouncing back to the failed model.
+    for (;;) {
+      try {
+        return await this.router.chat(req(), { only: [this.currentModel], fallback: false, role: 'coder', recoveryWaitMs: 0 });
+      } catch (e) {
+        if (e instanceof LlmError && e.kind === 'aborted') throw e;
+        if (toolsRejected(e)) {
+          this.bus?.warn(this.spec.id, 'native tool calling reddedildi; prompt tabanlı araç çağrısına geçiliyor');
+          this.switchToTextTools();
+          continue;
+        }
+        const failed = this.currentModel;
+        this.failedModels.add(failed);
+        const next = this.replacementModel();
+        if (next) {
+          this.switchModel(next, errorMessage(e));
+          continue;
+        }
+        // nothing healthy left: let the router try everyone (earlier failures first) and wait for recovery
+        this.bus?.warn(this.spec.id, `yedek model kalmadı; daha önce düşen modeller yeniden deneniyor (${[...this.failedModels].join(', ')})`);
+        const r = await this.router.chat(req(), { prefer: [...this.failedModels], role: 'coder', fallback: true });
+        if (r.model !== this.currentModel) this.switchModel(r.model, errorMessage(e));
+        this.failedModels.delete(r.model);
+        return r;
+      }
+    }
+  }
+
+  /** Best available coder that has not failed for this worker and can hold the transcript. */
+  private replacementModel(): string | undefined {
+    const need = estimateTokens(this.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n')) + 1024;
+    const exclude = [...this.failedModels];
+    const fits = this.router.rank('coder', { exclude, minContext: need });
+    return (fits[0] ?? this.router.rank('coder', { exclude })[0])?.caps.key;
+  }
+
+  /** Continue the task on another model (Codex/OMO style session failover). */
+  private switchModel(to: string, reason: string): void {
+    const from = this.currentModel;
+    this.currentModel = to;
+    this.failovers.push({ from, to, step: this.step, reason: reason.slice(0, 200) });
+    this.interventions.push(`failover:${from}->${to}`);
+    this.bus?.emitEvent('worker.failover', { source: this.spec.id, message: `${from} → ${to}`, data: { from, to, reason } });
+    this.bus?.warn(this.spec.id, `${from} yanıt vermedi (${reason.slice(0, 120)}); görev ${to} ile devam ediyor, ${from} bu görevde tekrar kullanılmayacak`);
+    // the new model may not support native tool calling: move the transcript to the text protocol first
+    if (this.nativeTools && this.router.get(to)?.caps.nativeTools === false) this.switchToTextTools();
+  }
+
+  /** Rewrite native tool-call history as <tool_call>/<tool_result> text so any model can continue it. */
+  private switchToTextTools(): void {
+    this.nativeTools = false;
+    this.messages = toTextProtocol(this.messages);
+    this.messages[0] = { role: 'system', content: this.systemPrompt() };
   }
 
   /**
@@ -303,6 +370,7 @@ export class AgentWorker {
     this.bus?.emitEvent('worker.start', { source: this.spec.id, data: { model: this.spec.model, task: this.spec.task.slice(0, 200), skills: this.spec.skills?.preload.map((s) => s.name) ?? [] } });
 
     for (let step = 1; step <= maxSteps; step++) {
+      this.step = step;
       if (this.signal?.aborted) return this.result('failed', 'iptal edildi', step, finalText, 'aborted');
       await this.condense();
       let r: ChatResult;
@@ -393,6 +461,8 @@ export class AgentWorker {
       finalText,
       tokens: this.tokens,
       skills: [...this.skillLog],
+      failovers: [...this.failovers],
+      finalModel: this.currentModel,
       interventions: [...this.interventions],
     };
     this.bus?.emitEvent('worker.end', { source: this.spec.id, data: { status, steps, files: res.changedFiles.length, models: res.models, skills: res.skills.map((s) => s.name) } });
@@ -403,5 +473,41 @@ export class AgentWorker {
 function summarizeArgs(a: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(a)) out[k] = typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v;
+  return out;
+}
+
+/** Convert an OpenAI native tool-calling transcript into the text tool protocol (Pi transformMessages). */
+export function toTextProtocol(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  const names = new Map<string, string>();
+  let pending: string[] = [];
+  const flush = () => {
+    if (pending.length) out.push({ role: 'user', content: pending.join('\n') });
+    pending = [];
+  };
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      const name = names.get(m.tool_call_id ?? '') ?? 'tool';
+      pending.push(`<tool_result name="${name}">\n${m.content ?? ''}\n</tool_result>`);
+      continue;
+    }
+    flush();
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      const calls = m.tool_calls.map((tc) => {
+        names.set(tc.id, tc.function.name);
+        let args: unknown = {};
+        try {
+          args = JSON.parse(tc.function.arguments || '{}');
+        } catch {
+          args = { raw: tc.function.arguments };
+        }
+        return `<tool_call>\n${JSON.stringify({ name: tc.function.name, arguments: args })}\n</tool_call>`;
+      });
+      out.push({ role: 'assistant', content: [m.content, ...calls].filter(Boolean).join('\n') });
+      continue;
+    }
+    out.push({ role: m.role, content: m.content });
+  }
+  flush();
   return out;
 }

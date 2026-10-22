@@ -187,6 +187,47 @@ describe('Orchestrator', () => {
     assert.ok(report.changedFiles.includes('shared.txt'));
   });
 
+  it('fixes are re-reviewed by a model that did not write the code', async () => {
+    const reviews: Array<{ model: string; corrected: boolean }> = [];
+    const writers = new Set<string>();
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'write a.txt' }] },
+      agent: (_id, step, q, model) => {
+        if (step !== 0) return undefined;
+        writers.add(model);
+        const first = q.messages.find((m) => m.role === 'user')?.content ?? '';
+        if (/Blocking review findings/.test(first)) {
+          const round = (first.match(/still-broken/) ? 2 : 1);
+          return call('edit_file', { path: 'a.txt', old_text: round === 1 ? 'bug' : 'half', new_text: round === 1 ? 'half' : 'fixed' });
+        }
+        return call('write_file', { path: 'a.txt', content: 'bug' });
+      },
+      review: (prompt) => {
+        const corrected = /corrected version/.test(prompt);
+        const body = prompt.match(/```diff\n([\s\S]*?)```/)?.[1] ?? '';
+        const broken = /\+bug/.test(body) ? 'null deref' : /\+half/.test(body) ? 'still-broken edge case' : '';
+        return { content: JSON.stringify({ ranking: ['A'], scores: { A: 5 }, issues: broken ? { A: [{ text: broken, priority: 0, confidence: 0.9 }] } : {} }) };
+      },
+      record: (kind, prompt, model) => {
+        if (kind === 'review') reviews.push({ model, corrected: /corrected version/.test(prompt) });
+      },
+    };
+    const { run, root } = await setup(brain, { 'README.md': '#' }, { models: ['m1', 'm2', 'm3'] });
+    const report = await run('write a.txt', { mode: 'single' });
+    assert.equal(read(root, 'a.txt'), 'fixed');
+    const st = report.subtasks[0];
+    assert.equal(st.fixes, 2);
+    assert.equal(st.verdict!.independent, true);
+    assert.deepEqual(st.fixReviews!.map((f) => f.blocking), [1, 0], 'first fix still had a P0, second fix was clean');
+    assert.ok(st.fixReviews!.every((f) => f.independent));
+    assert.equal(reviews.filter((r) => r.corrected).length, 2);
+    assert.ok(reviews.every((r) => !writers.has(`${r.model}@e`) && !writers.has(r.model)), `reviewers ${reviews.map((r) => r.model)} vs writers ${[...writers]}`);
+    const md = read(report.reportPath, '');
+    assert.match(md, /İnceleyen modeller: .* — bağımsız/);
+    assert.match(md, /1\. düzeltme yeniden incelendi \(.*\): 1 engelleyici bulgu kaldı/);
+    assert.match(md, /2\. düzeltme yeniden incelendi \(.*\): engelleyici bulgu yok/);
+  });
+
   it('asks for confirmation and keeps the project untouched when declined', async () => {
     let asked = '';
     const brain: Brain = { plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] }, agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'a.txt', old_text: 'orig', new_text: 'changed' }) : undefined) };

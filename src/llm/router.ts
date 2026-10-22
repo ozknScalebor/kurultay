@@ -1,4 +1,4 @@
-import { ALL_ROLES, type KurultayConfig, type ModelOverride, type Role } from '../config.js';
+import { ALL_ROLES, DEFAULT_CONFIG, type KurultayConfig, type LlmConfig, type ModelOverride, type Role } from '../config.js';
 import { Semaphore, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens } from '../util/text.js';
@@ -13,6 +13,9 @@ interface Health {
   failures: number;
   /** exponentially-weighted latency per completion token, ms */
   ewmaMsPerToken: number;
+  /** timeouts in a row (drives the quarantine length) */
+  consecutiveTimeouts: number;
+  timeouts: number;
   lastError?: string;
 }
 
@@ -51,6 +54,7 @@ export interface RouterStats {
   successes: number;
   failures: number;
   circuitOpen: boolean;
+  timeouts: number;
   lastError?: string;
 }
 
@@ -93,7 +97,7 @@ export class Router {
         caps: merged,
         client: new OpenAICompatClient(ep),
         override,
-        health: { consecutiveFailures: 0, circuitOpenUntil: 0, successes: 0, failures: 0, ewmaMsPerToken: 0 },
+        health: { consecutiveFailures: 0, circuitOpenUntil: 0, successes: 0, failures: 0, ewmaMsPerToken: 0, consecutiveTimeouts: 0, timeouts: 0 },
       });
       if (!this.endpointSlots.has(ep.name)) {
         const limit = ep.maxConcurrency && ep.maxConcurrency > 0 ? ep.maxConcurrency : Math.max(1, c.maxConcurrency || 2);
@@ -170,6 +174,7 @@ export class Router {
         successes: h.health.successes,
         failures: h.health.failures,
         circuitOpen: h.health.circuitOpenUntil > now,
+        timeouts: h.health.timeouts,
         lastError: h.health.lastError,
       };
     });
@@ -225,8 +230,27 @@ export class Router {
     return this.rank(role, { exclude })[0];
   }
 
+  private get llm(): LlmConfig {
+    return { ...DEFAULT_CONFIG.llm, ...(this.config.llm ?? {}) };
+  }
+
+  /** Timeouts for one model: model override > endpoint > llm defaults; first-token grows with the prompt. */
+  timeoutsFor(h: ModelHandle, promptTokens: number): { timeoutMs: number; firstTokenTimeoutMs?: number; idleTimeoutMs?: number } {
+    const l = this.llm;
+    const ep = h.client.endpoint;
+    const first = h.override.firstTokenTimeoutMs ?? ep.firstTokenTimeoutMs ?? l.firstTokenTimeoutMs;
+    const idle = h.override.idleTimeoutMs ?? ep.idleTimeoutMs ?? l.idleTimeoutMs;
+    const total = h.override.timeoutMs ?? ep.timeoutMs ?? l.timeoutMs;
+    return {
+      timeoutMs: total,
+      firstTokenTimeoutMs: first > 0 ? Math.min(total, first + Math.round(promptTokens * l.prefillMsPerToken)) : undefined,
+      idleTimeoutMs: idle > 0 ? idle : undefined,
+    };
+  }
+
   private onSuccess(h: ModelHandle, r: ChatResult): void {
     h.health.consecutiveFailures = 0;
+    h.health.consecutiveTimeouts = 0;
     h.health.successes++;
     const perTok = r.usage.completionTokens > 0 ? r.durationMs / r.usage.completionTokens : r.durationMs;
     h.health.ewmaMsPerToken = h.health.ewmaMsPerToken ? 0.8 * h.health.ewmaMsPerToken + 0.2 * perTok : perTok;
@@ -237,6 +261,19 @@ export class Router {
     h.health.lastError = e.message;
     if (e.kind === 'context_length' || e.kind === 'bad_request' || e.kind === 'aborted') return;
     h.health.consecutiveFailures++;
+    if (e.kind === 'timeout') {
+      // a model that stops answering is quarantined for every worker (oh-my-openagent runtime fallback)
+      h.health.timeouts++;
+      h.health.consecutiveTimeouts++;
+      const base = this.llm.timeoutCooldownMs;
+      if (base > 0) {
+        const cooldown = base * Math.min(8, 2 ** (h.health.consecutiveTimeouts - 1));
+        h.health.circuitOpenUntil = Math.max(h.health.circuitOpenUntil, Date.now() + cooldown);
+        this.bus?.emitEvent('model.quarantine', { source: h.caps.key, message: e.message, data: { ms: cooldown } });
+        this.bus?.warn('router', `${h.caps.key} yanıt vermedi; ${Math.round(cooldown / 1000)} sn karantinada, işler diğer modellere aktarılıyor`, { error: e.message });
+        return;
+      }
+    }
     if (e.kind === 'auth' || e.kind === 'not_found') {
       h.health.circuitOpenUntil = Date.now() + 10 * 60_000;
       this.bus?.warn('router', `${h.caps.key} devre dışı (10 dk): ${e.kind}`);
@@ -253,6 +290,8 @@ export class Router {
   async callModel(h: ModelHandle, req: ChatRequest, attempts = 3, retryBaseMs = 1000): Promise<ChatResult> {
     const slots = this.slotsFor(h.caps.endpoint);
     let lastErr: LlmError | undefined;
+    const limits = this.timeoutsFor(h, estimateTokens(req.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n')));
+    let timeouts = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (h.health.circuitOpenUntil > Date.now()) {
         throw new LlmError(`${h.caps.key} devre kesici açık`, 'circuit_open', undefined, h.caps.key);
@@ -265,6 +304,9 @@ export class Router {
           h.caps.model,
           {
             ...req,
+            timeoutMs: req.timeoutMs ?? limits.timeoutMs,
+            firstTokenTimeoutMs: req.firstTokenTimeoutMs ?? limits.firstTokenTimeoutMs,
+            idleTimeoutMs: req.idleTimeoutMs ?? limits.idleTimeoutMs,
             maxTokens,
             temperature: req.temperature ?? h.override.temperature,
             jsonMode: req.jsonMode && h.caps.jsonMode,
@@ -284,6 +326,8 @@ export class Router {
         this.onFailure(h, err);
         this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt } });
         if (!err.retryable || attempt === attempts) throw err;
+        // a hung model is not retried by default – fail over immediately (llm.timeoutRetries)
+        if (err.kind === 'timeout' && ++timeouts > this.llm.timeoutRetries) throw err;
         const backoff = Math.min(30_000, retryBaseMs * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
         // honour Retry-After (OpenCode model-retry), but never wait more than 5 minutes per attempt
         const wait = err.retryAfterMs !== undefined ? Math.min(5 * 60_000, Math.max(backoff, err.retryAfterMs)) : err.kind === 'rate_limit' ? backoff * 2 : backoff;

@@ -53,7 +53,12 @@ export class OpenAICompatClient {
       ...(extraBody ?? {}),
     };
     const started = Date.now();
-    const t = withTimeout(req.signal, req.timeoutMs ?? this.endpoint.timeoutMs ?? 10 * 60_000);
+    const t = new Watchdog(req.signal, {
+      totalMs: req.timeoutMs ?? this.endpoint.timeoutMs ?? 10 * 60_000,
+      // first-token / idle watchdogs only make sense for streamed responses
+      firstTokenMs: stream ? req.firstTokenTimeoutMs : undefined,
+      idleMs: stream ? req.idleTimeoutMs : undefined,
+    });
     try {
       const res = await fetch(`${this.endpoint.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -64,18 +69,83 @@ export class OpenAICompatClient {
       if (!res.ok) throw classifyHttp(res.status, await safeText(res), modelKey, res.headers.get('retry-after'));
       const ctype = res.headers.get('content-type') ?? '';
       if (stream && ctype.includes('text/event-stream') && res.body) {
-        return await readStream(res.body, started, modelKey, req.onToken);
+        return await readStream(res.body, started, modelKey, req.onToken, () => t.activity());
       }
+      t.activity();
       // non-streaming (or server ignored stream=true)
       const json = (await res.json()) as OpenAIResponse;
       return fromNonStream(json, started, modelKey, req.onToken);
     } catch (e) {
       if (req.signal?.aborted) throw new LlmError('aborted', 'aborted', undefined, modelKey);
+      if (t.fired) throw new LlmError(`zaman aşımı (${modelKey}): ${t.fired}`, 'timeout', undefined, modelKey);
       throw toLlmError(e, modelKey);
     } finally {
       t.dispose();
     }
   }
+}
+
+/**
+ * Request watchdog with three clocks (Codex stream_idle_timeout, OpenCode chunkTimeout):
+ *  - total: hard limit for the whole request
+ *  - first token: the model must start answering (any SSE data) within this time
+ *  - idle: once streaming, the gap between chunks may not exceed this
+ * A hung local model therefore fails in minutes instead of after the total limit.
+ */
+export class Watchdog {
+  private readonly ctrl = new AbortController();
+  private readonly timers: { total?: NodeJS.Timeout; first?: NodeJS.Timeout; idle?: NodeJS.Timeout } = {};
+  private readonly onAbort: () => void;
+  private started = false;
+  /** human readable reason when a watchdog clock fired */
+  fired = '';
+
+  constructor(
+    private readonly parent: AbortSignal | undefined,
+    private readonly o: { totalMs: number; firstTokenMs?: number; idleMs?: number },
+  ) {
+    this.onAbort = () => this.ctrl.abort(parent?.reason ?? new Error('aborted'));
+    if (parent) {
+      if (parent.aborted) this.ctrl.abort(parent.reason);
+      else parent.addEventListener('abort', this.onAbort, { once: true });
+    }
+    this.timers.total = setTimeout(() => this.fire(`toplam süre ${secs(o.totalMs)} aşıldı`), o.totalMs);
+    if (o.firstTokenMs && o.firstTokenMs > 0) this.timers.first = setTimeout(() => this.fire(`${secs(o.firstTokenMs!)} içinde ilk token gelmedi`), o.firstTokenMs);
+  }
+
+  get signal(): AbortSignal {
+    return this.ctrl.signal;
+  }
+
+  /** call on every received chunk */
+  activity(): void {
+    if (this.fired) return;
+    if (!this.started) {
+      this.started = true;
+      clearTimeout(this.timers.first);
+    }
+    if (this.o.idleMs && this.o.idleMs > 0) {
+      clearTimeout(this.timers.idle);
+      this.timers.idle = setTimeout(() => this.fire(`akış ${secs(this.o.idleMs!)} boyunca sessiz kaldı`), this.o.idleMs);
+    }
+  }
+
+  private fire(reason: string): void {
+    if (this.fired || this.ctrl.signal.aborted) return;
+    this.fired = reason;
+    this.ctrl.abort(new Error(`timeout: ${reason}`));
+  }
+
+  dispose(): void {
+    clearTimeout(this.timers.total);
+    clearTimeout(this.timers.first);
+    clearTimeout(this.timers.idle);
+    this.parent?.removeEventListener('abort', this.onAbort);
+  }
+}
+
+function secs(ms: number): string {
+  return ms >= 1000 ? `${Math.round(ms / 1000)} sn` : `${ms} ms`;
 }
 
 interface OpenAIResponse {
@@ -172,6 +242,7 @@ export async function readStream(
   started: number,
   model: string,
   onToken?: (s: string) => void,
+  onActivity?: () => void,
 ): Promise<ChatResult> {
   const decoder = new TextDecoder();
   let buffer = '';
@@ -238,6 +309,7 @@ export async function readStream(
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      onActivity?.();
       buffer += decoder.decode(value, { stream: true });
       let nl: number;
       while ((nl = buffer.indexOf('\n')) >= 0) {
