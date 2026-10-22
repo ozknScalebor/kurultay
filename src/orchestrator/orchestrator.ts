@@ -107,15 +107,19 @@ export class Orchestrator {
     return join(this.root, this.cfg.stateDir);
   }
 
-  /** Context budget that fits the smallest coder window. */
-  private contextBudget(share = 0.3): number {
-    const wins = this.router.list().map((h) => h.caps.contextWindow);
-    const min = wins.length ? Math.min(...wins) : 16_384;
+  /**
+   * Context budget for the models that will actually read the prompt. Only
+   * those models count – a small model elsewhere in the fleet must not shrink
+   * the context of the 128K models (it simply is not given this prompt).
+   */
+  private contextBudget(share: number, models: string[]): number {
+    const wins = models.map((k) => this.router.get(k)?.caps.contextWindow).filter((w): w is number => !!w);
+    const all = wins.length ? wins : this.router.list().map((h) => h.caps.contextWindow);
+    const min = all.length ? Math.min(...all) : 16_384;
     return Math.max(1200, Math.floor(min * share));
   }
 
-  private buildContext(text: string, files: string[] = []): string {
-    const budget = this.contextBudget();
+  private buildContext(text: string, files: string[] = [], budget = this.contextBudget(0.3, [])): string {
     const parts: string[] = [];
     const archPath = join(this.stateDir, 'ARCHITECTURE.md');
     if (existsSync(archPath)) parts.push(`# PROJECT ARCHITECTURE (abridged)\n${truncateTokens(readFileSync(archPath, 'utf8'), Math.floor(budget * 0.35))}`);
@@ -166,10 +170,12 @@ export class Orchestrator {
     this.bus.emitEvent('run.start', { message: task, data: { sessionId, models: this.router.size } });
 
     // ---- 1. plan (council of planners)
-    const context = this.buildContext(fullTask);
+    const drafts = Math.min(3, this.router.size);
+    const planners = [...this.router.pick('planner', drafts), ...this.router.pick('judge', 1)].map((h) => h.caps.key);
+    const context = this.buildContext(fullTask, [], this.contextBudget(0.3, planners));
     const plan = await makePlan(this.router, fullTask, context, {
-      drafts: Math.min(3, this.router.size),
-      contextTokens: this.contextBudget(0.45),
+      drafts,
+      contextTokens: this.contextBudget(0.45, planners),
       bus: this.bus,
       signal: opts.signal,
       skillCatalogue: this.skills.catalogue(),
@@ -348,7 +354,13 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
   private async runSubtask(st: SubTask, integration: Overlay, mode: RunMode, plan: Plan, fullTask: string, iteration: number, signal?: AbortSignal): Promise<SubtaskReport> {
     const width = this.widthFor(mode, st);
     const models = this.router.pick('coder', width);
-    const context = this.buildContext(`${st.title}\n${st.description}`, st.files);
+    // every worker gets a context sized for ITS model's window
+    const contexts = new Map<number, string>();
+    const contextFor = (mk: string) => {
+      const budget = this.contextBudget(0.3, [mk]);
+      if (!contexts.has(budget)) contexts.set(budget, this.buildContext(`${st.title}\n${st.description}`, st.files, budget));
+      return contexts.get(budget)!;
+    };
     const workerSkills = this.skillsFor(st, fullTask);
     const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed' };
     this.bus.emitEvent('subtask.start', { source: st.id, data: { title: st.title, models: models.map((m) => m.caps.key) } });
@@ -358,7 +370,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
         modelKeys.map(async (mk, i) => {
           const overlay = integration.fork(`${st.id}${suffix}-${i + 1}`);
           const w = new AgentWorker(
-            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context, model: mk, overlay, skills: workerSkills },
+            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills },
             this.router,
             this.cfg,
             { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal },
@@ -421,7 +433,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
           candidates,
           reviewRules,
           reviewers,
-          contextTokens: this.contextBudget(0.5),
+          contextTokens: this.contextBudget(0.5, this.router.pick('reviewer', this.cfg.orchestrator.councilSize).map((h) => h.caps.key)),
           bus: this.bus,
           signal,
         });
@@ -450,7 +462,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
           id: fixOverlay.id,
           task: `${this.workerTask(st, plan, fullTask)}\n\nYour implementation is already applied, but it has problems that must be fixed now:\n${problems}`,
           acceptance: plan.acceptance,
-          context,
+          context: contextFor(winner.result.finalModel || winner.result.models[0] || models[0]?.caps.key || ''),
           // continue on the model that was still answering at the end, not the one that failed over
           model: winner.result.finalModel || winner.result.models[0] || models[0]?.caps.key || '',
           overlay: fixOverlay,
@@ -483,7 +495,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
               candidates: [{ id: winner.overlay.id, author: authors[0] ?? '', authors, diff: winner.overlay.diffAgainstParent(), summary: fr.summary, verifyScore: fv.skipped ? undefined : fv.score, verifyOk: fv.skipped ? undefined : fv.ok }],
               reviewRules,
               reviewers: 1,
-              contextTokens: this.contextBudget(0.5),
+              contextTokens: this.contextBudget(0.5, this.router.pick('reviewer', this.cfg.orchestrator.councilSize).map((h) => h.caps.key)),
               bus: this.bus,
               signal,
             });
@@ -508,7 +520,12 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
   private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
     const diff = integration.diff();
     if (!diff.trim()) return { complete: false, missing: ['Hiçbir değişiklik üretilmedi'], judges: [] };
-    const budget = this.contextBudget(0.55);
+    // judges that did not write the winning code come first
+    const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
+    const want = Math.min(2, this.router.size);
+    let judges = this.router.pick('judge', want, writers);
+    if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
+    const budget = this.contextBudget(0.55, judges.map((j) => j.caps.key));
     const prompt = `You are the final acceptance judge. Decide whether the combined change fully satisfies the task and its acceptance criteria. Be strict but do not invent requirements.
 
 # TASK
@@ -528,11 +545,6 @@ ${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}
 \`\`\`
 
 Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement as an actionable instruction"]}`;
-    // judges that did not write the winning code come first
-    const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
-    const want = Math.min(2, this.router.size);
-    let judges = this.router.pick('judge', want, writers);
-    if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
     const res = await settle(judges.map((j) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 1500, purpose: 'requirements', signal }, { prefer: [j.caps.key], role: 'judge' })));
     const verdicts = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => ({ model: r.value.model, j: tryExtractJson<{ complete?: boolean; missing?: string[] }>(r.value.content) }));
     verdicts.forEach((v) => this.used.add(v.model));
