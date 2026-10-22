@@ -1,3 +1,4 @@
+import { NON_CHAT_MODEL } from '../index/embeddings.js';
 import { ALL_ROLES, DEFAULT_CONFIG, type KurultayConfig, type LlmConfig, type ModelOverride, type Role } from '../config.js';
 import { Semaphore, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
@@ -126,6 +127,7 @@ export class Router {
             }
           }
           for (const m of ids) {
+            if (NON_CHAT_MODEL.test(m.id)) continue; // embedding / reranker models cannot chat
             const c = defaultCapabilities(m.id, ep.name);
             if (m.contextWindow) c.contextWindow = m.contextWindow;
             out.push(c);

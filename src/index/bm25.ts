@@ -67,6 +67,10 @@ export class Bm25Index {
     return this.chunks.length;
   }
 
+  all(): readonly Chunk[] {
+    return this.chunks;
+  }
+
   search(query: string, limit = 10, filter?: (c: Chunk) => boolean): Array<Chunk & { score: number }> {
     const qt = [...new Set(tokenize(query))];
     const scores = new Map<number, number>();

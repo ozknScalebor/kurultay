@@ -175,13 +175,19 @@ export class Orchestrator {
     return Math.max(1200, Math.floor(min * share));
   }
 
-  private buildContext(text: string, files: string[] = [], budget = this.contextBudget(0.3, [])): string {
+  /** Files relevant to a text: BM25 + embeddings (RRF) when an embedding model is available. */
+  private async retrieve(text: string, signal?: AbortSignal): Promise<string[]> {
+    if (!this.index) return [];
+    return [...new Set((await this.index.hybridSearch(text, 6, undefined, signal)).map((h) => h.path))];
+  }
+
+  private buildContext(text: string, files: string[] = [], budget = this.contextBudget(0.3, []), retrieved?: string[]): string {
     const parts: string[] = [];
     const archPath = join(this.stateDir, 'ARCHITECTURE.md');
     if (existsSync(archPath)) parts.push(`# PROJECT ARCHITECTURE (abridged)\n${truncateTokens(readFileSync(archPath, 'utf8'), Math.floor(budget * 0.35))}`);
     if (this.index) {
       const focus = focusTerms(text);
-      const hits = this.index.search(text, 6).map((h) => h.path);
+      const hits = retrieved ?? this.index.search(text, 6).map((h) => h.path);
       const map = this.index.repoMap(Math.floor(budget * 0.35), { files: [...files, ...focus.files, ...hits], identifiers: focus.identifiers });
       parts.push(`# REPO MAP (most relevant files and their definitions)\n${map}`);
       if (hits.length) parts.push(`# FILES MATCHING THE TASK (search)\n${[...new Set(hits)].map((h) => `- ${h}`).join('\n')}`);
@@ -372,7 +378,7 @@ export class Orchestrator {
         : fullTask;
       const drafts = Math.min(3, this.router.size);
       const planners = [...this.router.pick('planner', drafts), ...this.router.pick('judge', 1)].map((h) => h.caps.key);
-      const context = this.buildContext(text, [], this.contextBudget(0.3, planners));
+      const context = this.buildContext(text, [], this.contextBudget(0.3, planners), await this.retrieve(text, signal));
       const plan = await makePlan(this.router, text, context, {
         drafts,
         contextTokens: this.contextBudget(0.45, planners),
@@ -609,9 +615,10 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     const models = this.router.pick('coder', width);
     // every worker gets a context sized for ITS model's window
     const contexts = new Map<number, string>();
+    const retrieved = await this.retrieve(`${st.title}\n${st.description}`, signal);
     const contextFor = (mk: string) => {
       const budget = this.contextBudget(0.3, [mk]);
-      if (!contexts.has(budget)) contexts.set(budget, this.buildContext(`${st.title}\n${st.description}`, st.files, budget));
+      if (!contexts.has(budget)) contexts.set(budget, this.buildContext(`${st.title}\n${st.description}`, st.files, budget, retrieved));
       return contexts.get(budget)!;
     };
     const workerSkills = this.skillsFor(st, fullTask);
@@ -926,6 +933,37 @@ export function renderReport(r: RunReport, diff: string): string {
   if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model kullanımı', '', ...renderUsageTable(r.usage), '');
   lines.push('## Değişiklikler', '', `Tam diff: \`${r.diffPath}\``, '');
   return lines.join('\n');
+}
+
+/** Usage of the last `n` runs from session.json files, newest first. */
+export function loadRunUsage(stateDir: string, n = 10): Array<{ id: string; task: string; status: string; usage: RunUsage }> {
+  const dir = join(stateDir, 'sessions');
+  if (!existsSync(dir)) return [];
+  const out: ReturnType<typeof loadRunUsage> = [];
+  for (const id of readdirSync(dir).sort().reverse()) {
+    if (out.length >= n) break;
+    try {
+      const st = JSON.parse(readFileSync(join(dir, id, 'session.json'), 'utf8')) as Partial<SessionState>;
+      if (!st.usage) continue;
+      const rep = existsSync(join(dir, id, 'REPORT.md')) ? readFileSync(join(dir, id, 'REPORT.md'), 'utf8') : '';
+      out.push({ id, task: st.task ?? '', status: rep.match(/\*\*Durum:\*\* (\S+)/)?.[1] ?? st.phase ?? '?', usage: st.usage });
+    } catch {
+      /* not a run session */
+    }
+  }
+  return out;
+}
+
+export function mergeUsage(into: RunUsage, u: RunUsage): RunUsage {
+  into.requests += u.requests;
+  into.tokensIn += u.tokensIn;
+  into.tokensOut += u.tokensOut;
+  into.seconds += u.seconds;
+  for (const [k, m] of Object.entries(u.byModel)) {
+    const t = (into.byModel[k] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0 });
+    for (const f of ['requests', 'tokensIn', 'tokensOut', 'ms', 'errors', 'truncated'] as const) t[f] += m[f];
+  }
+  return into;
 }
 
 /** Markdown table of per-model consumption (REPORT.md, /stats). */

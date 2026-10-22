@@ -23,7 +23,7 @@ export async function askProject(
   const recent = (opts.history ?? []).slice(-3);
   const retrieval = [...recent.map((t) => t.question), question].join('\n');
   const focus = focusTerms(retrieval);
-  const hits = index.search(retrieval, 6);
+  const hits = await index.hybridSearch(retrieval, 6, undefined, opts.signal);
   const ctx = [
     existsSync(arch) ? `# ARCHITECTURE\n${readFileSync(arch, 'utf8')}` : '',
     existsSync(notes) ? `# PROJECT NOTES\n${readFileSync(notes, 'utf8')}` : '',

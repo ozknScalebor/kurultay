@@ -141,6 +141,16 @@ export interface ToolsConfig {
   osSandboxWritable?: string[];
 }
 
+export interface EmbeddingsConfig {
+  /** "auto" (default): use an embedding model if an endpoint lists one; "off": BM25 only */
+  mode?: 'auto' | 'off';
+  /** endpoint name serving the embedding model (default: search all / the first) */
+  endpoint?: string;
+  /** embedding model id (default: the first id that looks like one: *embed*, bge-, e5-, gte-) */
+  model?: string;
+  timeoutMs?: number;
+}
+
 export interface SkillsConfig {
   /** extra skill directories / files */
   paths: string[];
@@ -161,6 +171,7 @@ export interface KurultayConfig {
   tools: ToolsConfig;
   skills: SkillsConfig;
   llm: LlmConfig;
+  embeddings?: EmbeddingsConfig;
   /** UI language */
   language: 'tr' | 'en';
   /** where per-project state lives (relative to project root) */

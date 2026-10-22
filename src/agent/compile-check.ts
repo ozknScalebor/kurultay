@@ -63,8 +63,11 @@ export function findCompileCommands(root: string): { path: string; entries: Comp
   return undefined;
 }
 
-/** Split a shell command line (enough for compile_commands "command" strings). */
-export function splitCommand(cmd: string): string[] {
+/**
+ * Split a shell command line (enough for compile_commands "command" strings).
+ * On Windows a backslash is a path separator, not an escape (except before a quote).
+ */
+export function splitCommand(cmd: string, windows = process.platform === 'win32'): string[] {
   const out: string[] = [];
   let cur = '';
   let q: string | null = null;
@@ -73,7 +76,7 @@ export function splitCommand(cmd: string): string[] {
     const ch = cmd[i];
     if (q) {
       if (ch === q) q = null;
-      else if (ch === '\\' && q === '"' && i + 1 < cmd.length) cur += cmd[++i];
+      else if (ch === '\\' && q === '"' && i + 1 < cmd.length && (!windows || cmd[i + 1] === '"')) cur += cmd[++i];
       else cur += ch;
     } else if (ch === '"' || ch === "'") {
       q = ch;
@@ -82,7 +85,7 @@ export function splitCommand(cmd: string): string[] {
       if (cur || any) out.push(cur);
       cur = '';
       any = false;
-    } else if (ch === '\\' && i + 1 < cmd.length) cur += cmd[++i];
+    } else if (ch === '\\' && i + 1 < cmd.length && (!windows || cmd[i + 1] === '"')) cur += cmd[++i];
     else cur += ch;
   }
   if (cur || any) out.push(cur);
@@ -120,10 +123,19 @@ export function syntaxOnlyArgs(entry: CompileEntry, root: string, cwdRoot: strin
 /** Keep only compiler errors that point at the edited file and are not environment problems. */
 export function relevantErrors(output: string, file: string, lang: 'c' | 'java'): string[] {
   const name = basename(file);
+  const rel = file.split('\\').join('/');
+  const esc = name.replace(/[.+]/g, '\\$&');
   const lines = output.split(/\r?\n/);
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
+    let l = lines[i];
+    // absolute / sandbox / 8.3 paths → the project-relative path; another file with the same name is skipped
+    const at = new RegExp(`^(.*?)${esc}:\\d`).exec(l);
+    if (at && at[1]) {
+      const full = `${at[1]}${name}`.split('\\').join('/');
+      if (!full.endsWith(`/${rel}`) && full !== rel) continue;
+      l = rel + l.slice(at[1].length + name.length);
+    }
     const isErr = lang === 'java' ? new RegExp(`${name.replace(/[.]/g, '\\.')}:\\d+: error:`).test(l) : new RegExp(`${name.replace(/[.+]/g, '\\$&')}:\\d+(:\\d+)?: (fatal )?error:`).test(l);
     if (!isErr) continue;
     if (/file not found|No such file or directory|cannot open source file/i.test(l)) continue;
@@ -227,7 +239,8 @@ async function checkC(path: string, ext: string, overlay: Overlay, materializer:
           const r = await runShell([cmd, ...allArgs].map(shellQuote).join(' '), dir, 30_000, signal);
           if (r.timedOut) return { checked: false, errors: [] };
           const output = materializer.rewriteOutput(r.output);
-          const missing = [...output.matchAll(/fatal error: ([^\s:]+): (?:No such file or directory|file not found)/g)].map((x) => x[1]).filter((h) => !h.includes('..') && !isAbsolute(h));
+          // gcc: "fatal error: x.h: No such file or directory", clang: "fatal error: 'x.h' file not found"
+          const missing = [...output.matchAll(/fatal error: '?([^\s:']+)'?:? (?:No such file or directory|file not found)/g)].map((x) => x[1]).filter((h) => !h.includes('..') && !isAbsolute(h));
           if (missing.length && round < 8) {
             let added = false;
             for (const h of missing) {
