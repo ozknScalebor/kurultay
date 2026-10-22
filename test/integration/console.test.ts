@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -56,6 +57,7 @@ describe('Kurultay console', () => {
         'e',
         '/diff',
         '/report',
+        '/runs',
         '/sessions',
         '/mode race',
         '/mode bogus',
@@ -113,7 +115,9 @@ describe('Kurultay console', () => {
     assert.match(out, /Sonuç: completed · 1 dosya/);
     assert.match(readFileSync(join(proj, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/);
     assert.match(out, /\+  return Math\.min/);
-    assert.match(out, /# Kurultay Raporu|## Görev/);
+    assert.match(out, /Kurultay Çalışma Raporu\n═+/, 'report rendered as markdown');
+    assert.match(out, /Geri almak için: \/rewind/);
+    assert.match(out, / 1\) clamp fonksiyonu nerede\?\s+3 tur/, 'conversation saved with its turns');
     assert.match(out, /\d{4}-\d\d-\d\dT\S+\s+completed\s+Implement clamp in src\/mathutil\.js\n/);
     // settings
     assert.match(out, /Mod: race/);
@@ -136,7 +140,7 @@ describe('Kurultay console', () => {
     if (process.platform !== 'win32') assert.match(out, /Bu bir klasör yolu\. Çalışma alanını değiştirmek için: \/workspace/);
     assert.match(out, /Ayarlar: mod race · girdi ask · dry-run açık · onaysız uygula açık · skill log-format/);
     assert.match(out, /Çalışma alanı: .*\n/);
-    assert.match(out, /Konuşma geçmişi temizlendi/);
+    assert.match(out, /Yeni oturum başladı/);
     assert.match(out, /\/run <görev>\s+görevi planla/);
     // the workspace is remembered
     const state = JSON.parse(readFileSync(join(h, 'console.json'), 'utf8'));
@@ -252,6 +256,76 @@ describe('Kurultay console', () => {
     assert.ok(comp('/workspace ')!.items.some((i) => i.description === 'son kullanılan'));
     assert.equal(comp('plain text'), undefined);
     input.end();
+  });
+
+  it('sessions: every turn is saved; resume, branch, history and rewind (code + conversation)', async () => {
+    home();
+    const proj = tmpProject({ ...CLAMP_PROJECT });
+    const opts = { cwd: proj, workspace: proj, autoProbe: false, autoAnalyze: false };
+    const read = () => readFileSync(join(proj, 'src/mathutil.js'), 'utf8');
+    const first = await session(['/history', '/rewind', '/branch', 'clamp nerede?', 'Implement clamp in src/mathutil.js', 'e', '/history', '/branch deneme dalı', '/sessions', '/rewind 9', '/rewind', '', '/rewind 2', 'h', '/rewind 2', 'e', '/history', '/exit'], opts);
+    assert.equal(first.code, 0, first.out);
+    assert.match(first.out, /Bu oturumda henüz tur yok/);
+    assert.match(first.out, /Geri alınacak tur yok/);
+    assert.match(first.out, /Dallandırılacak bir konuşma yok/);
+    assert.match(first.out, /#1 soru  clamp nerede\?\n\s+#2 görev Implement clamp in src\/mathutil\.js \[1 dosya uygulandı\]/);
+    assert.match(first.out, /✓ dal oluşturuldu: deneme dalı/);
+    assert.match(first.out, /● {2}1\) deneme dalı\s+2 tur .*⑂/, 'branch is current and points to its parent');
+    assert.match(first.out, /2\) clamp nerede\?\s+2 tur/);
+    assert.match(first.out, /Geçersiz tur: 9/);
+    assert.match(first.out, /Hangi turun öncesine dönülsün\? \[1-2, boş = vazgeç\] ❯ \nVazgeçildi\./);
+    assert.match(first.out, /1 görevin uyguladığı 1 dosya eski hâline dönecek: src\/mathutil\.js/);
+    assert.match(first.out, /Geri alınsın mı\? \[e\/H\] h\nVazgeçildi\./);
+    assert.match(first.out, /↶ #2: 1 dosya geri yüklendi/);
+    assert.match(first.out, /#2 öncesine dönüldü \(1 tur konuşmadan çıkarıldı, kod geri alındı\)/);
+    assert.match(read(), /TODO/, 'rewind restored the original file');
+
+    // a new console continues the latest conversation (the branch, now 1 turn)
+    const second = await session(['/resume 2', '/rewind 2', '/resume 7', '/sessions', '/exit'], { ...opts, resume: true });
+    assert.match(second.out, /✓ oturuma devam: deneme dalı \(1 tur/);
+    assert.match(second.out, /#1 soru: clamp nerede\?/);
+    assert.match(second.out, /✓ oturuma devam: clamp nerede\? \(2 tur/);
+    assert.match(second.out, /#2 öncesine dönüldü \(1 tur konuşmadan çıkarıldı\)/, 'already rewound code is not touched again');
+    assert.match(second.out, /Oturum bulunamadı: 7/);
+    const third = await session(['/exit'], opts);
+    assert.match(third.out, /son oturum: ".*" \(1 tur, az önce\) — devam etmek için \/resume/);
+  });
+
+  it('worktrees: work on a separate branch, see the diff, merge and remove', async (t) => {
+    home();
+    const proj = tmpProject({ ...CLAMP_PROJECT }, { git: true });
+    const g = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { cwd: proj, stdio: 'pipe' }).toString();
+    try {
+      g('add', '-A');
+      g('commit', '-q', '-m', 'init');
+    } catch {
+      t.skip('git yok');
+      return;
+    }
+    const plain = tmpProject({ 'a.c': 'int a;' });
+    const noGit = await session(['/worktree new x', '/exit'], { cwd: plain, workspace: plain, autoProbe: false, autoAnalyze: false });
+    assert.match(noGit.out, /git deposu değil/);
+    const main = () => readFileSync(join(proj, 'src/mathutil.js'), 'utf8');
+    const r = await session(
+      ['/worktree', '/worktree diff', '/worktree new Özellik 1', '/worktree list', 'Implement clamp in src/mathutil.js', 'e', '/worktree diff', '/worktree exit', '/worktree exit', '/worktree merge nope', '/worktree merge ozellik-1', 'e', '/worktree remove ozellik-1', 'e', '/worktree list', '/worktree bogus', '/exit'],
+      { cwd: proj, workspace: proj, autoProbe: false, autoAnalyze: false },
+    );
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /worktree yok — \/worktree new <ad>/);
+    assert.match(r.out, /Hangi worktree\? \/worktree diff <ad>/);
+    assert.match(r.out, /✓ worktree: .*ozellik-1 \(dal kurultay\/ozellik-1\)/);
+    assert.match(r.out, /● ozellik-1\s+kurultay\/ozellik-1/);
+    assert.match(r.out, /Sonuç: completed/);
+    assert.match(r.out, /\+\s*return Math\.min/, 'worktree diff shows the change');
+    assert.match(r.out, /worktree korunuyor/);
+    assert.match(r.out, /Zaten ana depodasınız/);
+    assert.match(r.out, /Worktree yok: nope/);
+    assert.match(r.out, /✓ kurultay\/ozellik-1 birleştirildi/);
+    assert.match(main(), /Math\.min\(Math\.max/, 'merged into the main branch');
+    assert.match(r.out, /✓ ozellik-1 silindi/);
+    assert.match(r.out, /Kullanım: \/worktree new <ad>/);
+    assert.ok(!existsSync(join(proj, '.kurultay', 'worktrees', 'ozellik-1')));
+    assert.doesNotMatch(g('log', '--name-only', '--format=%s'), /\.kurultay\//, 'Kurultay state never gets committed');
   });
 
   it('a running task can be cancelled with Ctrl+C', async () => {

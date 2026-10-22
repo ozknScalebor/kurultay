@@ -6,6 +6,7 @@ import { ProjectAnalyzer } from './analyze/summarizer.js';
 import { createApp, loadOrBuildIndex, type App } from './app.js';
 import { ConfigError, SAMPLE_CONFIG, loadConfig, type RunMode } from './config.js';
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
+import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
@@ -27,7 +28,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -48,7 +49,9 @@ Kullanım: kurultay                 etkileşimli konsol (çalışma alanı seçi
           kurultay <komut> [seçenekler]
 
 Komutlar:
-  console              Etkileşimli konsol (--workspace <klasör>, --no-probe, --no-analyze)
+  console              Etkileşimli konsol (--workspace <klasör>, --continue | --resume [id], --worktree <ad>,
+                         --no-probe, --no-analyze)
+  rewind [oturum]      Bir görevin projeye uyguladığı değişiklikleri geri al (varsayılan: son görev; --yes, --force)
   init                 Proje köküne kurultay.config.json, kural/skill şablonları oluştur
   probe                Tüm endpoint ve modellerin yeteneklerini ölç (--deep, --quick)
   index                Projeyi indeksle (sembol, bağımlılık grafiği, PageRank) – LLM gerekmez
@@ -271,6 +274,36 @@ ${color.yellow('Uyarılar:')}`);
   }
 }
 
+/** Undo what a run applied to the project, using its checkpoint (last applied run by default). */
+async function cmdRewind(root: string, args: Args) {
+  const sessions = join(root, '.kurultay', 'sessions');
+  const ref = args.positional[0];
+  const candidates = existsSync(sessions)
+    ? readdirSync(sessions)
+        .sort()
+        .reverse()
+        .filter((s) => (!ref || s === ref || s.startsWith(ref)) && existsSync(join(sessions, s, 'checkpoint.json')))
+    : [];
+  const id = candidates.find((s) => !readCheckpoint(join(sessions, s, 'checkpoint.json'))?.rewoundAt) ?? candidates[0];
+  if (!id) throw new ConfigError(ref ? `Geri alınabilir oturum bulunamadı: ${ref}` : 'Projeye uygulanmış ve geri alınabilir bir görev yok.');
+  const file = join(sessions, id, 'checkpoint.json');
+  const cp = readCheckpoint(file)!;
+  if (cp.rewoundAt) throw new ConfigError(`${id} zaten geri alınmış (${cp.rewoundAt}).`);
+  const files = Object.keys(cp.files);
+  out(`${color.bold(id)} — ${cp.label}`);
+  out(`${files.length} dosya eski hâline dönecek: ${files.join(', ')}`);
+  const touched = modifiedSince(root, cp);
+  if (touched.length) out(color.yellow(`Uyarı: uygulamadan sonra değişmiş dosyalar: ${touched.join(', ')}${args.flags.force ? ' (--force: üzerine yazılacak)' : ' (atlanacak; üzerine yazmak için --force)'}`));
+  if (!(args.flags.yes || args.flags.y) && !(await confirmPrompt('Geri alınsın mı?'))) {
+    out('Vazgeçildi.');
+    process.exitCode = 1;
+    return;
+  }
+  const r = rewindCheckpoint(root, file, { force: !!args.flags.force });
+  out(`${color.green('✓')} ${r.restored.length} dosya geri yüklendi${r.skipped.length ? color.yellow(`, ${r.skipped.length} atlandı: ${r.skipped.join(', ')}`) : ''}`);
+  if (r.skipped.length) process.exitCode = 2;
+}
+
 async function cmdStatus(app: App) {
   out(`${color.bold('Proje')}: ${app.root}`);
   out(`${color.bold('Yapılandırma')}: ${app.configPath}`);
@@ -309,12 +342,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         autoIndex: !args.flags['no-index'],
         autoProbe: !args.flags['no-probe'],
         autoAnalyze: !args.flags['no-analyze'],
+        resume: args.flags.continue || args.flags.c ? true : typeof args.flags.resume === 'string' ? args.flags.resume : args.flags.resume ? true : undefined,
+        worktree: typeof args.flags.worktree === 'string' ? args.flags.worktree : undefined,
       },
     );
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Bilinmeyen komut: ${args.cmd}\n`);
     out(HELP);
@@ -336,6 +371,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         }
         return await cmdSkills(root, args, cfgSkills);
       }
+      case 'rewind':
+        return await cmdRewind(root, args);
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
         const { url } = await startMockServer(DEFAULT_MOCK_MODELS, port);
