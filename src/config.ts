@@ -89,6 +89,12 @@ export interface OrchestratorConfig {
   confirmMerge: boolean;
   /** tell workers to reproduce bugs with a failing test first and to leave tests behind (default true) */
   testFirst?: boolean;
+  /** show the plan and wait for approval/feedback before writing code (console /plan, run --approve-plan) */
+  approvePlan?: boolean;
+  /** stop the run (resumable) after this many prompt+completion tokens; 0 = unlimited */
+  maxTokens?: number;
+  /** stop the run (resumable) after this many minutes; 0 = unlimited */
+  maxMinutes?: number;
 }
 
 export interface IndexConfig {
@@ -119,6 +125,20 @@ export interface ToolsConfig {
    */
   syntaxCheck: 'auto' | 'off' | Record<string, string>;
   sandbox: { size: number; exclude: string[]; link: string[] };
+  /** "deny" (default): denyPatterns only; "allow": every command segment must match the allow-list */
+  commandPolicy?: 'deny' | 'allow';
+  /** extra allow-list regexes for commandPolicy "allow" */
+  allowPatterns?: string[];
+  /** remove KEY/TOKEN/SECRET/PASSWORD… variables from model commands' environment (default true) */
+  scrubEnv?: boolean;
+  /** environment variable names to keep even though they look secret */
+  envPassthrough?: string[];
+  /** OS-level sandbox for model commands: "off" (default), "auto" (bubblewrap when usable), "bwrap" (required) */
+  osSandbox?: 'off' | 'auto' | 'bwrap';
+  /** allow network inside the OS sandbox (default false) */
+  osSandboxNetwork?: boolean;
+  /** extra writable paths inside the OS sandbox (e.g. ~/.m2, ~/.gradle caches) */
+  osSandboxWritable?: string[];
 }
 
 export interface SkillsConfig {

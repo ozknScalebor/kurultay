@@ -43,8 +43,8 @@ export interface MockRequest {
 }
 
 export type MockReply =
-  | { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string }
-  | { content?: string; toolCall: { name: string; args: Record<string, unknown> } }
+  | { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string; completionTokens?: number }
+  | { content?: string; toolCall: { name: string; args: Record<string, unknown> }; completionTokens?: number }
   | { status: number; error: string; retryAfter?: string }
   | { hangMs: number }
   /** stream the first chunks, then go silent (a model that stalls mid-answer) */
@@ -279,7 +279,8 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     const content = model.thinks && out.content ? `<think>reasoning…</think>${out.content}` : out.content;
     const id = `chatcmpl-${count}`;
     const toolCalls = out.toolCall ? [{ id: `call_${count}`, type: 'function', function: { name: out.toolCall.name, arguments: JSON.stringify(out.toolCall.args) } }] : undefined;
-    const usage = { prompt_tokens: promptTok, completion_tokens: Math.max(1, tok(content) + (toolCalls ? 20 : 0)) };
+    const reported = custom && 'completionTokens' in custom ? custom.completionTokens : undefined;
+    const usage = { prompt_tokens: promptTok, completion_tokens: reported ?? Math.max(1, tok(content) + (toolCalls ? 20 : 0)) };
     if (body.stream && !model.noStream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (toolCalls) {

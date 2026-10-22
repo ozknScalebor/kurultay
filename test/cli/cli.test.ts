@@ -217,6 +217,23 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(noTty.stderr, /geri alınabilir bir görev yok/);
   });
 
+  it('run --approve-plan / --max-tokens stop the run; run --resume continues it', async () => {
+    const none = await cli(['run', '--resume'], root);
+    assert.equal(none.code, 1);
+    assert.match(none.stderr, /Sürdürülecek yarım kalmış görev yok/);
+    const bad = await cli(['run', 'x', '--max-tokens', 'çok'], root);
+    assert.match(bad.stderr, /--max-tokens sayı olmalı/);
+    const stopped = await cli(['run', 'Implement clamp in src/mathutil.js', '--approve-plan', '--max-tokens', '1', '--mode', 'single'], root);
+    assert.equal(stopped.code, 2, stopped.stdout + stopped.stderr);
+    assert.match(stopped.stdout, /Plan \(single modu/);
+    assert.match(stopped.stdout, /etkileşimli değil; plan onaylanmış sayıldı/);
+    assert.match(stopped.stdout, /Durduruldu: token bütçesi doldu.*kurultay run --resume/);
+    const resumed = await cli(['run', '--resume', '--yes'], root);
+    assert.match(resumed.stdout, /Sürdürülüyor: /);
+    assert.equal(resumed.code, 0, resumed.stdout + resumed.stderr);
+    assert.match(resumed.stdout, /Sonuç: completed[\s\S]*Tüketim: \d+ istek/);
+  });
+
   it('reports unreachable endpoints clearly', async () => {
     const dead = tmpProject({ 'a.c': 'int a;', 'kurultay.config.json': JSON.stringify({ endpoints: [{ name: 'dead', baseUrl: 'http://127.0.0.1:9/v1' }] }) });
     const r = await cli(['run', 'something'], dead);

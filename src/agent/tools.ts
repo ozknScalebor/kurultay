@@ -7,6 +7,7 @@ import type { EventBus } from '../util/events.js';
 import { truncateMiddle } from '../util/text.js';
 import { EditError, applyReplacement } from './edits.js';
 import { postEditCheck } from './syntax.js';
+import { bwrapArgs, checkCommand, osSandboxFor, scrubEnv } from './command-policy.js';
 import { renderSyntaxResult, syntaxCheck } from './compile-check.js';
 import { safeRelPath, type Materializer, type Overlay } from './workspace.js';
 
@@ -90,15 +91,23 @@ function numbered(content: string, start: number, end: number): string {
   return out.join('\n');
 }
 
-export function runShell(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; output: string; timedOut: boolean }> {
+export interface ShellOptions {
+  /** environment to use instead of process.env (e.g. scrubbed of secrets) */
+  env?: NodeJS.ProcessEnv;
+  /** run inside bubblewrap (Linux): read-only system, writable cwd, no network */
+  bwrap?: { network?: boolean; writable?: string[] };
+}
+
+export function runShell(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal, opts: ShellOptions = {}): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     const isWin = process.platform === 'win32';
     // On Windows let Node build the cmd.exe invocation itself (correct quoting of the whole command line)
-    const child = spawn(isWin ? command : 'bash', isWin ? [] : ['-lc', command], {
+    const [bin, argv] = isWin ? [command, []] : opts.bwrap ? ['bwrap', bwrapArgs(command, cwd, opts.bwrap)] : ['bash', ['-lc', command]];
+    const child = spawn(bin, argv, {
       shell: isWin ? true : false,
       windowsHide: true,
       cwd,
-      env: { ...process.env, CI: '1', TERM: 'dumb', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' },
+      env: { ...(opts.env ?? process.env), CI: '1', TERM: 'dumb', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -379,13 +388,22 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a, ctx) {
       const cmd = str(a.command, 'command');
-      if (!ctx.config.tools.allowCommands) return { output: 'Komut çalıştırma yapılandırmada kapalı.', isError: true };
-      for (const pat of ctx.config.tools.denyPatterns) {
-        if (new RegExp(pat, 'i').test(cmd)) return { output: `Komut güvenlik kuralı nedeniyle reddedildi (${pat}).`, isError: true };
+      const tools = ctx.config.tools;
+      if (!tools.allowCommands) return { output: 'Komut çalıştırma yapılandırmada kapalı.', isError: true };
+      const policy = checkCommand(cmd, tools);
+      if (!policy.ok) {
+        ctx.bus?.emitEvent('tool.command.denied', { source: ctx.workerId, message: cmd, data: { reason: policy.reason } });
+        return { output: `Komut reddedildi: ${policy.reason}.`, isError: true };
       }
-      const timeout = Math.min(ctx.config.tools.commandTimeoutMs, (optNum(a.timeout_sec) ?? 600) * 1000);
+      const os = osSandboxFor(tools);
+      if (os.error) return { output: os.error, isError: true };
+      const timeout = Math.min(tools.commandTimeoutMs, (optNum(a.timeout_sec) ?? 600) * 1000);
       ctx.bus?.emitEvent('tool.command', { source: ctx.workerId, message: cmd });
-      const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal), ctx.signal);
+      const shellOpts: ShellOptions = {
+        env: tools.scrubEnv === false ? undefined : scrubEnv(process.env, tools.envPassthrough).env,
+        bwrap: os.use ? { network: tools.osSandboxNetwork ?? false, writable: tools.osSandboxWritable } : undefined,
+      };
+      const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal, shellOpts), ctx.signal);
       const status = r.timedOut ? 'ZAMAN AŞIMI' : `çıkış kodu ${r.code}`;
       return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000)}`, isError: r.code !== 0 };
     },
