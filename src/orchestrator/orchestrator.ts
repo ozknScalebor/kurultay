@@ -350,7 +350,7 @@ ${plan.understanding ? `\nPlan summary: ${plan.understanding}\n` : ''}
 Your subtask (${st.id} – ${st.title}):
 ${st.description}
 ${st.files.length ? `\nFiles likely involved: ${st.files.join(', ')}` : ''}
-Only implement YOUR subtask; other engineers handle the rest in parallel.`;
+Only implement YOUR subtask; other engineers handle the rest in parallel.${this.cfg.orchestrator.testFirst === false ? '' : `\n\n${testingGuidance(`${fullTask}\n${st.title}\n${st.description}`, this.cfg.verify.test ?? '')}`}`;
   }
 
   private async runSubtask(st: SubTask, integration: Overlay, mode: RunMode, plan: Plan, fullTask: string, iteration: number, signal?: AbortSignal): Promise<SubtaskReport> {
@@ -573,6 +573,27 @@ Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement a
       JSON.stringify({ sessionId, task, plan, overlay: integration.toJSON(), reports, savedAt: new Date().toISOString() }, null, 1),
     );
   }
+}
+
+const BUG_WORDS = /\b(fix|bug|crash|wrong|incorrect|broken|regression|leak|overflow|race|deadlock|hata|düzelt|yanlış|çök|sızıntı|taşma|bozuk)/i;
+
+/**
+ * Test-first guidance for workers (SWE-agent / Aider practice): reproduce bugs
+ * before fixing them and leave tests behind, so verification has evidence
+ * instead of depending only on LLM judges.
+ */
+export function testingGuidance(text: string, testCommand: string): string {
+  const lines = ['TESTING (required):'];
+  if (BUG_WORDS.test(text)) {
+    lines.push('- This looks like a bug fix: FIRST reproduce it with a failing test (or a minimal script), run it and see it fail, THEN fix the code and run it again to see it pass.');
+  }
+  if (testCommand.trim()) {
+    lines.push(`- Add or extend tests for the behaviour you change, next to the existing tests and in their style. Run the suite with \`${testCommand.trim()}\` and make it pass.`);
+  } else {
+    lines.push('- The project has no configured test command: write a small self-check (a test file in the project\'s usual test location/style, or a script) that exercises your change, run it with run_command, and mention it in your finish summary.');
+  }
+  lines.push('- Do not delete or weaken existing tests to make them pass.');
+  return lines.join('\n');
 }
 
 export function renderReport(r: RunReport, diff: string): string {

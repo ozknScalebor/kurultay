@@ -42,6 +42,7 @@ Return ONLY JSON:
   ]
 }
 Mark "critical": true for subtasks with tricky logic where comparing several independent implementations is valuable.
+Acceptance criteria must be checkable: prefer criteria a test or a command can verify (e.g. "unit test X covers empty input and passes").
 If project skills are listed below, put the names of the skills a subtask needs in its "skills" array (only names from the list; [] when none apply).`;
 
 function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'authors'> | undefined {
