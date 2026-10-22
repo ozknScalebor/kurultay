@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { findCompileCommands, hasTool, javaSourceRoot, relevantErrors, renderSyntaxResult, splitCommand, syntaxCheck, syntaxOnlyArgs } from '../../src/agent/compile-check.js';
+import { findCompileCommands, hasTool, javaReleaseArgs, javacMajor, javaSourceRoot, parseJavacVersion, relevantErrors, renderSyntaxResult, splitCommand, syntaxCheck, syntaxOnlyArgs } from '../../src/agent/compile-check.js';
 import { executeTool, type ToolContext } from '../../src/agent/tools.js';
 import { Materializer, Overlay } from '../../src/agent/workspace.js';
 import { ProjectIndex } from '../../src/index/project-index.js';
@@ -114,6 +114,22 @@ describe('compiler check after edits', () => {
     const r = await syntaxCheck('src/main/java/com/acme/App.java', ctx.overlay, m, 'auto');
     assert.equal(r.tool, 'javac');
     assert.ok(r.errors.length >= 1, JSON.stringify(r));
+  });
+
+  it('Java release: newer APIs are rejected for Java 8 projects', { skip: !javac }, async () => {
+    assert.equal(parseJavacVersion('javac 1.8.0_402'), 8);
+    assert.equal(parseJavacVersion('javac 21.0.2'), 21);
+    assert.equal(parseJavacVersion('?'), 0);
+    assert.deepEqual(javaReleaseArgs(8, 21), ['--release', '8', '-Xlint:-options']);
+    assert.deepEqual(javaReleaseArgs(8, 8), ['-source', '1.8', '-target', '1.8']);
+    assert.deepEqual(javaReleaseArgs(11, 8), ['-source', '11', '-target', '11']);
+    assert.deepEqual(javaReleaseArgs(undefined, 21), []);
+    const { ctx, m } = setup({ 'src/A.java': 'import java.util.List;\nclass A { List<Integer> x = List.of(1); }\n' });
+    assert.deepEqual((await syntaxCheck('src/A.java', ctx.overlay, m, 'auto')).errors, [], 'fine on the local JDK');
+    if (javacMajor() >= 9) {
+      const r = await syntaxCheck('src/A.java', ctx.overlay, m, 'auto', undefined, undefined, { javaRelease: 8 });
+      assert.match(r.errors.join('\n'), /A\.java:2: error: cannot find symbol|A\.java:2: error/);
+    }
   });
 
   it('custom commands per extension, off switch and unknown languages', async () => {

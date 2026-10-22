@@ -41,6 +41,27 @@ describe('config', () => {
     mkdirSync(join(empty, 'sub'));
     if (!findConfigFile(empty)) assert.throws(() => loadConfig(empty), /kurultay init/);
   });
+
+  it('a project config without endpoints extends the user config', () => {
+    const prev = process.env.KURULTAY_HOME;
+    const home = tmpProject({ 'config.json': JSON.stringify({ endpoints: [{ name: 'gpu', baseUrl: 'http://g:1/v1' }], verify: { test: 'global-test', lint: 'global-lint' }, orchestrator: { raceWidth: 2 } }) });
+    process.env.KURULTAY_HOME = home;
+    try {
+      const proj = tmpProject({ 'kurultay.config.json': JSON.stringify({ verify: { test: 'ctest' }, tools: { javaRelease: 8 } }) });
+      const { config, path } = loadConfig(proj);
+      assert.equal(path, join(proj, 'kurultay.config.json'));
+      assert.deepEqual(config.endpoints.map((e) => e.name), ['gpu']);
+      assert.equal(config.verify.test, 'ctest', 'project wins');
+      assert.equal(config.verify.lint, 'global-lint', 'user settings fill the rest');
+      assert.equal(config.orchestrator.raceWidth, 2);
+      assert.equal(config.tools.javaRelease, 8);
+      const own = tmpProject({ 'kurultay.config.json': JSON.stringify({ endpoints: [{ name: 'own', baseUrl: 'http://o:1/v1' }] }) });
+      assert.equal(loadConfig(own).config.orchestrator.raceWidth, 3, 'a project with its own endpoints does not inherit');
+    } finally {
+      if (prev === undefined) delete process.env.KURULTAY_HOME;
+      else process.env.KURULTAY_HOME = prev;
+    }
+  });
 });
 
 describe('text utils', () => {

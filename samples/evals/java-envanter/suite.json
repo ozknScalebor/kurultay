@@ -1,0 +1,108 @@
+{
+  "name": "java-envanter",
+  "description": "Java 8 envanter/sipariş projesi: 8 hata + 2 özellik. Gizli testler hidden/<görev>/ altında, referans çözümler solutions/<görev>/ altında.",
+  "project": "../../java-envanter",
+  "check": "javac -d .build/tools tools/Build.java && java -cp .build/tools Build test",
+  "tasks": [
+    {
+      "id": "B1-kademe-indirimi",
+      "title": "GOLD ve SILVER müşterilere sadakat indirimi hiç uygulanmıyor",
+      "prompt": "GOLD ve SILVER müşterilere sadakat indirimi hiç uygulanmıyor. GOLD müşteri %10, SILVER %5 indirim almalı (ara toplam üzerinden); KDV indirimli tutar üzerinden hesaplanmalı. Örnek: GOLD müşteri, 2 adet 100 TL'lik elektronik ürün → indirim 20 TL, KDV 36 TL, toplam 216 TL.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B2-csv-tirnak",
+      "title": "Uygulama örnek veri dosyasıyla (data/urunler",
+      "prompt": "Uygulama örnek veri dosyasıyla (data/urunler.csv) açılmıyor: 'Satır 4: 4 alan bekleniyordu, 5 bulundu'. Ürün adlarında virgül olabiliyor; CSV okuyucu tırnaklı alanları (\"Defter, A4 kareli\") ve tırnak içindeki çift tırnakları (\"Çay \"\"Rize\"\" 1kg\") doğru okumalı. Kapanmamış tırnak satır numarasıyla birlikte IOException vermeli.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B3-son-stok",
+      "title": "Depodaki stoğun tamamı sipariş edilemiyor: 5 adet stok varken 5 adetli",
+      "prompt": "Depodaki stoğun tamamı sipariş edilemiyor: 5 adet stok varken 5 adetlik sipariş 'Yetersiz stok' hatası veriyor. Mevcut stoğun tamamı rezerve edilebilmeli, fazlası reddedilmeli.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B4-iptal-stok",
+      "title": "İptal edilen siparişlerin stoğu geri gelmiyor: sipariş iptal edildikte",
+      "prompt": "İptal edilen siparişlerin stoğu geri gelmiyor: sipariş iptal edildikten sonra ürünlerin mevcut (available) miktarı sipariş öncesine dönmüyor. NEW veya CONFIRMED bir sipariş iptal edildiğinde ayrılan stok serbest bırakılmalı; aynı sipariş ikinci kez iptal edilememeli.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B5-satis-raporu",
+      "title": "Kategori bazında satış raporu (ReportService",
+      "prompt": "Kategori bazında satış raporu (ReportService.salesByCategory) iptal edilmiş siparişleri de satış olarak sayıyor. İptal edilen siparişler rapora hiç girmemeli; yalnızca iptal edilmiş siparişi olan kategori raporda görünmemeli.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B6-tarih-araligi",
+      "title": "Aylık sipariş raporu ayın son günü verilen siparişleri göstermiyor",
+      "prompt": "Aylık sipariş raporu ayın son günü verilen siparişleri göstermiyor. DateRange iki ucu da dahil bir aralık olarak belgelenmiş ama bitiş günü aralığa dahil edilmiyor; tek günlük aralık da çalışmıyor.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B7-kdv-yuvarlama",
+      "title": "KDV tutarları bazen 1 kuruş eksik çıkıyor (ör",
+      "prompt": "KDV tutarları bazen 1 kuruş eksik çıkıyor (ör. 10,05 TL'lik gıda ürününün KDV'si 1,01 yerine 1,00 TL). KDV hesabı kayan nokta (double) kullanmadan BigDecimal ile yapılmalı ve kuruşa HALF_UP yuvarlanmalı.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "B8-negatif-stok",
+      "title": "Stok girişinde (InventoryService",
+      "prompt": "Stok girişinde (InventoryService.addStock) sıfır veya negatif miktar kabul ediliyor ve stok eksiye düşebiliyor. Pozitif olmayan miktar IllegalArgumentException ile reddedilmeli, stok değişmemeli.",
+      "tags": [
+        "hata",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "F1-kupon",
+      "title": "Siparişlere kupon desteği ekle: OrderService",
+      "prompt": "Siparişlere kupon desteği ekle: OrderService.applyCoupon(String siparisId, String kod) ve Order.getCouponCode(). Şimdilik tek kupon var: YAZ15 (büyük/küçük harf duyarsız) — kademe indirimi düşüldükten sonra kalan ara toplamın %15'i kadar ek indirim; PricingService.discount bu indirimi de içermeli, KDV indirimli tutardan hesaplanmalı. Bilinmeyen kod IllegalArgumentException; ikinci kupon veya iptal/sevk edilmiş siparişe kupon IllegalStateException vermeli. getCouponCode kodu büyük harfle döndürmeli, kupon yoksa null.",
+      "tags": [
+        "özellik",
+        "java"
+      ],
+      "timeoutSec": 900
+    },
+    {
+      "id": "F2-dusuk-stok-csv",
+      "title": "Düşük stok raporunu CSV olarak dışa aktar: ReportFormatter",
+      "prompt": "Düşük stok raporunu CSV olarak dışa aktar: ReportFormatter.lowStockCsv(List<StockLevel>) başlığı 'sku,ad,mevcut' olan, satır sonu \\n olan bir metin döndürmeli. Virgül, tırnak veya satır sonu içeren alanlar RFC 4180'e göre tırnaklanmalı (içteki tırnak iki kez yazılır). Boş liste yalnızca başlık satırını döndürür.",
+      "tags": [
+        "özellik",
+        "java"
+      ],
+      "timeoutSec": 900
+    }
+  ]
+}
