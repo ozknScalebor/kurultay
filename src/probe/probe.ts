@@ -1,3 +1,4 @@
+import { NON_CHAT_MODEL } from '../index/embeddings.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EndpointConfig, KurultayConfig } from '../config.js';
@@ -293,7 +294,7 @@ async function probeEndpoint(ep: EndpointConfig, cfg: KurultayConfig, bus: Event
     }
   }
   // skip embedding / reranker models – they cannot chat
-  ids = ids.filter((m) => !/embed|rerank|bge-|e5-|nomic-embed|whisper|tts/i.test(m.id));
+  ids = ids.filter((m) => !NON_CHAT_MODEL.test(m.id));
   bus?.info(`probe:${ep.name}`, `${ids.length} model bulundu: ${ids.map((m) => m.id).join(', ')}`);
 
   const out: ModelCapabilities[] = [];

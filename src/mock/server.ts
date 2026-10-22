@@ -26,6 +26,8 @@ export interface MockModel {
   noStream?: boolean;
   /** do not advertise the context window in GET /models (forces the probe ladder) */
   hideCtx?: boolean;
+  /** an embedding model: served on POST /embeddings (deterministic vectors), not a chat model */
+  embedding?: boolean;
   /**
    * Scenario hook for tests: return a reply to override the built-in behaviour,
    * an HTTP error, or undefined to fall through to the default responder.
@@ -183,6 +185,36 @@ function respond(model: MockModel, body: { messages: Msg[]; tools?: unknown[]; r
   return { content: `mock(${model.id}) yanıtı` };
 }
 
+/**
+ * Deterministic "semantic" vectors: words are mapped to concepts (a tiny
+ * Turkish/English synonym table) and hashed into 64 dimensions, so a query
+ * like "sıcaklık sınırı" lands near code about "temperature limit" – something
+ * BM25 cannot do.
+ */
+const CONCEPTS: Record<string, string> = {
+  sıcaklık: 'temperature', isı: 'temperature', temp: 'temperature', temperature: 'temperature', celsius: 'temperature',
+  sınır: 'limit', sınırı: 'limit', eşik: 'limit', limit: 'limit', threshold: 'limit', max: 'limit', maximum: 'limit',
+  kullanıcı: 'user', user: 'user', account: 'user', hesap: 'user',
+  giriş: 'login', oturum: 'login', login: 'login', signin: 'login', authenticate: 'login', password: 'login', şifre: 'login',
+  para: 'money', ödeme: 'money', payment: 'money', price: 'money', fiyat: 'money', invoice: 'money', fatura: 'money',
+};
+
+export function mockEmbedding(text: string, dims = 64): number[] {
+  const v = new Array<number>(dims).fill(0);
+  for (const raw of text.match(/[\p{L}\d_]+/gu) ?? []) {
+    const parts = raw.split('_').flatMap((p) => p.replace(/([a-z])([A-Z])/g, '$1 $2').split(' '));
+    for (const w of (parts.length > 1 ? parts : [raw]).map((x) => x.toLowerCase())) {
+      const concept = CONCEPTS[w];
+      if (!concept) continue;
+      let h = 0;
+      for (const ch of concept) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      v[h % dims] += 1;
+    }
+  }
+  v[dims - 1] += 0.01; // never all-zero
+  return v;
+}
+
 function sse(res: ServerResponse, obj: unknown) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
@@ -193,6 +225,8 @@ export interface MockServerHandle {
   requests: () => number;
   /** every chat request body received, in order (for assertions) */
   log: Array<{ model: string; body: Record<string, unknown> }>;
+  /** batch sizes of POST /embeddings calls */
+  embedCalls: number[];
   close: () => Promise<void>;
 }
 
@@ -200,12 +234,28 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
   const failures = new Map<string, number>();
   const perModel = new Map<string, number>();
   const log: MockServerHandle['log'] = [];
+  const embedCalls: number[] = [];
   let count = 0;
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '';
     if (req.method === 'GET' && url.endsWith('/models')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ object: 'list', data: models.map((m) => ({ id: m.id, object: 'model', ...(m.hideCtx ? {} : { max_model_len: m.ctx }) })) }));
+      return;
+    }
+    if (req.method === 'POST' && url.endsWith('/embeddings')) {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw) as { model: string; input: string | string[] };
+      const model = models.find((m) => m.id === body.model && m.embedding);
+      if (!model) {
+        res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `embedding model ${body.model} not found` } }));
+        return;
+      }
+      embedCalls.push(Array.isArray(body.input) ? body.input.length : 1);
+      const inputs = Array.isArray(body.input) ? body.input : [body.input];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', model: model.id, data: inputs.map((t, index) => ({ object: 'embedding', index, embedding: mockEmbedding(t) })) }));
       return;
     }
     if (req.method !== 'POST' || !url.endsWith('/chat/completions')) {
@@ -308,6 +358,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
         url: `http://127.0.0.1:${p}/v1`,
         requests: () => count,
         log,
+        embedCalls,
         close: () =>
           new Promise<void>((r) => {
             server.closeAllConnections?.();

@@ -91,7 +91,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
 
   it('index, map and search work without any model', async () => {
     const idx = await cli(['index'], root);
-    assert.equal(idx.code, 0, idx.stderr);
+    assert.equal(idx.code, 0, idx.stdout + idx.stderr);
     assert.match(idx.stdout, /indeks: 3 dosya/);
     const map = await cli(['map', '--tokens', '200'], root);
     assert.match(map.stdout, /src\/mathutil\.js/);
@@ -232,6 +232,20 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(resumed.stdout, /Sürdürülüyor: /);
     assert.equal(resumed.code, 0, resumed.stdout + resumed.stderr);
     assert.match(resumed.stdout, /Sonuç: completed[\s\S]*Tüketim: \d+ istek/);
+  });
+
+  it('stats shows per-run and per-model usage; index --embed reports the retrieval mode', async () => {
+    const r = await cli(['stats', '--runs', '3'], root);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /Son \d+ görev:/);
+    assert.match(r.stdout, /\| Model \| İstek \| Giriş token/);
+    assert.match(r.stdout, /\| cli-\w+@mock \| \d+ \|/);
+    assert.match(r.stdout, /Öğrenilen başarı oranı: cli-/);
+    const empty = await cli(['stats'], tmpProject({}));
+    assert.match(empty.stdout, /Henüz kayıtlı görev/);
+    const idx = await cli(['index', '--embed'], root);
+    assert.equal(idx.code, 0, idx.stdout + idx.stderr);
+    assert.match(idx.stdout, /anlamsal arama: embedding modeli yok/);
   });
 
   it('reports unreachable endpoints clearly', async () => {

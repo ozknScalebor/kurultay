@@ -37,6 +37,23 @@ export class OpenAICompatClient {
     }
   }
 
+  /** OpenAI-compatible POST /embeddings (vLLM, llama.cpp --embedding, Ollama, LM Studio, TEI). */
+  async embed(model: string, input: string[], signal?: AbortSignal, timeoutMs = 120_000): Promise<number[][]> {
+    const t = withTimeout(signal, timeoutMs);
+    try {
+      const res = await fetch(`${this.endpoint.baseUrl}/embeddings`, { method: 'POST', headers: this.headers(), body: JSON.stringify({ model, input }), signal: t.signal });
+      if (!res.ok) throw classifyHttp(res.status, await safeText(res), `${model}@${this.endpoint.name}/embeddings`);
+      const body = (await res.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
+      const data = [...(body.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      if (data.length !== input.length || data.some((d) => !Array.isArray(d.embedding))) throw new LlmError(`beklenmeyen embeddings yanıtı (${data.length}/${input.length})`, 'server', undefined, model);
+      return data.map((d) => d.embedding!);
+    } catch (e) {
+      throw toLlmError(e, `${model}@${this.endpoint.name}/embeddings`);
+    } finally {
+      t.dispose();
+    }
+  }
+
   async chat(model: string, req: ChatRequest, extraBody?: Record<string, unknown>): Promise<ChatResult> {
     const modelKey = `${model}@${this.endpoint.name}`;
     const stream = req.stream !== false;

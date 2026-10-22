@@ -3,13 +3,15 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { ProjectAnalyzer } from './analyze/summarizer.js';
-import { createApp, loadOrBuildIndex, type App } from './app.js';
-import { ConfigError, SAMPLE_CONFIG, loadConfig, type RunMode } from './config.js';
+import { createApp, loadOrBuildIndex, prepareRetrieval, type App } from './app.js';
+import { VectorStore } from './index/embeddings.js';
+import { ConfigError, SAMPLE_CONFIG, kurultayHome, loadConfig, type RunMode } from './config.js';
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
-import { Orchestrator, fmtDuration, fmtTokens, renderPlan } from './orchestrator/orchestrator.js';
+import { Orchestrator, fmtDuration, fmtTokens, loadRunUsage, mergeUsage, renderPlan, renderUsageTable, type RunUsage } from './orchestrator/orchestrator.js';
+import { ModelStats } from './llm/stats.js';
 import type { Plan } from './orchestrator/planner.js';
 import { askProject } from './ops.js';
 import { detectVerifyCommands } from './orchestrator/verify.js';
@@ -29,7 +31,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -59,6 +61,7 @@ Komutlar:
   init                 Proje köküne kurultay.config.json, kural/skill şablonları oluştur
   probe                Tüm endpoint ve modellerin yeteneklerini ölç (--deep, --quick)
   index                Projeyi indeksle (sembol, bağımlılık grafiği, PageRank) – LLM gerekmez
+                         --embed: embedding modeliyle anlamsal arama vektörlerini de oluştur
   analyze              İndeksle + tüm modellerle paralel özet: ARCHITECTURE.md, PROJECT_NOTES.md, akış dokümanları
                          (--force, --drafts N, --flows N; 0 = akış yok)
   run "<görev>"        Görevi planla, modellere dağıt, doğrula, incele ve uygula
@@ -70,8 +73,9 @@ Komutlar:
   ask "<soru>"         Proje hakkında soru: modeller ayrı cevaplar, konsey birleştirir (--members N)
   map                  Repo haritasını yazdır (--tokens N, --focus a,b)
   skills               Skill'leri listele ve doğrula; "skills new <ad> --description ..." yeni skill oluşturur
-  search "<sorgu>"     İndekste BM25 arama
+  search "<sorgu>"     İndekste arama (BM25; vektörler varsa BM25 + embedding, RRF)
   status               Modeller, indeks ve son oturumlar
+  stats                Son görevlerin model başına istek/token/süre tablosu ve öğrenilen başarı oranları (--runs N)
   mock                 Test için sahte OpenAI-uyumlu LLM sunucusu başlat (--port 9100)
 
 Genel seçenekler:
@@ -156,12 +160,21 @@ async function cmdProbe(app: App, flags: Args['flags']) {
   }
 }
 
-async function cmdIndex(app: App) {
+async function cmdIndex(app: App, flags: Args['flags']) {
   const { index, stats } = loadOrBuildIndex(app);
   const s = index.stats();
   out(`${color.green('✓')} indeks: ${s.files} dosya, ${s.lines.toLocaleString('en')} satır, ${s.defs} tanım, ${s.edges} bağımlılık kenarı`);
   if (stats) out(color.dim(`  eklenen ${stats.added}, değişen ${stats.changed}, silinen ${stats.removed}`));
   out(color.dim(`  diller: ${Object.entries(s.langs).map(([l, n]) => `${l}:${n}`).join(' ')}`));
+  if (flags.embed) await reportRetrieval(app, index);
+}
+
+/** Build/refresh the embedding vectors and print one line about it. */
+async function reportRetrieval(app: App, index: ProjectIndex): Promise<void> {
+  const r = await prepareRetrieval(app, index);
+  if (!r.model) out(color.dim('  anlamsal arama: embedding modeli yok (yalnızca BM25). config.embeddings.model ile belirtilebilir.'));
+  else if (r.error) out(color.yellow(`  anlamsal arama: ${r.model} kullanılamadı – ${r.error}`));
+  else out(`${color.green('✓')} anlamsal arama: ${r.model} · ${r.vectors} parça vektörlü (${r.embedded} yeni)`);
 }
 
 async function cmdAnalyze(app: App, flags: Args['flags']) {
@@ -182,6 +195,7 @@ async function cmdAnalyze(app: App, flags: Args['flags']) {
     if (r.notesPath) out(`${color.green('✓')} ${r.notesPath}`);
     for (const f of r.flowPaths) out(`${color.green('✓')} ${f}`);
     out(color.dim(`  model kullanımı: ${Object.entries(r.modelsUsed).map(([m, n]) => `${m}×${n}`).join(', ')}`));
+    await reportRetrieval(app, index);
   } finally {
     stop();
   }
@@ -231,6 +245,7 @@ async function cmdRun(app: App, args: Args) {
   process.once('SIGINT', onSig);
   try {
     const { index } = loadOrBuildIndex(app);
+    await prepareRetrieval(app, index, { signal: ctrl.signal });
     if (!existsSync(join(app.stateDir, 'ARCHITECTURE.md'))) out(color.yellow('İpucu: "kurultay analyze" çalıştırılırsa modeller proje mimarisini bilerek çalışır.'));
     const reqFile = typeof args.flags.req === 'string' ? args.flags.req : undefined;
     const requirements = reqFile ? readFileSync(resolve(reqFile), 'utf8') : undefined;
@@ -276,6 +291,7 @@ async function cmdAsk(app: App, args: Args) {
   const stop = attachTerminal(app.bus, { verbose: !!args.flags.verbose });
   try {
     const { index } = loadOrBuildIndex(app);
+    await prepareRetrieval(app, index);
     const r = await askProject(app, index, q, { members: args.flags.members !== undefined ? Number(args.flags.members) : undefined });
     out('\n' + r.answer.trim());
     out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
@@ -400,6 +416,27 @@ async function cmdStatus(app: App) {
   }
 }
 
+/** Per-run and per-model consumption across the last task runs (observability). */
+function cmdStats(stateDir: string, flags: Args['flags']) {
+  const n = numFlag(flags.runs, 'runs') ?? 10;
+  const runs = loadRunUsage(stateDir, n);
+  if (!runs.length) return out('Henüz kayıtlı görev çalıştırması yok.');
+  const total: RunUsage = { requests: 0, tokensIn: 0, tokensOut: 0, seconds: 0, byModel: {} };
+  out(color.bold(`Son ${runs.length} görev:`));
+  for (const r of runs) {
+    out(`  ${r.id}  ${r.status.padEnd(10)} ${String(r.usage.requests).padStart(5)} istek · ${fmtTokens(r.usage.tokensIn + r.usage.tokensOut).padStart(6)} token · ${fmtDuration(r.usage.seconds).padStart(10)}  ${r.task.split('\n')[0].slice(0, 60)}`);
+    mergeUsage(total, r.usage);
+  }
+  out('');
+  out(color.bold(`Toplam: ${total.requests} istek · ${fmtTokens(total.tokensIn)} giriş / ${fmtTokens(total.tokensOut)} çıkış token · ${fmtDuration(total.seconds)}`));
+  out(renderUsageTable(total).join('\n'));
+  const learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
+  const rates = Object.keys(total.byModel)
+    .map((k) => [k, learned.summary(k)] as const)
+    .filter((x): x is readonly [string, { n: number; rate: number }] => !!x[1]);
+  if (rates.length) out(`\n${color.bold('Öğrenilen başarı oranı')}: ${rates.map(([k, s]) => `${k} %${Math.round(s.rate * 100)} (${s.n})`).join(' · ')}`);
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (args.flags.version || args.flags.v) return out(VERSION);
@@ -423,7 +460,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'stats'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Bilinmeyen komut: ${args.cmd}\n`);
     out(HELP);
@@ -447,6 +484,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       case 'rewind':
         return await cmdRewind(root, args);
+      case 'stats': {
+        let stateDir = '.kurultay';
+        try {
+          stateDir = loadConfig(root, configPath).config.stateDir;
+        } catch {
+          /* statistics need no endpoints */
+        }
+        return cmdStats(join(root, stateDir), args.flags);
+      }
       case 'eval':
         return await cmdEval(args);
       case 'mock': {
@@ -463,7 +509,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       case 'probe':
         return await cmdProbe(app, args.flags);
       case 'index':
-        return await cmdIndex(app);
+        return await cmdIndex(app, args.flags);
       case 'analyze':
         return await cmdAnalyze(app, args.flags);
       case 'run':
@@ -479,7 +525,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       case 'search': {
         const { index } = loadOrBuildIndex(app);
-        for (const h of index.search(args.positional.join(' '), Number(args.flags.limit ?? 10))) out(`${h.path}:${h.startLine}-${h.endLine}  (${h.score.toFixed(2)})`);
+        // hybrid (BM25 + embeddings) once vectors exist; plain BM25 otherwise – no network needed
+        if (existsSync(VectorStore.pathFor(app.stateDir))) await prepareRetrieval(app, index);
+        for (const h of await index.hybridSearch(args.positional.join(' '), Number(args.flags.limit ?? 10))) out(`${h.path}:${h.startLine}-${h.endLine}  (${h.score.toFixed(index.embedder ? 4 : 2)})`);
         return;
       }
       default:

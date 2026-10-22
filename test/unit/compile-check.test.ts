@@ -37,7 +37,8 @@ describe('test-first guidance', () => {
 
 describe('compiler check after edits', () => {
   it('parses compile commands and builds syntax-only invocations', () => {
-    assert.deepEqual(splitCommand(`gcc -I"a b" -DX='1 2' -c src/x.c -o x.o \\-y ""`), ['gcc', '-Ia b', '-DX=1 2', '-c', 'src/x.c', '-o', 'x.o', '-y', '']);
+    assert.deepEqual(splitCommand(`gcc -I"a b" -DX='1 2' -c src/x.c -o x.o \\-y ""`, false), ['gcc', '-Ia b', '-DX=1 2', '-c', 'src/x.c', '-o', 'x.o', '-y', '']);
+    assert.deepEqual(splitCommand(`cl.exe -IC:\\p\\inc "-DX=\\"q\\"" C:\\p\\a.c`, true), ['cl.exe', '-IC:\\p\\inc', '-DX="q"', 'C:\\p\\a.c']);
     const r = syntaxOnlyArgs({ directory: '/p/build', file: '../src/x.c', command: 'cc -I/p/include -MD -MF x.d -c ../src/x.c -o x.o' }, '/p', '/sb', '/sb/src/x.c');
     assert.equal(r.cmd, 'cc');
     assert.deepEqual(r.args, ['-I/sb/include', '-fsyntax-only', '/sb/src/x.c']);
@@ -60,6 +61,8 @@ describe('compiler check after edits', () => {
     ].join('\n');
     const e = relevantErrors(out, 'src/a.c', 'c');
     assert.equal(e.length, 1);
+    const win = relevantErrors('C:\\Users\\RUNNER~1\\p\\src\\a.c:5:13: error: expected expression\nD:\\other\\lib\\a.c:1:1: error: elsewhere\n/sb/3/src/a.c:2:1: fatal error: \'v.h\' file not found', 'src/a.c', 'c');
+    assert.deepEqual(win, ['src/a.c:5:13: error: expected expression'], 'paths normalised, same-name file elsewhere skipped, clang missing header ignored');
     assert.match(e[0], /expected ‘;’[\s\S]*x = 1/);
     const j = relevantErrors('src/A.java:3: error: \';\' expected\n  int x = 1\n           ^\nsrc/A.java:1: error: package org.junit does not exist', 'src/A.java', 'java');
     assert.equal(j.length, 1);

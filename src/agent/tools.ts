@@ -198,7 +198,7 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a, ctx) {
       if (!ctx.index) return { output: 'İndeks yok; grep kullanın.', isError: true };
-      const hits = ctx.index.search(str(a.query, 'query'), 8, typeof a.path_filter === 'string' ? a.path_filter : undefined);
+      const hits = await ctx.index.hybridSearch(str(a.query, 'query'), 8, typeof a.path_filter === 'string' ? a.path_filter : undefined, ctx.signal);
       if (!hits.length) return { output: 'Sonuç yok.' };
       return {
         output: hits
