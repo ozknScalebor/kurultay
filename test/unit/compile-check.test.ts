@@ -43,6 +43,8 @@ describe('compiler check after edits', () => {
     assert.equal(r.cmd, 'cc');
     assert.deepEqual(r.args, ['-I/sb/include', '-fsyntax-only', '/sb/src/x.c']);
     assert.equal(r.cwd, '/sb/build');
+    const w = syntaxOnlyArgs({ directory: 'C:\\p\\build', file: 'C:\\p\\x.c', arguments: ['cc', '-IC:\\p\\inc', '--sysroot=C:\\p\\sys', '-c', 'C:\\p\\x.c'] }, 'C:\\p', 'D:\\sb', 'D:\\sb\\x.c');
+    assert.deepEqual(w.args.slice(0, 2), ['-ID:\\sb\\inc', '--sysroot=D:\\sb\\sys'], 'Windows drive paths glued to flags are remapped');
     const a = syntaxOnlyArgs({ directory: '/p', file: 'y.cpp', arguments: ['c++', '-std=c++17', '-oout.o', '-c', 'y.cpp'] }, '/p', '/sb', '/sb/y.cpp');
     assert.deepEqual(a.args, ['-std=c++17', '-fsyntax-only', '/sb/y.cpp']);
     const root = tmpProject({ 'build/compile_commands.json': '[{"directory":"/x","file":"a.c","command":"cc -c a.c"}]', 'out/compile_commands.json': 'broken' });

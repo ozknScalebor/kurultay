@@ -95,11 +95,13 @@ export function splitCommand(cmd: string, windows = process.platform === 'win32'
 
 /** Turn a compile command into a syntax-only check of `file` (paths remapped into `cwdRoot`). */
 export function syntaxOnlyArgs(entry: CompileEntry, root: string, cwdRoot: string, file: string): { cmd: string; args: string[]; cwd: string } {
-  // paths may be bare or glued to a flag (-I/p/inc, -isystem/p/x, --sysroot=/p)
+  // paths may be bare or glued to a flag (-I/p/inc, -isystem/p/x, --sysroot=/p, -IC:\\p\\inc)
+  const under = (x: string) => x === root || x.startsWith(root + '/') || x.startsWith(root + '\\');
   const remap = (p: string) => {
-    const m = /^(-[A-Za-z-]+=?)?(.*)$/s.exec(p)!;
-    const [pre = '', rest] = [m[1], m[2]];
-    if (rest === root || rest.startsWith(root + '/') || rest.startsWith(root + '\\')) return pre + cwdRoot + rest.slice(root.length);
+    for (let i = 0; i <= Math.min(p.length, 24); i++) {
+      if (i > 0 && p[0] !== '-') break;
+      if (under(p.slice(i))) return p.slice(0, i) + cwdRoot + p.slice(i + root.length);
+    }
     return p;
   };
   const argv = (entry.arguments?.length ? entry.arguments : splitCommand(entry.command ?? '')).map(remap);
