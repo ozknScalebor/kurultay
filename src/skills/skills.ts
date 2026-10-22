@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { type Dirent, existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { tokenize } from '../index/bm25.js';
@@ -85,7 +85,7 @@ function listFiles(dir: string, limit = 60): string[] {
   const out: string[] = [];
   const walk = (d: string, depth: number) => {
     if (depth > 3 || out.length >= limit) return;
-    let entries: import('node:fs').Dirent[];
+    let entries: Dirent[];
     try {
       entries = readdirSync(d, { withFileTypes: true });
     } catch {
@@ -159,7 +159,7 @@ function scanRoot(root: string, source: string, scope: Skill['scope'], diagnosti
       if (s) out.push(s);
       return;
     }
-    let entries: import('node:fs').Dirent[];
+    let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
