@@ -28,7 +28,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -51,6 +51,9 @@ Kullanım: kurultay                 etkileşimli konsol (çalışma alanı seçi
 Komutlar:
   console              Etkileşimli konsol (--workspace <klasör>, --continue | --resume [id], --worktree <ad>,
                          --no-probe, --no-analyze)
+  eval <görev-seti>     Kaliteyi ölç: görev setini çalıştırıp gizli testlerle puanla
+                         (--modes single,race,council --tasks a,b --repeat N --out <klasör> --keep;
+                          --validate: görevlerin temelde kaldığını, referans çözümle geçtiğini doğrula)
   rewind [oturum]      Bir görevin projeye uyguladığı değişiklikleri geri al (varsayılan: son görev; --yes, --force)
   init                 Proje köküne kurultay.config.json, kural/skill şablonları oluştur
   probe                Tüm endpoint ve modellerin yeteneklerini ölç (--deep, --quick)
@@ -274,6 +277,39 @@ ${color.yellow('Uyarılar:')}`);
   }
 }
 
+async function cmdEval(args: Args) {
+  const dir = args.positional[0];
+  if (!dir) throw new ConfigError('Görev seti klasörü gerekli: kurultay eval <klasör>');
+  const list = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
+  const { runEval, validateSuite } = await import('./eval/eval.js');
+  const common = {
+    suiteDir: resolve(dir),
+    tasks: list(args.flags.tasks),
+    outDir: typeof args.flags.out === 'string' ? resolve(args.flags.out) : undefined,
+    config: typeof args.flags.config === 'string' ? args.flags.config : undefined,
+    keepWork: !!args.flags.keep,
+    onProgress: (l: string) => out(l),
+  };
+  try {
+    if (args.flags.validate) {
+      const r = await validateSuite(common);
+      const bad = r.filter((x) => !x.baselineFails || x.solutionPasses === false);
+      for (const b of bad) out(color.red(`✗ ${b.task}\n${b.output.split('\n').slice(-12).join('\n')}`));
+      out(bad.length ? color.red(`${bad.length}/${r.length} görev geçersiz`) : color.green(`✓ ${r.length} görev geçerli`));
+      if (bad.length) process.exitCode = 1;
+      return;
+    }
+    const modes = (list(args.flags.modes) ?? ['single']) as RunMode[];
+    const { summary, reportPath, jsonPath } = await runEval({ ...common, modes, repeat: args.flags.repeat !== undefined ? Number(args.flags.repeat) : undefined });
+    out('');
+    for (const [m, b] of Object.entries(summary.byMode)) out(`${color.bold(m.padEnd(8))} ${b.passed}/${b.attempts} geçti (${Math.round(b.passRate * 100)}%) · ort. ${b.avgSeconds.toFixed(1)} sn · ${Math.round(b.avgTokens)} token · ${b.avgRequests.toFixed(1)} istek`);
+    out(`${color.bold('Rapor')}: ${reportPath}\n${color.bold('JSON')}:  ${jsonPath}`);
+  } catch (e) {
+    if (e instanceof Error && !(e instanceof ConfigError)) throw new ConfigError(e.message);
+    throw e;
+  }
+}
+
 /** Undo what a run applied to the project, using its checkpoint (last applied run by default). */
 async function cmdRewind(root: string, args: Args) {
   const sessions = join(root, '.kurultay', 'sessions');
@@ -349,7 +385,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Bilinmeyen komut: ${args.cmd}\n`);
     out(HELP);
@@ -373,6 +409,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       case 'rewind':
         return await cmdRewind(root, args);
+      case 'eval':
+        return await cmdEval(args);
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
         const { url } = await startMockServer(DEFAULT_MOCK_MODELS, port);
