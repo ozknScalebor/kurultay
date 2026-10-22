@@ -1,4 +1,5 @@
 import type { CheckpointRecorder } from './checkpoint.js';
+import { SandboxPool, type SandboxOptions } from './sandbox.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { Semaphore } from '../util/async.js';
@@ -262,11 +263,32 @@ export interface MergeReport {
  */
 export class Materializer {
   private readonly lock = new Semaphore(1);
+  /** isolated build/test copies (undefined = run in place, serialised) */
+  readonly sandboxes: SandboxPool | undefined;
 
   constructor(
     readonly root: string,
     readonly stateDir: string,
-  ) {}
+    opts: { isolation?: 'sandbox' | 'inplace'; sandbox?: Partial<SandboxOptions> } = {},
+  ) {
+    if ((opts.isolation ?? 'sandbox') === 'sandbox') this.sandboxes = new SandboxPool(root, join(stateDir, 'sandboxes'), opts.sandbox);
+  }
+
+  /**
+   * Run something (build, tests, a model's command) against an overlay's view
+   * of the project. With sandboxes several of these run in parallel in
+   * separate copies and the real project is never touched; in-place mode
+   * applies the overlay temporarily (serialised, journaled).
+   */
+  async execute<T>(overlay: Overlay, fn: (cwd: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.sandboxes) return this.sandboxes.run(overlay, fn, signal);
+    return this.withApplied(overlay, () => fn(this.root), signal);
+  }
+
+  /** Paths of sandbox copies in command output → project paths. */
+  rewriteOutput(text: string): string {
+    return this.sandboxes ? this.sandboxes.rewriteOutput(text) : text;
+  }
 
   private journalPath(): string {
     return join(this.stateDir, 'journal.json');

@@ -105,6 +105,13 @@ export interface ToolsConfig {
   commandTimeoutMs: number;
   /** regexes; commands matching any are refused */
   denyPatterns: string[];
+  /**
+   * where builds/tests/commands run: "sandbox" = per-worker copies under
+   * .kurultay/sandboxes (parallel, project untouched), "inplace" = the real tree
+   * with the overlay applied temporarily (serialised; reuses existing build dirs)
+   */
+  isolation: 'sandbox' | 'inplace';
+  sandbox: { size: number; exclude: string[]; link: string[] };
 }
 
 export interface SkillsConfig {
@@ -156,6 +163,8 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     allowCommands: true,
     requireReadBeforeEdit: true,
     commandTimeoutMs: 10 * 60_000,
+    isolation: 'sandbox',
+    sandbox: { size: 4, exclude: ['.git', '.kurultay', '.svn', '.hg', 'build', 'out', 'target', 'bin', 'obj', 'cmake-build-debug', 'cmake-build-release', '.gradle', '.idea', '.vs', '__pycache__', '.pytest_cache', 'dist', 'coverage'], link: ['node_modules'] },
     denyPatterns: [
       '\\brm\\s+-rf\\s+/(\\s|$)',
       '\\bmkfs\\b',
