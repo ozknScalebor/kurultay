@@ -45,6 +45,8 @@ export type MockReply =
   | { content?: string; toolCall: { name: string; args: Record<string, unknown> } }
   | { status: number; error: string; retryAfter?: string }
   | { hangMs: number }
+  /** stream the first chunks, then go silent (a model that stalls mid-answer) */
+  | { stallAfter: string[]; stallMs: number }
   | { raw: string; contentType?: string };
 
 export interface Msg {
@@ -233,6 +235,13 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     if (custom && 'hangMs' in custom) {
       await new Promise((r) => setTimeout(r, custom.hangMs));
       if (!res.writableEnded && !req.destroyed) res.writeHead(504).end('timeout');
+      return;
+    }
+    if (custom && 'stallAfter' in custom) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const t of custom.stallAfter) res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: t } }] })}\n\n`);
+      await new Promise((r) => setTimeout(r, custom.stallMs));
+      if (!res.writableEnded && !req.destroyed) res.end('data: [DONE]\n\n');
       return;
     }
     if (custom && 'raw' in custom) {

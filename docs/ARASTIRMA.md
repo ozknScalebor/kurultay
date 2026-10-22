@@ -125,6 +125,7 @@ Bu doküman, Kurultay tasarlanırken incelenen 15 açık kaynak ajanın **kaynak
 **Kurultay'a yansıması:**
 - Konsey istemi Codex rubriğine göre yeniden yazıldı; P0/P1 bulgular engelleyici sayılıyor.
 - JSON bozuksa `FINAL RANKING:` metin ayrıştırmasına düşülüyor.
+- **İnceleme bağımsızlığı:** Tek adaylı işlerde kodu yazan model (failover sonrası devralan modeller dahil) inceleyici olamaz; inceleyici düşerse yerine yine yazar olmayan bir model geçer. Çok adaylı konseyde bir inceleyicinin kendi adayına verdiği oy sayılmaz. Engelleyici bulgu sonrası yapılan düzeltme, yazar olmayan bir model tarafından yeniden inceleniyor; hâlâ engelleyici bulgu varsa ikinci düzeltme turu açılıyor. Kabul hakemleri de önce kodu yazmayan modellerden seçiliyor. Rapor, incelemenin bağımsız olup olmadığını yazıyor.
 
 ## 6. Proje analizi ve hafıza
 
@@ -143,6 +144,22 @@ Bu doküman, Kurultay tasarlanırken incelenen 15 açık kaynak ajanın **kaynak
 - **omp:** `modelRoles.<rol>` ve `retry.fallbackChains.<rol>`. Küçük modeller için deneyler: <1B modellerde örnek (few-shot) vermek zararlı; önceden doldurma (prefill) ve durdurma belirteci (stop token) kullanılmalı (`docs/local-models.md`).
 - **oh-my-openagent:** Model ailesine göre istem önayarları var; Claude adım adım kontrol listelerini, GPT ise ilke odaklı istemleri iyi izliyor. "İstem bir modeli düzeltemez": orkestratör rolü yalnızca güçlü modellere veriliyor (`docs/guide/agent-model-matching.md`).
 - **Aider `model-settings.yml`:** 357 model için ayrı düzenleme formatı, zayıf model ve hatırlatma yerleşimi ayarları var.
+
+### Yanıt vermeyen model (zaman aşımı ve failover)
+
+| Ne | Nerede | Kaynak |
+|---|---|---|
+| Akış boşta kalma zaman aşımı (varsayılan 300 sn) ve akış yeniden deneme sayısı | Codex | `codex-rs/model-provider-info/src/lib.rs` (`DEFAULT_STREAM_IDLE_TIMEOUT_MS`, `DEFAULT_STREAM_MAX_RETRIES`) |
+| SSE parçaları arası `chunkTimeout`: süre içinde parça gelmezse istek iptal | OpenCode / Kilo | `packages/opencode/src/provider/provider.ts` (`wrapSSE`), `core/src/v1/config/provider.ts` |
+| Çalışma anında model değiştirme: yeniden denenebilir hatalarda `fallback_models` zincirine geçiş, hata sınıflandırma | oh-my-openagent | `packages/model-core/src/runtime-fallback-error-classifier.ts`, `model-resolution-pipeline.ts` |
+| Rol başına yedek zincirleri | omp | `retry.fallbackChains.<rol>` |
+| Sağlayıcılar arası mesaj dönüştürme (bir modelin geçmişini başka formatta sürdürme) | Pi | `packages/ai` (`transformMessages`) |
+
+**Kurultay'a yansıması:**
+- Her istekte üç saat var: toplam süre, **ilk token süresi** (uzun istemler için istem token'ı başına ek pay) ve **akış sessizlik süresi**. Takılan model dakikalar yerine saniyeler içinde fark ediliyor.
+- Zaman aşımına uğrayan model aynı modelde varsayılan olarak tekrar denenmiyor; **karantinaya alınıyor** (2 dk, tekrarlarda ikiye katlanarak en fazla 16 dk). Karantina tüm çalışanlar için geçerli.
+- Çalışan **kalıcı failover** yapıyor: model yanıt vermezse görev bağlamı sığan en iyi yedek modelle sürüyor, düşen model o görevde bir daha kullanılmıyor. Yeni model native araç çağrısı desteklemiyorsa geçmiş `<tool_call>`/`<tool_result>` metin protokolüne çevriliyor. Hiç sağlam model kalmazsa düşenler bir kez daha deneniyor, ardından router'ın bekle-tekrar dene mantığı devreye giriyor.
+- Düzeltme turları, son çalışan modelle (düşen modelle değil) yapılıyor. Model değişimleri raporda listeleniyor.
 
 Kurultay bunu ölçümle yapıyor: probe sonuçlarından rol puanı çıkarılıyor, kodlama ve düzenleme puanları planlayıcı ve hakem seçimini belirliyor. Model ailesine özel istem önayarları yol haritasında.
 

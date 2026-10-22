@@ -42,9 +42,13 @@ export interface SubtaskReport {
   subtask: SubTask;
   iteration: number;
   candidates: Array<{ worker: string; models: string[]; status: string; files: number; verify?: string; summary: string }>;
-  verdict?: Pick<CouncilVerdict, 'ranking' | 'winnerIssues'>;
+  verdict?: Pick<CouncilVerdict, 'ranking' | 'winnerIssues'> & { reviewers: string[]; independent: boolean };
   winner?: { worker: string; models: string[] };
   fixes: number;
+  /** re-reviews of fix rounds by a model that did not write the code */
+  fixReviews?: Array<{ round: number; reviewers: string[]; blocking: number; independent: boolean }>;
+  /** worker model switches (a model stopped answering) */
+  failovers?: Array<{ worker: string; from: string; to: string; step: number; reason: string }>;
   status: 'done' | 'failed';
 }
 
@@ -350,6 +354,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
           );
           const result = await w.run();
           result.models.forEach((m) => this.used.add(m));
+          for (const f of result.failovers) (report.failovers ??= []).push({ worker: overlay.id, ...f });
           this.recordSkills(overlay.id, result, workerSkills.reasons);
           return { overlay, result } as Winner;
         }),
@@ -392,7 +397,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
     const reviewRules = this.rules.review.map((r) => r.body).join('\n\n');
     const candidates: Candidate[] = usable.map((r) => {
       const v = verifies.get(r.overlay.id)!;
-      return { id: r.overlay.id, author: r.result.models[0] ?? '', diff: r.overlay.diffAgainstParent(), summary: r.result.summary, verifyScore: v.skipped ? undefined : v.score, verifyOk: v.skipped ? undefined : v.ok };
+      return { id: r.overlay.id, author: r.result.models[0] ?? '', authors: [...r.result.models, ...r.result.failovers.map((f) => f.from)], diff: r.overlay.diffAgainstParent(), summary: r.result.summary, verifyScore: v.skipped ? undefined : v.score, verifyOk: v.skipped ? undefined : v.ok };
     });
     let winner: Winner = usable[0];
     let verdict: CouncilVerdict | undefined;
@@ -411,7 +416,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
         });
         verdict.reviews.forEach((r) => this.used.add(r.reviewer));
         if (verdict.winner) winner = usable.find((u) => u.overlay.id === verdict!.winner!.id) ?? winner;
-        report.verdict = { ranking: verdict.ranking, winnerIssues: verdict.winnerIssues };
+        report.verdict = { ranking: verdict.ranking, winnerIssues: verdict.winnerIssues, reviewers: verdict.reviews.map((r) => r.reviewer), independent: !!verdict.independent };
       } catch (e) {
         this.bus.warn(st.id, `konsey incelemesi başarısız: ${errorMessage(e)}`);
       }
@@ -435,7 +440,8 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
           task: `${this.workerTask(st, plan, fullTask)}\n\nYour implementation is already applied, but it has problems that must be fixed now:\n${problems}`,
           acceptance: plan.acceptance,
           context,
-          model: winner.result.models[0] ?? models[0]?.caps.key ?? '',
+          // continue on the model that was still answering at the end, not the one that failed over
+          model: winner.result.finalModel || winner.result.models[0] || models[0]?.caps.key || '',
           overlay: fixOverlay,
           maxSteps: Math.ceil(this.cfg.orchestrator.maxStepsPerWorker * 0.6),
           skills: workerSkills,
@@ -446,14 +452,38 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
       );
       const fr = await fixer.run();
       fr.models.forEach((m) => this.used.add(m));
+      for (const f of fr.failovers) (report.failovers ??= []).push({ worker: fixOverlay.id, ...f });
       this.recordSkills(fixOverlay.id, fr, workerSkills.reasons);
       report.fixes++;
       if (fixOverlay.ownChanges().length === 0) break;
       const fv = await verifyOverlay(fixOverlay, this.materializer, this.cfg, signal);
       if (fv.skipped || fv.score >= wv.score) {
+        const hadBlocking = blocking.length > 0;
         winner.overlay.absorb(fixOverlay);
         wv = fv;
-        blocking = []; // addressed (re-review would cost another council round)
+        blocking = [];
+        // the fix must be checked by a model that did not write it, not taken on the author's word
+        if (hadBlocking && reviewers > 0) {
+          try {
+            const authors = [...new Set([...candidates.find((c) => c.id === winner.overlay.id)!.authors!, ...fr.models, ...fr.failovers.map((f) => f.from)])];
+            const re = await councilReview(this.router, {
+              task: `${st.title}\n${st.description}\n\nThis is the corrected version after review findings:\n${problems}`,
+              acceptance: plan.acceptance,
+              candidates: [{ id: winner.overlay.id, author: authors[0] ?? '', authors, diff: winner.overlay.diffAgainstParent(), summary: fr.summary, verifyScore: fv.skipped ? undefined : fv.score, verifyOk: fv.skipped ? undefined : fv.ok }],
+              reviewRules,
+              reviewers: 1,
+              contextTokens: this.contextBudget(0.5),
+              bus: this.bus,
+              signal,
+            });
+            re.reviews.forEach((r) => this.used.add(r.reviewer));
+            blocking = re.winnerIssues.filter((i) => i.blocking);
+            (report.fixReviews ??= []).push({ round, reviewers: re.reviews.map((r) => r.reviewer), blocking: blocking.length, independent: !!re.independent });
+            if (blocking.length) this.bus.warn(st.id, `düzeltme yeniden incelendi: ${blocking.length} engelleyici bulgu kaldı`);
+          } catch (e) {
+            this.bus.warn(st.id, `düzeltmenin yeniden incelemesi başarısız: ${errorMessage(e)}`);
+          }
+        }
       } else break;
     }
 
@@ -487,7 +517,11 @@ ${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}
 \`\`\`
 
 Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement as an actionable instruction"]}`;
-    const judges = this.router.pick('judge', Math.min(2, this.router.size));
+    // judges that did not write the winning code come first
+    const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
+    const want = Math.min(2, this.router.size);
+    let judges = this.router.pick('judge', want, writers);
+    if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
     const res = await settle(judges.map((j) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 1500, purpose: 'requirements', signal }, { prefer: [j.caps.key], role: 'judge' })));
     const verdicts = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => ({ model: r.value.model, j: tryExtractJson<{ complete?: boolean; missing?: string[] }>(r.value.content) }));
     verdicts.forEach((v) => this.used.add(v.model));
@@ -537,9 +571,14 @@ export function renderReport(r: RunReport, diff: string): string {
       const win = s.winner?.worker === c.worker ? ' 🏆' : '';
       lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${c.files} dosya, doğrulama: ${c.verify ?? '-'}${win}`);
     }
+    if (s.verdict) {
+      lines.push('', `İnceleyen modeller: ${s.verdict.reviewers.join(', ') || '-'} — ${s.verdict.independent ? 'bağımsız (kodu yazan model incelemedi)' : '⚠ bağımsız inceleme yapılamadı (kodu yazan modeller dışında kullanılabilir model yok)'}`);
+    }
     if (s.verdict?.ranking.length) lines.push('', `Konsey sıralaması: ${s.verdict.ranking.map((x) => `${x.id} (${x.points})`).join(' > ')}`);
     if (s.verdict?.winnerIssues.length) lines.push('', 'İnceleme bulguları:', ...s.verdict.winnerIssues.map((i) => `- ${i.blocking ? '**[engelleyici]** ' : ''}${i.text} — _${i.reviewer}_`));
     if (s.fixes) lines.push('', `Düzeltme turu: ${s.fixes}`);
+    for (const fr of s.fixReviews ?? []) lines.push(`- ${fr.round}. düzeltme yeniden incelendi (${fr.reviewers.join(', ') || '-'}): ${fr.blocking ? `${fr.blocking} engelleyici bulgu kaldı` : 'engelleyici bulgu yok'}`);
+    if (s.failovers?.length) lines.push('', 'Model değişimleri (yanıt vermeyen model bırakıldı):', ...s.failovers.map((f) => `- \`${f.worker}\` adım ${f.step}: ${f.from} → ${f.to} (${f.reason})`));
     lines.push('');
   }
   if (r.finalVerify) lines.push('## Son doğrulama', '', renderVerify(r.finalVerify), '');
