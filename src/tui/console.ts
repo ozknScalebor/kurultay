@@ -11,6 +11,7 @@ import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
 import { readCapabilitiesFile, type CapabilitiesFile } from '../llm/models.js';
 import { Router } from '../llm/router.js';
+import { ModelStats } from '../llm/stats.js';
 import { askProject, type AskTurn } from '../ops.js';
 import { Orchestrator, type RunReport } from '../orchestrator/orchestrator.js';
 import { probeAll, writeCapabilities } from '../probe/probe.js';
@@ -354,6 +355,7 @@ export class KurultayConsole {
       return;
     }
     const router = new Router(cfg, this.bus);
+    router.learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
     const caps = readCapabilitiesFile(join(kurultayHome(), 'capabilities.json'));
     const live = new Set(this.health.filter((h) => h.ok).map((h) => h.name));
     const cached = (caps?.models ?? []).filter((m) => m.reachable && live.has(m.endpoint));

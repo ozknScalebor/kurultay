@@ -14,6 +14,14 @@ import { Orchestrator } from '../../src/orchestrator/orchestrator.js';
 import { probeAll, writeCapabilities } from '../../src/probe/probe.js';
 import { EventBus } from '../../src/util/events.js';
 
+// learned model statistics and caches go to a throwaway home, not the developer's
+const prevHome = process.env.KURULTAY_HOME;
+process.env.KURULTAY_HOME = mkdtempSync(join(tmpdir(), 'k-home-'));
+after(() => {
+  if (prevHome === undefined) delete process.env.KURULTAY_HOME;
+  else process.env.KURULTAY_HOME = prevHome;
+});
+
 /**
  * End-to-end: two mock "GPU servers" with different models (a strong coder with
  * native tools, a weak coder without tools, a flaky one that returns 503 first)

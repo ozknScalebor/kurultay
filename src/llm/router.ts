@@ -3,6 +3,7 @@ import { Semaphore, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens } from '../util/text.js';
 import { OpenAICompatClient } from './client.js';
+import type { ModelStats } from './stats.js';
 import { defaultCapabilities, type ModelCapabilities } from './models.js';
 import { LlmError, type ChatRequest, type ChatResult } from './types.js';
 
@@ -185,8 +186,20 @@ export class Router {
   }
 
   /** Score for picking a model for a role, discounted by current load. */
+  /** learned per-role quality (set by createApp; tests run without) */
+  learned: ModelStats | undefined;
+
+  /** Record how a model did in a role (verified code, usable plan/review …). */
+  recordOutcome(key: string, role: Role, ok: boolean | number): void {
+    if (!this.models.has(key)) return;
+    this.learned?.record(key, role, ok);
+    this.bus?.emitEvent('model.outcome', { source: key, data: { role, ok } });
+  }
+
   private score(h: ModelHandle, role: Role | undefined): number {
-    const base = role ? h.caps.roleScores[role] ?? 0.5 : 0.5;
+    const prior = role ? h.caps.roleScores[role] ?? 0.5 : 0.5;
+    // probe score is the prior; real outcomes (stats) move it
+    const base = role && this.learned ? this.learned.quality(h.caps.key, role, prior) : prior;
     const s = this.slotsFor(h.caps.endpoint);
     const load = (s.inUse + s.queued) / Math.max(1, s.limit);
     const reliability = (h.health.successes + 1) / (h.health.successes + h.health.failures + 2);
@@ -354,7 +367,9 @@ export class Router {
               idleTimeoutMs: req.idleTimeoutMs ?? limits.idleTimeoutMs,
               maxTokens: tokens,
               temperature: req.temperature ?? h.override.temperature,
-              jsonMode: req.jsonMode && h.caps.jsonMode,
+              jsonMode: (req.jsonMode || !!req.jsonSchema) && h.caps.jsonMode,
+              // constrained decoding unless this server is known not to support it
+              jsonSchema: req.jsonSchema && h.caps.jsonSchema !== false ? req.jsonSchema : undefined,
               stream: req.stream ?? h.caps.streaming,
             },
             h.override.extraBody,
@@ -371,6 +386,13 @@ export class Router {
         return r;
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError(String(e), 'network', undefined, h.caps.key);
+        // server rejected json_schema → remember and retry right away with plain JSON mode
+        if (err.kind === 'bad_request' && req.jsonSchema && h.caps.jsonSchema !== false && /response_format|json_schema|schema|guided|grammar/i.test(err.message)) {
+          h.caps.jsonSchema = false;
+          this.bus?.info('router', `${h.caps.key} json_schema desteklemiyor; JSON moduna geçildi`);
+          attempt--;
+          continue;
+        }
         lastErr = err;
         this.onFailure(h, err);
         this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt } });

@@ -120,6 +120,18 @@ class ModelProber {
     } catch {
       c.jsonMode = false;
     }
+    // constrained decoding (response_format json_schema): vLLM guided decoding, llama.cpp grammars …
+    try {
+      const r = await this.call({
+        messages: [{ role: 'user', content: 'Return the programming language C++ and the year 2011 as JSON.' }],
+        jsonSchema: { name: 'probe', schema: { type: 'object', properties: { lang: { type: 'string', enum: ['c++'] }, year: { type: 'integer' } }, required: ['lang', 'year'] } },
+        maxTokens: 256,
+      });
+      const j = tryExtractJson<{ lang?: string; year?: number }>(r.content);
+      c.jsonSchema = !!j && j.lang === 'c++';
+    } catch {
+      c.jsonSchema = false;
+    }
     const instructionChecks: Array<[string, (s: string) => boolean]> = [
       ['What is 17 * 23? Answer with only the number.', (s) => s.trim() === '391'],
       ['Return a JSON array of exactly three lowercase color names. JSON only.', (s) => {

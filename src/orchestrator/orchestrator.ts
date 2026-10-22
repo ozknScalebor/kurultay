@@ -8,6 +8,7 @@ import { CheckpointRecorder } from '../agent/checkpoint.js';
 import { Overlay, type Materializer, type MergeReport } from '../agent/workspace.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
+import { JUDGE_SCHEMA } from '../llm/schemas.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
@@ -276,6 +277,7 @@ export class Orchestrator {
       skills: { available: this.skills.size, used: [...this.skillUsage], diagnostics: this.skills.diagnostics },
     };
     this.persist(sessionId, task, plan, integration, reports);
+    this.router.learned?.save();
     writeFileSync(report.reportPath, renderReport(report, diff));
     this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length } });
     return report;
@@ -447,6 +449,12 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
       winner = [...usable].sort((a, b) => (verifies.get(b.overlay.id)?.score ?? 0) - (verifies.get(a.overlay.id)?.score ?? 0))[0];
     }
     this.bus.emitEvent('subtask.winner', { source: st.id, data: { worker: winner.overlay.id, models: winner.result.models } });
+    // learn from the outcome: verified code (or, without tests, the council's pick) counts as a coder success
+    for (const r of runs) {
+      const v = verifies.get(r.overlay.id);
+      const ok = !!v && r.result.status !== 'failed' && (v.skipped ? r === winner : v.ok);
+      for (const m of new Set([...r.result.models, ...r.result.failovers.map((f) => f.from)])) this.router.recordOutcome(m, 'coder', r.result.failovers.some((f) => f.from === m) ? false : ok);
+    }
 
     // ---- fix rounds: failing verification or blocking review issues
     let wv = verifies.get(winner.overlay.id)!;
@@ -480,6 +488,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.`;
       report.fixes++;
       if (fixOverlay.ownChanges().length === 0) break;
       const fv = await verifyOverlay(fixOverlay, this.materializer, this.cfg, signal);
+      if (!fv.skipped) for (const m of fr.models) this.router.recordOutcome(m, 'coder', fv.ok);
       if (fv.skipped || fv.score >= wv.score) {
         const hadBlocking = blocking.length > 0;
         winner.overlay.absorb(fixOverlay);
@@ -545,9 +554,12 @@ ${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}
 \`\`\`
 
 Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement as an actionable instruction"]}`;
-    const res = await settle(judges.map((j) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, maxTokens: 1500, purpose: 'requirements', signal }, { prefer: [j.caps.key], role: 'judge' })));
+    const res = await settle(judges.map((j) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: JUDGE_SCHEMA, maxTokens: 1500, purpose: 'requirements', signal }, { prefer: [j.caps.key], role: 'judge' })));
     const verdicts = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => ({ model: r.value.model, j: tryExtractJson<{ complete?: boolean; missing?: string[] }>(r.value.content) }));
-    verdicts.forEach((v) => this.used.add(v.model));
+    verdicts.forEach((v) => {
+      this.used.add(v.model);
+      this.router.recordOutcome(v.model, 'judge', !!v.j && typeof v.j.complete === 'boolean');
+    });
     const valid = verdicts.filter((v) => v.j);
     if (!valid.length) return { complete: true, missing: [], judges: [] }; // cannot judge → rely on verification
     const complete = valid.every((v) => v.j!.complete === true);

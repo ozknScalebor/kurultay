@@ -2,6 +2,7 @@ import type { Router } from '../llm/router.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { truncateTokens, tryExtractJson } from '../util/text.js';
+import { PLAN_SCHEMA } from '../llm/schemas.js';
 
 export interface SubTask {
   id: string;
@@ -100,18 +101,20 @@ export async function makePlan(
   opts.bus?.info('planner', `plan taslakları: ${planners.map((p) => p.caps.key).join(', ')}`);
   const results = await settle(
     planners.map((p) =>
-      router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, jsonMode: true, maxTokens: 3000, purpose: 'plan.draft', signal: opts.signal }, { prefer: [p.caps.key], role: 'planner' }),
+      router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, jsonMode: true, jsonSchema: PLAN_SCHEMA, maxTokens: 3000, purpose: 'plan.draft', signal: opts.signal }, { prefer: [p.caps.key], role: 'planner' }),
     ),
   );
   const drafts: Array<{ model: string; plan: Omit<Plan, 'authors'>; raw: string }> = [];
-  for (const r of results) {
+  results.forEach((r, i) => {
     if (!r.ok) {
       opts.bus?.warn('planner', `plan taslağı başarısız: ${errorMessage(r.error)}`);
-      continue;
+      router.recordOutcome(planners[i].caps.key, 'planner', false);
+      return;
     }
     const plan = normalizePlan(tryExtractJson<RawPlan>(r.value.content), task);
+    router.recordOutcome(r.value.model, 'planner', !!plan);
     if (plan) drafts.push({ model: r.value.model, plan, raw: r.value.content });
-  }
+  });
   if (!drafts.length) {
     opts.bus?.warn('planner', 'geçerli plan üretilemedi; görev tek alt görev olarak çalıştırılacak');
     return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title: 'Görev', description: task, files: [], dependsOn: [], critical: true }], authors: [] };
@@ -137,6 +140,7 @@ ${labelled}`,
         ],
         temperature: 0.1,
         jsonMode: true,
+        jsonSchema: PLAN_SCHEMA,
         maxTokens: 3000,
         purpose: 'plan.judge',
         signal: opts.signal,
@@ -144,6 +148,7 @@ ${labelled}`,
       { role: 'judge' },
     );
     const merged = normalizePlan(tryExtractJson<RawPlan>(judge.content), task);
+    router.recordOutcome(judge.model, 'judge', !!merged);
     if (merged) return { ...merged, authors: [...drafts.map((d) => d.model), `${judge.model} (birleştiren)`] };
   } catch (e) {
     opts.bus?.warn('planner', `plan birleştirme başarısız: ${errorMessage(e)}`);
