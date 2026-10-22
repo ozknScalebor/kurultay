@@ -214,6 +214,11 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     for await (const chunk of req) raw += chunk;
     count++;
     const body = JSON.parse(raw) as { model: string; messages: Msg[]; stream?: boolean; tools?: unknown[]; max_tokens?: number };
+    // OpenAI also allows content as an array of parts ([{type:"text",text}]) – flatten for the scripted replies
+    body.messages = (body.messages ?? []).map((m) => {
+      const c = m.content as unknown;
+      return Array.isArray(c) ? { ...m, content: c.map((p: { text?: string }) => (typeof p?.text === 'string' ? p.text : '')).join('') } : m;
+    });
     log.push({ model: body.model, body: body as unknown as Record<string, unknown> });
     const model = models.find((m) => m.id === body.model);
     if (!model) {
