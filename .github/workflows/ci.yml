@@ -143,10 +143,14 @@ jobs:
             release/*.zip
           retention-days: 30
 
-  # 7) tagged versions become GitHub releases with all offline bundles attached
+  # 7) releases with all offline bundles attached:
+  #    - pushing a v* tag, or
+  #    - a push to main whose commit message contains "[release]" (version from package.json)
   release:
     name: Sürüm yayınla
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]'))
     needs: [coverage, package]
     runs-on: ubuntu-latest
     permissions:
@@ -163,4 +167,14 @@ jobs:
         run: |
           files=$(find dist-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name 'kurultay-*.tgz' \) | awk -F/ '!seen[$NF]++' | sort)
           echo "$files"
-          gh release create "${GITHUB_REF_NAME}" $files --title "Kurultay ${GITHUB_REF_NAME}" --generate-notes
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::$tag zaten yayınlanmış; package.json sürümünü artırın."
+            exit 1
+          fi
+          # --target creates the tag on this commit when it does not exist yet
+          gh release create "$tag" $files --target "${GITHUB_SHA}" --title "Kurultay $tag" --generate-notes
