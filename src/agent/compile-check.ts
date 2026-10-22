@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { runShell } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
+import { lspDiagnostics, lspFor, type LspConfig } from '../lsp/client.js';
 
 /**
  * Compiler-backed check right after an edit (Aider lint-after-edit, Serena/Crush
@@ -165,10 +166,19 @@ export interface SyntaxCheckResult {
  * Check one edited file inside the worker's sandbox view. Never throws; a
  * missing compiler or timeout just means "not checked".
  */
-export async function syntaxCheck(path: string, overlay: Overlay, materializer: Materializer, cfg: SyntaxCheckConfig, signal?: AbortSignal): Promise<SyntaxCheckResult> {
+export async function syntaxCheck(path: string, overlay: Overlay, materializer: Materializer, cfg: SyntaxCheckConfig, signal?: AbortSignal, lsp?: LspConfig): Promise<SyntaxCheckResult> {
   if (cfg === 'off') return { checked: false, errors: [] };
   const ext = extname(path).toLowerCase();
   const root = materializer.root;
+  // a configured language server knows the project best (clangd with compile_commands, jdtls with Maven/Gradle)
+  if (typeof cfg !== 'object' && lspFor(lsp, root, path)) {
+    try {
+      const r = await lspDiagnostics(lsp, root, path, overlay.read(path) ?? '');
+      if (r) return { checked: true, tool: `LSP ${r.server}`, errors: r.diagnostics.filter((d) => d.severity === 1).map((d) => `${path}:${d.line}:${d.col}: error: ${d.message}`) };
+    } catch {
+      /* server missing / crashed → fall back to the compilers */
+    }
+  }
   try {
     if (typeof cfg === 'object') {
       const tpl = cfg[ext] ?? cfg[ext.slice(1)];

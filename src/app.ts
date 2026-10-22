@@ -3,6 +3,7 @@ import { kurultayHome, loadConfig, type KurultayConfig } from './config.js';
 import { Materializer } from './agent/workspace.js';
 import { ProjectIndex } from './index/project-index.js';
 import { resolveEmbedder } from './index/embeddings.js';
+import { McpManager } from './mcp/manager.js';
 import { errorMessage } from './util/async.js';
 import { readCapabilitiesFile } from './llm/models.js';
 import { Router } from './llm/router.js';
@@ -65,6 +66,14 @@ export async function prepareRetrieval(app: App, index: ProjectIndex, opts: { si
     app.bus.warn('embeddings', `vektörler oluşturulamadı (${error}); arama BM25 ile devam ediyor`);
     return { model: index.embedder.key, embedded: 0, vectors: index.vectorCount, error };
   }
+}
+
+/** Start the configured MCP servers (none configured → undefined). Call close() when done. */
+export async function startMcp(app: App): Promise<McpManager | undefined> {
+  if (!Object.keys(app.config.mcp?.servers ?? {}).length) return undefined;
+  const m = new McpManager(app.config.mcp, app.bus);
+  await m.start();
+  return m;
 }
 
 export function loadOrBuildIndex(app: App, rebuild = false): { index: ProjectIndex; stats: ReturnType<ProjectIndex['build']> | undefined } {

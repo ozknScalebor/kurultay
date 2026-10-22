@@ -7,6 +7,7 @@ import type { EventBus } from '../util/events.js';
 import { truncateMiddle } from '../util/text.js';
 import { EditError, applyReplacement } from './edits.js';
 import { postEditCheck } from './syntax.js';
+import type { ExternalTools } from '../mcp/manager.js';
 import { bwrapArgs, checkCommand, osSandboxFor, scrubEnv } from './command-policy.js';
 import { renderSyntaxResult, syntaxCheck } from './compile-check.js';
 import { safeRelPath, type Materializer, type Overlay } from './workspace.js';
@@ -33,6 +34,8 @@ export interface ToolContext {
   writtenFiles?: Set<string>;
   /** files whose last edit failed to match – must be re-read before the next edit */
   staleFiles?: Set<string>;
+  /** tools from MCP servers (mcp__server__tool) */
+  external?: ExternalTools;
 }
 
 /** Read-before-edit: an existing file may only be modified after the worker read it. */
@@ -313,7 +316,7 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.overlay.write(path, content);
       ctx.writtenFiles?.add(path);
       ctx.bus?.emitEvent('tool.write', { source: ctx.workerId, data: { path } });
-      const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal))].filter(Boolean).join('\n');
+      const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp))].filter(Boolean).join('\n');
       return { output: `${before !== undefined ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)${warn ? '\n' + warn : ''}` };
     },
   },
@@ -348,7 +351,7 @@ const TOOLS: Record<string, ToolDef> = {
         ctx.overlay.write(path, next);
         ctx.writtenFiles?.add(path);
         ctx.bus?.emitEvent('tool.edit', { source: ctx.workerId, data: { path } });
-        const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal))].filter(Boolean).join('\n');
+        const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp))].filter(Boolean).join('\n');
         return { output: `${r.note}Düzenlendi: ${path}${warn ? '\n' + warn : ''}` };
       } catch (e) {
         if (e instanceof EditError) {
@@ -467,15 +470,21 @@ const TOOLS: Record<string, ToolDef> = {
 export const READ_ONLY_TOOLS = Object.entries(TOOLS).filter(([, t]) => t.readOnly).map(([n]) => n);
 export const ALL_TOOLS = Object.keys(TOOLS);
 
-export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean } = {}): ToolSpec[] {
-  return Object.entries(TOOLS)
+export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools } = {}): ToolSpec[] {
+  const own = Object.entries(TOOLS)
     .filter(([n]) => !allowed || allowed.has(n))
     .filter(([n]) => opts.skills !== false || (n !== 'skill' && n !== 'skill_file'))
     .map(([, t]) => t.spec);
+  // read-only workers (reviewers) only get MCP tools that declare themselves read-only
+  return opts.external ? [...own, ...opts.external.specs(!!allowed)] : own;
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome> {
   const def = TOOLS[name];
+  if (!def && ctx.external?.has(name)) {
+    if (ctx.allowed && !ctx.external.isReadOnly(name)) return { output: `Bu çalışan için izin verilmeyen araç: ${name}`, isError: true };
+    return ctx.external.call(name, args, ctx.signal);
+  }
   if (!def) return { output: `Bilinmeyen araç: ${name}. Kullanılabilir: ${[...(ctx.allowed ?? new Set(ALL_TOOLS))].join(', ')}`, isError: true };
   if (ctx.allowed && !ctx.allowed.has(name)) return { output: `Bu çalışan için izin verilmeyen araç: ${name}`, isError: true };
   try {
@@ -486,7 +495,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 }
 
 /** Human-readable tool catalogue for prompt-based tool calling. */
-export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean } = {}): string {
+export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools } = {}): string {
   return toolSpecs(allowed, opts)
     .map((s) => {
       const props = (s.function.parameters as { properties?: Record<string, { type?: string }>; required?: string[] }).properties ?? {};

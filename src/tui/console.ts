@@ -3,7 +3,9 @@ import type { Server } from 'node:http';
 import { basename, join } from 'node:path';
 import { ProjectAnalyzer } from '../analyze/summarizer.js';
 import { runShell } from '../agent/tools.js';
-import { createApp, loadOrBuildIndex, prepareRetrieval, type App } from '../app.js';
+import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from '../app.js';
+import { closeLspServers } from '../lsp/client.js';
+import type { McpManager } from '../mcp/manager.js';
 import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type RunMode } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
@@ -214,6 +216,8 @@ export class KurultayConsole {
   }
 
   shutdown(): void {
+    this.mcp?.close();
+    void closeLspServers();
     this.detachLog?.();
     this.dashboard?.close();
     this.state.history = this.screen.history;
@@ -455,12 +459,25 @@ export class KurultayConsole {
       } else this.out(`  ${color.green('✓')} mimari analiz güncel (${shortPath(join(this.app.stateDir, 'ARCHITECTURE.md'))})`);
     }
     if (this.opts.autoAnalyze !== false && this.index) await this.semantic(false);
+    await this.startMcp();
     if (!this.app.router.size) this.out(color.yellow('  Kullanılabilir model yok: /models ile durumu görün, /endpoint ile ekleyin.'));
     const skills = SkillRegistry.discover(path, { extraPaths: this.app.config.skills.paths, disabled: this.app.config.skills.disabled, includeUser: this.app.config.skills.includeUser });
     if (skills.size) this.out(color.dim(`  ${skills.size} skill: ${skills.visible().map((s) => s.name).slice(0, 8).join(', ')}${skills.size > 8 ? '…' : ''}`));
   }
 
   embedder: ProjectIndex['embedder'];
+  mcp: McpManager | undefined;
+
+  /** (Re)start the MCP servers of the current workspace's config. */
+  async startMcp(): Promise<void> {
+    this.mcp?.close();
+    this.mcp = undefined;
+    if (!this.app) return;
+    const m = await startMcp(this.app);
+    if (!m) return;
+    this.mcp = m;
+    this.out(`  ${color.green('✓')} MCP: ${m.size} araç (${Object.keys(this.app.config.mcp?.servers ?? {}).join(', ')})`);
+  }
 
   reindex(quiet = false): void {
     const { index, stats } = loadOrBuildIndex(this.app!);
@@ -571,6 +588,7 @@ export class KurultayConsole {
     const text = m.files.length ? `${m.text}\n\nFiles explicitly referenced by the user: ${m.files.join(', ')}` : m.text;
     app.config.orchestrator.confirmMerge = !this.settings.autoApply && !this.settings.dryRun;
     const orch = new Orchestrator(app.root, app.config, app.router, app.materializer, this.index!, this.bus);
+    orch.external = this.mcp;
     const opts = {
       mode: this.settings.mode,
       skills: this.settings.skills.length ? this.settings.skills : undefined,

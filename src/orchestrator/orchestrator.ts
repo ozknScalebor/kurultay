@@ -9,6 +9,7 @@ import { Overlay, type Materializer, type MergeReport } from '../agent/workspace
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
 import { JUDGE_SCHEMA } from '../llm/schemas.js';
+import type { ExternalTools } from '../mcp/manager.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
@@ -149,6 +150,8 @@ export class Orchestrator {
   private readonly skillUsage: SkillUsage[] = [];
   private readonly used = new Set<string>();
   private sessionDir = '';
+  /** MCP tools offered to the workers */
+  external?: ExternalTools;
 
   constructor(
     private readonly root: string,
@@ -633,7 +636,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
             { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills },
             this.router,
             this.cfg,
-            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal },
+            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external },
           );
           const result = await w.run();
           result.models.forEach((m) => this.used.add(m));
@@ -737,7 +740,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
         },
         this.router,
         this.cfg,
-        { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal },
+        { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external },
       );
       const fr = await fixer.run();
       fr.models.forEach((m) => this.used.add(m));
