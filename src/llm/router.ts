@@ -286,6 +286,48 @@ export class Router {
     }
   }
 
+  /**
+   * The answer hit max_tokens (finish_reason "length"). Structured answers
+   * (JSON, tool calls) or answers that are only reasoning are retried once
+   * with a larger budget; plain text is continued up to two times. Without
+   * this a cut-off JSON plan looks like a "bad model" and triggers failover.
+   */
+  private async recoverTruncation(h: ModelHandle, req: ChatRequest, first: ChatResult, maxTokens: number, send: (tokens: number, messages?: ChatRequest['messages']) => Promise<ChatResult>): Promise<ChatResult> {
+    const promptTokens = estimateTokens(req.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n'));
+    const room = h.caps.contextWindow - promptTokens - 256;
+    const ceiling = Math.min(room, Math.max(h.override.maxOutputTokens ?? h.caps.maxOutputTokens, 16_384));
+    const structured = !!req.jsonMode || !!req.tools?.length || first.toolCalls.length > 0 || !first.content.trim();
+    this.bus?.emitEvent('llm.truncated', { source: h.caps.key, data: { purpose: req.purpose, maxTokens, structured } });
+    const add = (a: ChatResult, b: ChatResult): ChatResult => ({
+      ...b,
+      content: a.content + b.content,
+      thinking: [a.thinking, b.thinking].filter(Boolean).join('\n'),
+      usage: { promptTokens: a.usage.promptTokens + b.usage.promptTokens, completionTokens: a.usage.completionTokens + b.usage.completionTokens },
+      durationMs: a.durationMs + b.durationMs,
+    });
+    try {
+      if (structured) {
+        const bigger = Math.min(ceiling, maxTokens * 2);
+        if (bigger <= maxTokens * 1.2) return first;
+        this.bus?.info('router', `${h.caps.key} cevabı ${maxTokens} token sınırında kesildi; ${bigger} token ile yeniden isteniyor`);
+        const again = await send(bigger);
+        return { ...again, usage: { promptTokens: first.usage.promptTokens + again.usage.promptTokens, completionTokens: first.usage.completionTokens + again.usage.completionTokens } };
+      }
+      let r = first;
+      for (let round = 0; round < 2 && r.finishReason === 'length'; round++) {
+        const next = await send(Math.min(maxTokens, Math.max(256, ceiling)), [
+          ...req.messages,
+          { role: 'assistant', content: r.content },
+          { role: 'user', content: 'Continue exactly where you stopped. Do not repeat anything you already wrote.' },
+        ]);
+        r = add(r, next);
+      }
+      return r;
+    } catch {
+      return first; // the partial answer is still better than nothing
+    }
+  }
+
   /** Call one specific model with retries (no fallback). */
   async callModel(h: ModelHandle, req: ChatRequest, attempts = 3, retryBaseMs = 1000): Promise<ChatResult> {
     const slots = this.slotsFor(h.caps.endpoint);
@@ -297,28 +339,35 @@ export class Router {
         throw new LlmError(`${h.caps.key} devre kesici açık`, 'circuit_open', undefined, h.caps.key);
       }
       await slots.acquire(req.signal);
-      const maxTokens = req.maxTokens ?? Math.min(h.caps.maxOutputTokens, 8192);
+      // reasoning models spend part of the output budget on thinking – give them more room
+      const maxTokens = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
       try {
-        this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt } });
-        const r = await h.client.chat(
-          h.caps.model,
-          {
-            ...req,
-            timeoutMs: req.timeoutMs ?? limits.timeoutMs,
-            firstTokenTimeoutMs: req.firstTokenTimeoutMs ?? limits.firstTokenTimeoutMs,
-            idleTimeoutMs: req.idleTimeoutMs ?? limits.idleTimeoutMs,
-            maxTokens,
-            temperature: req.temperature ?? h.override.temperature,
-            jsonMode: req.jsonMode && h.caps.jsonMode,
-            stream: req.stream ?? h.caps.streaming,
-          },
-          h.override.extraBody,
-        );
+        const send = async (tokens: number, messages = req.messages): Promise<ChatResult> => {
+          this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt } });
+          const res = await h.client.chat(
+            h.caps.model,
+            {
+              ...req,
+              messages,
+              timeoutMs: req.timeoutMs ?? limits.timeoutMs,
+              firstTokenTimeoutMs: req.firstTokenTimeoutMs ?? limits.firstTokenTimeoutMs,
+              idleTimeoutMs: req.idleTimeoutMs ?? limits.idleTimeoutMs,
+              maxTokens: tokens,
+              temperature: req.temperature ?? h.override.temperature,
+              jsonMode: req.jsonMode && h.caps.jsonMode,
+              stream: req.stream ?? h.caps.streaming,
+            },
+            h.override.extraBody,
+          );
+          this.bus?.emitEvent('llm.response', {
+            source: h.caps.key,
+            data: { purpose: req.purpose, ms: res.durationMs, in: res.usage.promptTokens, out: res.usage.completionTokens, finish: res.finishReason },
+          });
+          return res;
+        };
+        let r = await send(maxTokens);
+        if (r.finishReason === 'length') r = await this.recoverTruncation(h, req, r, maxTokens, send);
         this.onSuccess(h, r);
-        this.bus?.emitEvent('llm.response', {
-          source: h.caps.key,
-          data: { purpose: req.purpose, ms: r.durationMs, in: r.usage.promptTokens, out: r.usage.completionTokens },
-        });
         return r;
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError(String(e), 'network', undefined, h.caps.key);

@@ -41,7 +41,7 @@ export interface MockRequest {
 }
 
 export type MockReply =
-  | { content: string; toolCall?: { name: string; args: Record<string, unknown> } }
+  | { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string }
   | { content?: string; toolCall: { name: string; args: Record<string, unknown> } }
   | { status: number; error: string; retryAfter?: string }
   | { hangMs: number }
@@ -269,7 +269,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
       return;
     }
     if (model.latencyMs) await new Promise((r) => setTimeout(r, model.latencyMs));
-    const out = custom ? { content: custom.content ?? '', toolCall: custom.toolCall } : respond(model, body);
+    const out: { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string } = custom ? { content: custom.content ?? '', toolCall: custom.toolCall, finish: 'finish' in custom ? custom.finish : undefined } : respond(model, body);
     const content = model.thinks && out.content ? `<think>reasoning…</think>${out.content}` : out.content;
     const id = `chatcmpl-${count}`;
     const toolCalls = out.toolCall ? [{ id: `call_${count}`, type: 'function', function: { name: out.toolCall.name, arguments: JSON.stringify(out.toolCall.args) } }] : undefined;
@@ -280,17 +280,17 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
         sse(res, { id, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: toolCalls[0].id, type: 'function', function: { name: toolCalls[0].function.name, arguments: '' } }] } }] });
         const args = toolCalls[0].function.arguments;
         for (let i = 0; i < args.length; i += 16) sse(res, { id, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(i, i + 16) } }] } }] });
-        sse(res, { id, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+        sse(res, { id, choices: [{ index: 0, delta: {}, finish_reason: out.finish ?? 'tool_calls' }] });
       } else {
         for (let i = 0; i < content.length; i += 12) sse(res, { id, choices: [{ index: 0, delta: { content: content.slice(i, i + 12) } }] });
-        sse(res, { id, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+        sse(res, { id, choices: [{ index: 0, delta: {}, finish_reason: out.finish ?? 'stop' }] });
       }
       sse(res, { id, choices: [], usage });
       res.end('data: [DONE]\n\n');
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id, choices: [{ index: 0, message: { role: 'assistant', content: toolCalls ? null : content, tool_calls: toolCalls }, finish_reason: toolCalls ? 'tool_calls' : 'stop' }], usage }));
+    res.end(JSON.stringify({ id, choices: [{ index: 0, message: { role: 'assistant', content: toolCalls ? null : content, tool_calls: toolCalls }, finish_reason: out.finish ?? (toolCalls ? 'tool_calls' : 'stop') }], usage }));
   });
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {

@@ -33,9 +33,12 @@ export async function askProject(
   ]
     .filter(Boolean)
     .join('\n\n');
-  const minWin = Math.min(...app.router.list().map((h) => h.caps.contextWindow));
+  // size the context for the council that will answer, not for the smallest model in the fleet
+  const members = opts.members ?? Math.min(3, app.router.size);
+  const council = [...app.router.pick('reviewer', members), ...app.router.pick('judge', 1)];
+  const minWin = Math.min(...(council.length ? council : app.router.list()).map((h) => h.caps.contextWindow));
   return councilAnswer(app.router, question, ctx, {
-    members: opts.members ?? Math.min(3, app.router.size),
+    members,
     contextTokens: Math.floor(minWin * 0.5),
     bus: app.bus,
     signal: opts.signal,
