@@ -384,9 +384,9 @@ const TOOLS: Record<string, ToolDef> = {
       }
       const timeout = Math.min(ctx.config.tools.commandTimeoutMs, (optNum(a.timeout_sec) ?? 600) * 1000);
       ctx.bus?.emitEvent('tool.command', { source: ctx.workerId, message: cmd });
-      const r = await ctx.materializer.withApplied(ctx.overlay, () => runShell(cmd, ctx.root, timeout, ctx.signal), ctx.signal);
+      const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal), ctx.signal);
       const status = r.timedOut ? 'ZAMAN AŞIMI' : `çıkış kodu ${r.code}`;
-      return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(r.output, 12_000)}`, isError: r.code !== 0 };
+      return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000)}`, isError: r.code !== 0 };
     },
   },
   skill: {
