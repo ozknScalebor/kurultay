@@ -8,8 +8,8 @@ import { ConfigError, SAMPLE_CONFIG, loadConfig, type RunMode } from './config.j
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
-import { councilAnswer } from './orchestrator/council.js';
-import { focusTerms, Orchestrator } from './orchestrator/orchestrator.js';
+import { Orchestrator } from './orchestrator/orchestrator.js';
+import { askProject } from './ops.js';
 import { detectVerifyCommands } from './orchestrator/verify.js';
 import { probeAll, renderCapabilitiesMarkdown, writeCapabilities } from './probe/probe.js';
 import { startDashboard } from './ui/dashboard.js';
@@ -27,7 +27,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -39,14 +39,16 @@ export function parseArgs(argv: string[]): Args {
       flags[a.slice(1)] = true;
     } else positional.push(a);
   }
-  return { cmd: positional.shift() ?? 'help', positional, flags };
+  return { cmd: positional.shift() ?? '', positional, flags };
 }
 
 const HELP = `${color.bold('kurultay')} ${VERSION} — tüm yerel LLM'leri birlikte çalıştıran offline kodlama ajanı
 
-Kullanım: kurultay <komut> [seçenekler]
+Kullanım: kurultay                 etkileşimli konsol (çalışma alanı seçimi, / komutları)
+          kurultay <komut> [seçenekler]
 
 Komutlar:
+  console              Etkileşimli konsol (--workspace <klasör>, --no-probe, --no-analyze)
   init                 Proje köküne kurultay.config.json, kural/skill şablonları oluştur
   probe                Tüm endpoint ve modellerin yeteneklerini ölç (--deep, --quick)
   index                Projeyi indeksle (sembol, bağımlılık grafiği, PageRank) – LLM gerekmez
@@ -230,21 +232,7 @@ async function cmdAsk(app: App, args: Args) {
   const stop = attachTerminal(app.bus, { verbose: !!args.flags.verbose });
   try {
     const { index } = loadOrBuildIndex(app);
-    const arch = join(app.stateDir, 'ARCHITECTURE.md');
-    const focus = focusTerms(q);
-    const hits = index.search(q, 6);
-    const ctx = [
-      existsSync(arch) ? `# ARCHITECTURE\n${readFileSync(arch, 'utf8')}` : '',
-      `# REPO MAP\n${index.repoMap(1500, { files: hits.map((h) => h.path), identifiers: focus.identifiers })}`,
-      `# RELEVANT CODE\n${hits.map((h) => `## ${h.path}:${h.startLine}-${h.endLine}\n${h.text}`).join('\n\n')}`,
-    ].join('\n\n');
-    const minWin = Math.min(...app.router.list().map((h) => h.caps.contextWindow));
-    const r = await councilAnswer(app.router, q, ctx, {
-      members: Number(args.flags.members ?? Math.min(3, app.router.size)),
-      contextTokens: Math.floor(minWin * 0.5),
-      bus: app.bus,
-      language: app.config.language === 'tr' ? 'Turkish' : 'English',
-    });
+    const r = await askProject(app, index, q, { members: args.flags.members !== undefined ? Number(args.flags.members) : undefined });
     out('\n' + r.answer.trim());
     out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
   } finally {
@@ -308,7 +296,24 @@ async function cmdStatus(app: App) {
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (args.flags.version || args.flags.v) return out(VERSION);
-  if (args.cmd === 'help' || args.flags.help || args.flags.h) return out(HELP);
+  if (args.cmd === '' && !args.flags.help && !args.flags.h && process.stdin.isTTY && process.stdout.isTTY) args.cmd = 'console';
+  if (args.cmd === '' || args.cmd === 'help' || args.flags.help || args.flags.h) return out(HELP);
+  if (args.cmd === 'console' || args.cmd === 'tui' || args.cmd === 'chat') {
+    const { KurultayConsole } = await import('./tui/console.js');
+    const c = new KurultayConsole(
+      { input: process.stdin, output: process.stdout },
+      {
+        version: VERSION,
+        workspace: typeof args.flags.workspace === 'string' ? args.flags.workspace : args.positional[0],
+        config: typeof args.flags.config === 'string' ? args.flags.config : undefined,
+        autoIndex: !args.flags['no-index'],
+        autoProbe: !args.flags['no-probe'],
+        autoAnalyze: !args.flags['no-analyze'],
+      },
+    );
+    process.exitCode = await c.run();
+    return;
+  }
   const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Bilinmeyen komut: ${args.cmd}\n`);

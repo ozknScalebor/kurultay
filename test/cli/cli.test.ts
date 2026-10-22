@@ -33,7 +33,7 @@ describe('argument parsing', () => {
       positional: ['fix', 'the', 'bug'],
       flags: { mode: 'race', 'dry-run': true, port: '8000', y: true },
     });
-    assert.deepEqual(parseArgs([]), { cmd: 'help', positional: [], flags: {} });
+    assert.deepEqual(parseArgs([]), { cmd: '', positional: [], flags: {} });
     assert.deepEqual(parseArgs(['probe', '--deep', '--ui']).flags, { deep: true, ui: true });
     assert.equal(parseArgs(['ask', '--members', '2', 'q']).flags.members, '2');
   });
@@ -182,6 +182,23 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /src\/mathutil\.js/);
     assert.match(r.stdout, /konsey:/);
+  });
+
+  it('console: interactive mode over a pipe (workspace, question, exit)', async () => {
+    const kh = tmpProject({ 'config.json': JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], skills: { includeUser: false } }) });
+    const r = await new Promise<Result>((resolve) => {
+      const child = execFile(process.execPath, [BIN, 'console', '--workspace', root, '--no-probe', '--no-analyze'], { cwd: root, env: { ...process.env, NO_COLOR: '1', KURULTAY_HOME: kh, HOME: kh }, timeout: 60_000 }, (err, stdout, stderr) =>
+        resolve({ code: err ? Number((err as { code?: number }).code ?? 1) : 0, stdout, stderr }),
+      );
+      child.stdin!.end('/status\nclamp nerede?\n/exit\n');
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /LLM ayarları/);
+    assert.match(r.stdout, /Çalışma alanı: /);
+    assert.match(r.stdout, /→ soru/);
+    assert.match(r.stdout, /— konsey: /);
+    const noTty = await cli([], root);
+    assert.match(noTty.stdout, /Komutlar:/, 'without a terminal the bare command prints help');
   });
 
   it('reports unreachable endpoints clearly', async () => {
