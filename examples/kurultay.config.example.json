@@ -18,7 +18,9 @@
       "name": "ws-llamacpp",
       "baseUrl": "http://10.10.0.20:8080/v1",
       "apiKey": "none",
-      "models": ["qwen3-coder-30b-a3b"],
+      "models": [
+        "qwen3-coder-30b-a3b"
+      ],
       "maxConcurrency": 2,
       "firstTokenTimeoutMs": 300000
     },
@@ -26,13 +28,31 @@
       "name": "ollama",
       "baseUrl": "http://127.0.0.1:11434/v1",
       "apiKey": "ollama",
-      "models": ["qwen2.5-coder:14b", "deepseek-coder-v2:16b"]
+      "models": [
+        "qwen2.5-coder:14b",
+        "deepseek-coder-v2:16b"
+      ]
     }
   ],
   "models": {
-    "qwen2.5-coder:14b": { "contextWindow": 32768, "extraBody": { "options": { "num_ctx": 32768 } } },
-    "gpt-oss-120b@gpu2-vllm": { "roles": ["planner", "judge", "reviewer"] },
-    "tiny-model@ollama": { "disabled": true }
+    "qwen2.5-coder:14b": {
+      "contextWindow": 32768,
+      "extraBody": {
+        "options": {
+          "num_ctx": 32768
+        }
+      }
+    },
+    "gpt-oss-120b@gpu2-vllm": {
+      "roles": [
+        "planner",
+        "judge",
+        "reviewer"
+      ]
+    },
+    "tiny-model@ollama": {
+      "disabled": true
+    }
   },
   "verify": {
     "build": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j",
@@ -47,11 +67,20 @@
     "maxIterations": 4,
     "maxStepsPerWorker": 40,
     "maxConsecutiveErrors": 6,
-    "confirmMerge": true
+    "confirmMerge": true,
+    "approvePlan": false,
+    "maxTokens": 2000000,
+    "maxMinutes": 90,
+    "testFirst": true
   },
   "index": {
     "include": [],
-    "exclude": ["third_party/**", "*.pb.cc", "*.pb.h", "generated/**"],
+    "exclude": [
+      "third_party/**",
+      "*.pb.cc",
+      "*.pb.h",
+      "generated/**"
+    ],
     "maxFileBytes": 524288,
     "summaryLanguage": "tr",
     "repoMapTokens": 2048
@@ -59,7 +88,24 @@
   "tools": {
     "allowCommands": true,
     "commandTimeoutMs": 600000,
-    "requireReadBeforeEdit": true
+    "requireReadBeforeEdit": true,
+    "isolation": "sandbox",
+    "sandbox": {
+      "size": 4,
+      "link": [
+        "node_modules"
+      ]
+    },
+    "syntaxCheck": "auto",
+    "commandPolicy": "deny",
+    "allowPatterns": [
+      "^\\./tools/gen\\.sh\\b"
+    ],
+    "scrubEnv": true,
+    "envPassthrough": [
+      "CONAN_LOGIN_USERNAME"
+    ],
+    "osSandbox": "off"
   },
   "llm": {
     "firstTokenTimeoutMs": 180000,
@@ -70,8 +116,50 @@
     "timeoutCooldownMs": 120000,
     "stickyFailover": true
   },
+  "embeddings": {
+    "mode": "auto",
+    "endpoint": "gpu1-vllm",
+    "model": "bge-m3"
+  },
+  "mcp": {
+    "servers": {
+      "issue-tracker": {
+        "command": "node",
+        "args": [
+          "/opt/mcp/jira-mcp.js"
+        ],
+        "env": {
+          "JIRA_URL": "http://jira.local"
+        },
+        "readOnlyTools": [
+          "search_issues",
+          "get_issue"
+        ],
+        "timeoutMs": 60000
+      }
+    }
+  },
+  "lsp": {
+    "servers": {
+      "clangd": {
+        "command": "clangd",
+        "args": [
+          "--background-index=false"
+        ],
+        "extensions": [
+          ".c",
+          ".cc",
+          ".cpp",
+          ".h",
+          ".hpp"
+        ]
+      }
+    }
+  },
   "skills": {
-    "paths": ["~/ortak-skilller"],
+    "paths": [
+      "~/ortak-skilller"
+    ],
     "disabled": [],
     "includeUser": true,
     "maxPreload": 3

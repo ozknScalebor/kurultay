@@ -5,8 +5,8 @@
 - Para tutarları yalnızca `BigDecimal`; `double`/`float` ile para hesabı yapılmaz. Kuruşa yuvarlama `RoundingMode.HALF_UP`, ölçek 2.
 - Dış bağımlılık yok (Maven/JUnit yok). Testler `src/test/java` altında, `com.ornek.test.Test` notasyonu ve `com.ornek.test.Assert` ile yazılır;
   adı `Test` ile biten her sınıf otomatik çalışır.
-- Derleme: `javac -d .build/tools tools/Build.java && java -cp .build/tools Build compile`
-- Test: `javac -d .build/tools tools/Build.java && java -cp .build/tools Build test`
-- Demo: `java -cp .build/tools Build run` (data/urunler.csv okunur)
+- Derleme: `javac -d tools tools/Build.java && java -cp tools Build compile`
+- Test: `javac -d tools tools/Build.java && java -cp tools Build test`
+- Demo: `java -cp tools Build run` (data/urunler.csv okunur)
 - Hata mesajları Türkçe; istisnalar yutulmaz.
 - Public API değişiklikleri (yeni metot, imza) Javadoc ile belgelenir.
