@@ -9,7 +9,8 @@ import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
-import { Orchestrator } from './orchestrator/orchestrator.js';
+import { Orchestrator, fmtDuration, fmtTokens, renderPlan } from './orchestrator/orchestrator.js';
+import type { Plan } from './orchestrator/planner.js';
 import { askProject } from './ops.js';
 import { detectVerifyCommands } from './orchestrator/verify.js';
 import { probeAll, renderCapabilitiesMarkdown, writeCapabilities } from './probe/probe.js';
@@ -28,7 +29,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -63,6 +64,9 @@ Komutlar:
   run "<görev>"        Görevi planla, modellere dağıt, doğrula, incele ve uygula
                          --mode auto|single|split|race|council   --req <dosya>   --dry-run   --yes
                          --skill a,b (skill'leri baştan yükle; görev metninde $skill-adı da olur)
+                         --approve-plan (kod yazılmadan önce planı göster; onay / ret / geri bildirim)
+                         --max-tokens N --max-minutes N (bütçe dolunca durur, sürdürülebilir)
+                         --resume [oturum] (yarım kalan / bütçesi dolan görevi kaldığı yerden sürdür)
   ask "<soru>"         Proje hakkında soru: modeller ayrı cevaplar, konsey birleştirir (--members N)
   map                  Repo haritasını yazdır (--tokens N, --focus a,b)
   skills               Skill'leri listele ve doğrula; "skills new <ad> --description ..." yeni skill oluşturur
@@ -191,14 +195,37 @@ async function confirmPrompt(question: string): Promise<boolean> {
   return /^(e|evet|y|yes)$/i.test(a.trim());
 }
 
+/** Plan approval on the terminal: Enter/e = go, h = cancel, any other text = feedback for a revised plan. */
+async function approvePlanPrompt(plan: Plan, info: { mode: RunMode; round: number }): Promise<boolean | string> {
+  out('\n' + renderPlan(plan, info.mode) + '\n');
+  if (!process.stdin.isTTY) {
+    out(color.yellow('Terminal etkileşimli değil; plan onaylanmış sayıldı.'));
+    return true;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const a = (await rl.question(`Plan onaylansın mı? [E]vet / [h]ayır / ya da değişiklik isteğinizi yazın: `)).trim();
+  rl.close();
+  if (!a || /^(e|evet|y|yes)$/i.test(a)) return true;
+  if (/^(h|hayır|hayir|n|no)$/i.test(a)) return false;
+  return a;
+}
+
+function numFlag(v: string | boolean | undefined, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new ConfigError(`--${name} sayı olmalı`);
+  return n;
+}
+
 async function cmdRun(app: App, args: Args) {
   const task = args.positional.join(' ').trim();
-  if (!task) throw new ConfigError('Görev metni gerekli: kurultay run "..."');
+  const resume = args.flags.resume;
+  if (!task && !resume) throw new ConfigError('Görev metni gerekli: kurultay run "..." (yarım kalan bir görevi sürdürmek için: kurultay run --resume [oturum])');
   requireModels(app);
   const stop = await withUi(app, args.flags);
   const ctrl = new AbortController();
   const onSig = () => {
-    out(color.yellow('\nDurduruluyor… (yarım kalan değişiklikler geri alınacak)'));
+    out(color.yellow('\nDurduruluyor… (yarım kalan değişiklikler geri alınacak; "kurultay run --resume" ile sürdürülebilir)'));
     ctrl.abort(new Error('kullanıcı iptal etti'));
   };
   process.once('SIGINT', onSig);
@@ -209,14 +236,23 @@ async function cmdRun(app: App, args: Args) {
     const requirements = reqFile ? readFileSync(resolve(reqFile), 'utf8') : undefined;
     const orch = new Orchestrator(app.root, app.config, app.router, app.materializer, index, app.bus);
     if (args.flags.yes || args.flags.y) app.config.orchestrator.confirmMerge = false;
-    const report = await orch.run(task, {
+    const opts = {
       mode: (args.flags.mode as RunMode) || undefined,
       skills: typeof args.flags.skill === 'string' ? args.flags.skill.split(',').map((x) => x.trim()).filter(Boolean) : undefined,
       requirements,
-      dryRun: !!args.flags['dry-run'],
+      dryRun: args.flags['dry-run'] ? true : undefined,
       confirm: confirmPrompt,
       signal: ctrl.signal,
-    });
+      approvePlan: args.flags['approve-plan'] || app.config.orchestrator.approvePlan ? approvePlanPrompt : undefined,
+      budget: { tokens: numFlag(args.flags['max-tokens'], 'max-tokens'), minutes: numFlag(args.flags['max-minutes'], 'max-minutes') },
+    };
+    if (resume) {
+      const list = Orchestrator.resumable(app.root, app.config.stateDir);
+      if (resume === true && !list.length) throw new ConfigError('Sürdürülecek yarım kalmış görev yok.');
+      const id = typeof resume === 'string' ? resume : list[0].id;
+      out(`${color.bold('Sürdürülüyor')}: ${id}`);
+    }
+    const report = resume ? await orch.resume(typeof resume === 'string' ? resume : undefined, opts) : await orch.run(task, opts);
     out('');
     const st = report.status === 'completed' ? color.green(report.status) : color.yellow(report.status);
     out(`${color.bold('Sonuç')}: ${st} · ${report.changedFiles.length} dosya · ${report.iterations} iterasyon · modeller: ${report.modelsUsed.join(', ')}`);
@@ -224,6 +260,8 @@ async function cmdRun(app: App, args: Args) {
     if (report.merge?.conflicts.length) out(color.yellow(`Çakışmalar: ${report.merge.conflicts.join(', ')}`));
     out(`${color.bold('Rapor')}: ${report.reportPath}`);
     out(`${color.bold('Diff')}:  ${report.diffPath}`);
+    if (report.usage) out(`${color.bold('Tüketim')}: ${report.usage.requests} istek · ${fmtTokens(report.usage.tokensIn + report.usage.tokensOut)} token · ${fmtDuration(report.usage.seconds)}`);
+    if (report.stopReason && report.status === 'incomplete') out(color.yellow(`Durduruldu: ${report.stopReason}. Devam etmek için: kurultay run --resume ${report.sessionId}`));
     if (report.status !== 'completed') process.exitCode = 2;
   } finally {
     process.off('SIGINT', onSig);

@@ -13,7 +13,8 @@ import { readCapabilitiesFile, type CapabilitiesFile } from '../llm/models.js';
 import { Router } from '../llm/router.js';
 import { ModelStats } from '../llm/stats.js';
 import { askProject, type AskTurn } from '../ops.js';
-import { Orchestrator, type RunReport } from '../orchestrator/orchestrator.js';
+import { Orchestrator, fmtDuration, fmtTokens, renderPlan, renderUsageTable, type RunReport } from '../orchestrator/orchestrator.js';
+import type { Plan } from '../orchestrator/planner.js';
 import { probeAll, writeCapabilities } from '../probe/probe.js';
 import { SkillRegistry } from '../skills/skills.js';
 import { startDashboard } from '../ui/dashboard.js';
@@ -127,6 +128,8 @@ export class KurultayConsole {
     autoApply: false,
     verbose: false,
     skills: [] as string[],
+    /** show the plan and wait for approval/feedback before code is written */
+    planApproval: false,
   };
 
   constructor(
@@ -562,8 +565,8 @@ export class KurultayConsole {
     this.out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
   }
 
-  private async runTask(task: string): Promise<void> {
-    if (!task) return this.out(color.yellow('Görev yazın: /run <görev>'));
+  private async runTask(task: string, resumeId?: string | true): Promise<void> {
+    if (!task && !resumeId) return this.out(color.yellow('Görev yazın: /run <görev>'));
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok.'));
     this.reindex(true);
@@ -571,15 +574,14 @@ export class KurultayConsole {
     const text = m.files.length ? `${m.text}\n\nFiles explicitly referenced by the user: ${m.files.join(', ')}` : m.text;
     app.config.orchestrator.confirmMerge = !this.settings.autoApply && !this.settings.dryRun;
     const orch = new Orchestrator(app.root, app.config, app.router, app.materializer, this.index!, this.bus);
-    const report = await this.withAbort('Görev', (signal) =>
-      orch.run(text, {
-        mode: this.settings.mode,
-        skills: this.settings.skills.length ? this.settings.skills : undefined,
-        dryRun: this.settings.dryRun,
-        confirm: (q) => this.screen.confirm(q),
-        signal,
-      }),
-    );
+    const opts = {
+      mode: this.settings.mode,
+      skills: this.settings.skills.length ? this.settings.skills : undefined,
+      dryRun: this.settings.dryRun,
+      confirm: (q: string) => this.screen.confirm(q),
+      approvePlan: this.settings.planApproval || app.config.orchestrator.approvePlan ? (plan: Plan, info: { mode: RunMode; round: number }) => this.approvePlan(plan, info) : undefined,
+    };
+    const report = await this.withAbort('Görev', (signal) => (resumeId ? orch.resume(resumeId === true ? undefined : resumeId, { ...opts, signal }) : orch.run(text, { ...opts, signal })));
     if (!report) return;
     this.lastReport = report;
     const st = report.status === 'completed' ? color.green(report.status) : color.yellow(report.status);
@@ -588,15 +590,51 @@ export class KurultayConsole {
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
     if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} dosya daha`));
     if (report.merge?.conflicts.length) this.out(color.yellow(`Çakışmalar: ${report.merge.conflicts.join(', ')}`));
+    if (report.usage) this.out(color.dim(`Tüketim: ${report.usage.requests} istek · ${fmtTokens(report.usage.tokensIn + report.usage.tokensOut)} token · ${fmtDuration(report.usage.seconds)} (/stats)`));
+    if (report.stopReason && report.status === 'incomplete') this.out(color.yellow(`Durduruldu: ${report.stopReason}. Sürdürmek için: /continue-run`));
     this.out(color.dim(`Rapor: ${shortPath(report.reportPath)} (/report) · Diff: /diff${report.checkpointPath ? ' · Geri almak için: /rewind' : ''}`));
     this.recordTurn({
       kind: 'run',
-      input: task,
+      input: task || `(sürdürüldü) ${report.task.split('\n')[0]}`,
       output: `${report.status} · ${report.changedFiles.length} dosya · ${report.iterations} iterasyon`,
       models: report.modelsUsed,
       run: { sessionId: report.sessionId, sessionDir: report.sessionDir, status: report.status, changedFiles: report.changedFiles, checkpointPath: report.checkpointPath },
     });
     this.reindex(true);
+  }
+
+  /** Plan mode: show the plan; Enter/e = approve, h = cancel, other text = feedback for a revised plan. */
+  private async approvePlan(plan: Plan, info: { mode: RunMode; round: number }): Promise<boolean | string> {
+    this.out('');
+    this.out(renderPlan(plan, info.mode));
+    const a = ((await this.screen.readLine(`${color.bold('Plan onaylansın mı?')} ${color.dim('[Enter/e = evet · h = iptal · değişiklik isteğinizi yazın]')} ❯ `)) ?? 'h').trim();
+    if (!a || /^(e|evet|y|yes)$/i.test(a)) return true;
+    if (/^(h|hayır|hayir|n|no)$/i.test(a)) return false;
+    this.out(color.dim('Plan geri bildirimle yeniden hazırlanıyor…'));
+    return a;
+  }
+
+  private continueRun(arg: string): Promise<void> | void {
+    const list = Orchestrator.resumable(this.app!.root, this.app!.config.stateDir);
+    if (!list.length) return this.out(color.dim('Sürdürülecek yarım kalmış görev yok.'));
+    if (!arg) {
+      if (list.length > 1) {
+        list.slice(0, 10).forEach((r, i) => this.out(`  ${color.cyan(String(i + 1).padStart(2))}) ${r.task.split('\n')[0].slice(0, 70)}  ${color.dim(`${r.left} alt görev kaldı · ${r.stopReason ?? 'yarıda kaldı'} · ${r.id}`)}`));
+        this.out(color.dim('En yenisi sürdürülüyor; başkası için /continue-run <numara|oturum>'));
+      }
+      return this.runTask('', list[0].id);
+    }
+    const n = Number(arg);
+    const id = Number.isInteger(n) && n >= 1 && n <= list.length ? list[n - 1].id : arg;
+    return this.runTask('', id);
+  }
+
+  /** Per-model consumption of the last run (and the learned success rates). */
+  private stats(): void {
+    const r = this.lastReport;
+    if (!r?.usage) return this.out(color.dim('Bu oturumda henüz görev çalıştırılmadı. Model profili için /models.'));
+    this.out(`${color.bold('Son görev')}: ${r.sessionId} · ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış · ${fmtDuration(r.usage.seconds)}`);
+    this.out(this.md(renderUsageTable(r.usage).join('\n')));
   }
 
   // ------------------------------------------------------------------ sessions: resume / branch / rewind / worktree
@@ -1134,6 +1172,9 @@ export class KurultayConsole {
           this.out(text.split('\n').map((l) => (l.startsWith('+') && !l.startsWith('+++') ? color.green(l) : l.startsWith('-') && !l.startsWith('---') ? color.red(l) : l.startsWith('@@') ? color.cyan(l) : l)).join('\n') || color.dim('(boş)'));
         },
       },
+      { name: 'plan', args: '[on|off]', description: 'plan modu: kod yazılmadan önce planı göster, onay/geri bildirim iste', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`plan onayı: ${(this.settings.planApproval = this.onOff(a, this.settings.planApproval)) ? 'açık – her görevde plan gösterilir' : 'kapalı'}`) },
+      { name: 'continue-run', aliases: ['devam'], ws: true, args: '[numara|oturum]', description: 'yarıda kalan / bütçesi dolan görevi kaldığı yerden sürdür', run: (a) => this.continueRun(a.trim()) },
+      { name: 'stats', ws: true, description: 'son görevin model başına istek/token/süre tablosu', run: () => this.stats() },
       { name: 'dry-run', args: '[on|off]', description: 'değişiklikleri projeye yazma, yalnızca diff üret', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`dry-run: ${(this.settings.dryRun = this.onOff(a, this.settings.dryRun)) ? 'açık' : 'kapalı'}`) },
       { name: 'auto-apply', args: '[on|off]', description: 'sonucu onay sormadan projeye uygula', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`onaysız uygula: ${(this.settings.autoApply = this.onOff(a, this.settings.autoApply)) ? 'açık' : 'kapalı'}`) },
       {
