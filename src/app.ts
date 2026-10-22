@@ -42,7 +42,7 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   if (router.size === 0 && opts.requireModels !== false) {
     router.register(await router.discover(opts.discoverTimeoutMs ? AbortSignal.timeout(opts.discoverTimeoutMs) : undefined));
   }
-  return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir), probed };
+  return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir, { isolation: config.tools.isolation, sandbox: config.tools.sandbox }), probed };
 }
 
 export function loadOrBuildIndex(app: App, rebuild = false): { index: ProjectIndex; stats: ReturnType<ProjectIndex['build']> | undefined } {

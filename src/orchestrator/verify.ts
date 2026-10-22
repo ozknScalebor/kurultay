@@ -30,14 +30,14 @@ const WEIGHTS = { build: 0.5, test: 0.4, lint: 0.1 } as const;
 export async function verifyOverlay(overlay: Overlay, materializer: Materializer, cfg: KurultayConfig, signal?: AbortSignal): Promise<VerifyResult> {
   const cmds = (['build', 'test', 'lint'] as const).map((name) => ({ name, command: (cfg.verify[name] ?? '').trim() })).filter((c) => c.command);
   if (!cmds.length) return { skipped: true, ok: true, score: 0, steps: [] };
-  return materializer.withApplied(
+  return materializer.execute(
     overlay,
-    async () => {
+    async (cwd) => {
       const steps: VerifyStep[] = [];
       for (const c of cmds) {
         const t0 = Date.now();
-        const r = await runShell(c.command, materializer.root, cfg.verify.timeoutMs ?? 15 * 60_000, signal);
-        steps.push({ name: c.name, command: c.command, ok: r.code === 0 && !r.timedOut, code: r.code, timedOut: r.timedOut, output: truncateMiddle(r.output, 8000), ms: Date.now() - t0 });
+        const r = await runShell(c.command, cwd, cfg.verify.timeoutMs ?? 15 * 60_000, signal);
+        steps.push({ name: c.name, command: c.command, ok: r.code === 0 && !r.timedOut, code: r.code, timedOut: r.timedOut, output: truncateMiddle(materializer.rewriteOutput(r.output), 8000), ms: Date.now() - t0 });
         if (c.name === 'build' && !(r.code === 0 && !r.timedOut)) break; // no point testing a broken build
       }
       const total = cmds.reduce((s, c) => s + WEIGHTS[c.name], 0);
