@@ -1,6 +1,6 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex } from '../app.js';
 import type { RunMode } from '../config.js';
@@ -92,14 +92,13 @@ export function loadSuite(dir: string): EvalSuite {
 
 function copyProject(src: string, dst: string): void {
   mkdirSync(dst, { recursive: true });
-  // build outputs are not copied: a CMakeCache.txt with absolute paths breaks the copy, stale classes hide errors
-  cpSync(src, dst, {
-    recursive: true,
-    filter: (p) => {
-      const rel = p.slice(src.length);
-      return !/[\\/](\.kurultay|node_modules)([\\/]|$)/.test(rel) && !/^[\\/](\.build|build|out|target|cmake-build-[^\\/]*)([\\/]|$)/.test(rel);
-    },
-  });
+  // build outputs are not copied: a CMakeCache.txt with absolute paths breaks the copy, stale classes hide errors.
+  // Top-level entries are copied one by one (path-form independent: Windows 8.3 / long names).
+  const skipTop = /^(\.build|build|out|target|cmake-build-.*)$/;
+  for (const name of readdirSync(src)) {
+    if (skipTop.test(name) || name === '.kurultay' || name === 'node_modules') continue;
+    cpSync(join(src, name), join(dst, name), { recursive: true, filter: (p) => !['.kurultay', 'node_modules'].includes(basename(p)) });
+  }
 }
 
 function addHidden(suiteDir: string, task: EvalTask, work: string): void {
