@@ -37,11 +37,13 @@ export async function askProject(
   const members = opts.members ?? Math.min(3, app.router.size);
   const council = [...app.router.pick('reviewer', members), ...app.router.pick('judge', 1)];
   const minWin = Math.min(...(council.length ? council : app.router.list()).map((h) => h.caps.contextWindow));
-  return councilAnswer(app.router, question, ctx, {
+  const answer = await councilAnswer(app.router, question, ctx, {
     members,
     contextTokens: Math.floor(minWin * 0.5),
     bus: app.bus,
     signal: opts.signal,
     language: app.config.language === 'tr' ? 'Turkish' : 'English',
   });
+  app.router.learned?.save();
+  return answer;
 }

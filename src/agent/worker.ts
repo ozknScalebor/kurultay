@@ -7,6 +7,7 @@ import { errorMessage } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateMiddle, tryExtractJson } from '../util/text.js';
 import { LoopGuard } from './loop-guard.js';
+import { TOOLSHIM_SCHEMA } from '../llm/schemas.js';
 import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
 import { executeTool, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
@@ -345,6 +346,7 @@ export class AgentWorker {
           ],
           temperature: 0,
           jsonMode: true,
+          jsonSchema: TOOLSHIM_SCHEMA,
           maxTokens: 1500,
           purpose: 'toolshim',
           signal: this.signal,

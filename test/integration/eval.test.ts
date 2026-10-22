@@ -7,10 +7,16 @@ import { DEFAULT_MOCK_MODELS, startMockServer, type MockServerHandle } from '../
 import { CLAMP_PROJECT, tmpProject } from '../helpers.js';
 
 let mock: MockServerHandle;
+const prevHome = process.env.KURULTAY_HOME;
 before(async () => {
   mock = await startMockServer(DEFAULT_MOCK_MODELS);
+  process.env.KURULTAY_HOME = tmpProject({}); // learned stats / caches stay out of the real home
 });
-after(() => mock.close());
+after(() => {
+  if (prevHome === undefined) delete process.env.KURULTAY_HOME;
+  else process.env.KURULTAY_HOME = prevHome;
+  return mock.close();
+});
 
 const HIDDEN = "import { clamp } from './src/mathutil.js';\nif (clamp(15, 0, 10) !== 10 || clamp(-1, 0, 10) !== 0 || clamp(4, 0, 10) !== 4) { console.error('clamp yanlış'); process.exit(1); }\nconsole.log('ok');\n";
 const TWICE = "import * as m from './src/mathutil.js';\nif (typeof m.twice !== 'function' || m.twice(21) !== 42) { console.error('twice yok'); process.exit(1); }\n";

@@ -11,6 +11,8 @@ export interface ModelCapabilities {
   maxOutputTokens: number;
   nativeTools: boolean;
   jsonMode: boolean;
+  /** response_format json_schema (constrained decoding) works; undefined = not known yet */
+  jsonSchema?: boolean;
   streaming: boolean;
   /** emits <think> / reasoning_content */
   thinking: boolean;

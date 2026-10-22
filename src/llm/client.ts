@@ -49,7 +49,11 @@ export class OpenAICompatClient {
       ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
       ...(req.stop?.length ? { stop: req.stop } : {}),
       ...(req.tools?.length ? { tools: req.tools, tool_choice: req.toolChoice ?? 'auto' } : {}),
-      ...(req.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      ...(req.jsonSchema
+        ? { response_format: { type: 'json_schema', json_schema: { name: req.jsonSchema.name, schema: req.jsonSchema.schema, strict: false } } }
+        : req.jsonMode
+          ? { response_format: { type: 'json_object' } }
+          : {}),
       ...(extraBody ?? {}),
     };
     const started = Date.now();
