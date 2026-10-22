@@ -19,8 +19,8 @@ import javax.tools.ToolProvider;
 /**
  * Offline build tool (no Maven/Gradle/JUnit needed, works on JDK 8 and newer).
  *
- *   javac -d .build/tools tools/Build.java
- *   java -cp .build/tools Build compile | test | run | clean
+ *   javac -d tools tools/Build.java
+ *   java -cp tools Build compile | test | run | clean
  *
  * Sources are always compiled for Java 8 (--release 8 on JDK 9+, -source/-target 1.8 on JDK 8).
  */
@@ -55,7 +55,7 @@ public class Build {
                 break;
             }
             default:
-                System.err.println("Kullanım: java -cp .build/tools Build compile|test|run|clean");
+                System.err.println("Kullan\u0131m: java -cp tools Build compile|test|run|clean");
                 System.exit(2);
         }
     }
@@ -67,7 +67,7 @@ public class Build {
     static boolean compile(Path srcRoot, Path out, List<Path> classpath) throws IOException {
         JavaCompiler javac = ToolProvider.getSystemJavaCompiler();
         if (javac == null) {
-            System.err.println("Derleyici bulunamadı: JRE değil JDK kullanın (JAVA_HOME bir JDK'yı göstermeli).");
+            System.err.println("Derleyici bulunamad\u0131: JRE de\u011fil JDK kullan\u0131n (JAVA_HOME bir JDK'y\u0131 g\u00f6stermeli).");
             return false;
         }
         List<String> files = sources(srcRoot);
@@ -91,7 +91,7 @@ public class Build {
         }
         opts.addAll(files);
         int rc = javac.run(null, null, null, opts.toArray(new String[0]));
-        if (rc != 0) System.err.println("Derleme başarısız: " + srcRoot);
+        if (rc != 0) System.err.println("Derleme ba\u015far\u0131s\u0131z: " + srcRoot);
         return rc == 0;
     }
 

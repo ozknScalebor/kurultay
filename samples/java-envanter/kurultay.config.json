@@ -1,8 +1,8 @@
 {
   "$comment": "Proje yapılandırması: endpoint'ler kullanıcının ~/.kurultay/config.json dosyasından gelir; burada yalnızca derleme/test komutları var.",
   "verify": {
-    "build": "javac -d .build/tools tools/Build.java && java -cp .build/tools Build compile",
-    "test": "javac -d .build/tools tools/Build.java && java -cp .build/tools Build test",
+    "build": "javac -d tools tools/Build.java && java -cp tools Build compile",
+    "test": "javac -d tools tools/Build.java && java -cp tools Build test",
     "lint": ""
   },
   "tools": {

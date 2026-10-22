@@ -163,11 +163,36 @@ Bu doküman, Kurultay tasarlanırken incelenen 15 açık kaynak ajanın **kaynak
 
 Kurultay bunu ölçümle yapıyor: probe sonuçlarından rol puanı çıkarılıyor, kodlama ve düzenleme puanları planlayıcı ve hakem seçimini belirliyor. Model ailesine özel istem önayarları yol haritasında.
 
-## 8. Kurultay'da bilerek yapılmayanlar
+## 8. Uzman değerlendirmesi sonrası eklenenler (v0.3.0)
+
+İlk sürümlerden sonra yapılan teknik değerlendirmede 15 eksik belirlendi; hepsi uygulandı ve her biri testle doğrulandı.
+
+| # | Eksik | Esin kaynağı | Kurultay'daki karşılığı |
+|---|---|---|---|
+| 1 | Kaliteyi ölçen bir düzenek yok | SWE-bench, Aider benchmark | `kurultay eval`: temiz kopya, gizli testler, mod bazında başarı/istek/token/süre; `--validate` |
+| 2 | Paralel build/test sırayla çalışıyor | OpenHands çalışma alanları, Codex sandbox | Çalışan başına kalıcı sandbox kopyaları (COW klon, artımlı senkron) |
+| 3 | Bağlam en küçük modele göre kırpılıyor | Aider repo-map bütçesi | Bağlam, istemi okuyacak modellerin penceresine göre |
+| 4 | `finish_reason=length` fark edilmiyor | Qwen Code, Goose | Yapılandırılmış istekte daha büyük bütçeyle tekrar, metinde devam turu |
+| 5 | Model seçimi yalnızca probe'a dayalı | OpenRouter tarzı geri bildirim | Rol bazlı başarı istatistiği (Bayes harmanı, kalıcı) |
+| 6 | JSON çıktısı kırılgan | vLLM guided decoding, llama.cpp grammar | `response_format: json_schema` + otomatik `json_object` düşüşü |
+| 7 | Testler ajanın keyfine kalmış | SWE-agent "reproduce first" | Çalışan istemine önce-test yönergesi |
+| 8 | Düzenleme hatası build'e kadar fark edilmiyor | Aider lint-after-edit | `-fsyntax-only` (compile_commands), `javac`, özel komutlar |
+| 9 | Plan onayı ve bütçe yok | Claude Code / Qwen Code plan modu | `/plan`, `--approve-plan`, `maxTokens`/`maxMinutes` |
+| 10 | Yarıda kalan görev sürdürülemiyor | Claude Code `--resume` | `session.json` v2, `run --resume`, `/continue-run` |
+| 11 | Komut güvenliği yalnızca kara liste | Codex izin listesi + landlock | `commandPolicy: allow`, ortam temizleme, bubblewrap |
+| 12 | Anlamsal arama yok | Continue, Kilo Code | `/embeddings` + BM25 RRF (bağımlılıksız vektör deposu) |
+| 13 | Tek dosyada 1300 satırlık konsol, lint yok | — | Komut modülleri, ESLint (CI adımı), olay tabanlı testler |
+| 14 | Tüketim görünmüyor | OpenCode istatistikleri | Model başına tablo (`REPORT.md`, `kurultay stats`, `/stats`) |
+| 15 | Dış araç ve dil sunucusu yok | Claude Code/Qwen Code MCP, Serena/Crush LSP | stdio MCP istemcisi, LSP tanılama istemcisi |
+
+IDE eklentisi (VS Code/JetBrains) değerlendirmede bilinçli olarak kapsam dışı bırakıldı.
+
+## 9. Kurultay'da bilerek yapılmayanlar
 
 | Fikir | Neden şimdilik yok |
 |---|---|
 | Hashline / AST düzenleme (omp, Serena) | Native tree-sitter veya LSP gerektiriyor; offline paketleme hedefiyle çelişiyor. Yol haritasında: isteğe bağlı WASM tree-sitter |
-| Gömülü vektör deposu (Kilo LanceDB) | Native modül gerektiriyor. Şimdilik BM25 + PageRank kullanılıyor |
-| Sandbox (Codex landlock/seatbelt) | Platforma özgü. Kurultay yasaklı komut kalıpları ve overlay izolasyonu kullanıyor |
+| Gömülü vektör deposu (Kilo LanceDB) | Native modül gerektiriyor. Bunun yerine bağımlılıksız JSON/Float32 vektör deposu + RRF kullanılıyor |
+| Sandbox (Codex landlock/seatbelt) | Platforma özgü. Linux'ta isteğe bağlı bubblewrap; diğer platformlarda sandbox kopyaları + komut politikası |
+| IDE eklentisi | Kapsam dışı; terminal konsolu, CLI, web panosu ve kütüphane API'si var |
 | TTSR akış kuralları (omp) | Akışı yarıda kesmek yerel sunucularda (llama.cpp) kararsız |
