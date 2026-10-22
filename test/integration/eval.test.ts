@@ -85,13 +85,15 @@ describe('evaluation harness', () => {
   });
 
   it('reports errors per attempt and rejects broken suites', async () => {
-    const dir = suite();
+    const dir = suite({ 'project/build/CMakeCache.txt': 'CMAKE_HOME_DIRECTORY=/elsewhere', 'project/.build/classes/A.class': 'x', 'project/src/build/keep.js': 'x' });
     const dead = join(dir, 'dead.json');
     writeFileSync(dead, JSON.stringify({ endpoints: [{ name: 'dead', baseUrl: 'http://127.0.0.1:9/v1' }] }));
     const { summary } = await runEval({ suiteDir: dir, tasks: ['clamp'], config: dead, outDir: join(dir, 'o2'), keepWork: true });
     assert.equal(summary.attempts[0].status, 'error');
     assert.match(summary.attempts[0].error!, /model yok/);
     assert.ok(existsSync(summary.attempts[0].workDir), '--keep keeps the work copy');
+    assert.ok(!existsSync(join(summary.attempts[0].workDir, 'build')) && !existsSync(join(summary.attempts[0].workDir, '.build')), 'stale build outputs are not copied');
+    assert.ok(existsSync(join(summary.attempts[0].workDir, 'src', 'build', 'keep.js')), 'only top-level build dirs are skipped');
     await assert.rejects(runEval({ suiteDir: dir, tasks: ['nope'], config: dead }), /seçilen task yok/);
     assert.throws(() => loadSuite(tmpProject({})), /suite.json bulunamadı/);
     assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[]}' })), /en az bir task/);
