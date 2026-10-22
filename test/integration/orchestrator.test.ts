@@ -203,7 +203,6 @@ describe('Orchestrator', () => {
         return call('write_file', { path: 'a.txt', content: 'bug' });
       },
       review: (prompt) => {
-        const corrected = /corrected version/.test(prompt);
         const body = prompt.match(/```diff\n([\s\S]*?)```/)?.[1] ?? '';
         const broken = /\+bug/.test(body) ? 'null deref' : /\+half/.test(body) ? 'still-broken edge case' : '';
         return { content: JSON.stringify({ ranking: ['A'], scores: { A: 5 }, issues: broken ? { A: [{ text: broken, priority: 0, confidence: 0.9 }] } : {} }) };

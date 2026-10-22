@@ -51,7 +51,7 @@ function scalar(raw: string): FmValue {
 }
 
 export function parseFrontmatter(text: string): Frontmatter {
-  const src = text.replace(/^﻿/, '');
+  const src = text.replace(/^\uFEFF/, '');
   const m = src.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
   if (!m) return { data: {}, body: src, present: false };
   const lines = m[1].split(/\r?\n/);

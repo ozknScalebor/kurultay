@@ -377,7 +377,7 @@ export const DEFAULT_MOCK_MODELS: MockModel[] = [
 // CLI: node dist/src/mock/server.js [port] [profile]
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const port = Number(process.argv[2] ?? 9100);
-  startMockServer(DEFAULT_MOCK_MODELS, port).then(({ url }) => {
+  void startMockServer(DEFAULT_MOCK_MODELS, port).then(({ url }) => {
     process.stdout.write(`Mock LLM sunucusu: ${url}  (modeller: ${DEFAULT_MOCK_MODELS.map((m) => m.id).join(', ')})\n`);
   });
 }

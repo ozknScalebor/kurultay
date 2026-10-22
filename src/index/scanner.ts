@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
+import { type Dirent, closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { extname, join, relative, sep } from 'node:path';
 
 export const LANG_BY_EXT: Record<string, string> = {
@@ -118,11 +118,11 @@ export function scanProject(root: string, opts: ScanOptions = {}): ScannedFile[]
     return true;
   };
 
-  let rels: string[] = gitListFiles(root) ?? [];
+  const rels: string[] = gitListFiles(root) ?? [];
   if (!rels.length) {
     const ignores = readGitignore(root);
     const walk = (dir: string) => {
-      let entries: import('node:fs').Dirent[];
+      let entries: Dirent[];
       try {
         entries = readdirSync(dir, { withFileTypes: true });
       } catch {

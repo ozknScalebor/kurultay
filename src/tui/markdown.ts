@@ -47,7 +47,7 @@ export function renderInline(text: string, o: MdOptions): string {
     .replace(/(^|[^*\w])\*(?=\S)([^*]*?\S)\*(?!\*)/g, (_m, pre: string, t: string) => pre + paint(o, t, 'italic'))
     .replace(/(^|[^_\w])_(?=\S)([^_]*?\S)_(?![_\w])/g, (_m, pre: string, t: string) => pre + paint(o, t, 'italic'))
     .replace(/~~([^~]+)~~/g, (_m, t: string) => paint(o, t, 'strike'));
-  // eslint-disable-next-line no-control-regex
+   
   return s.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => codes[Number(i)]);
 }
 

@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { Router } from '../llm/router.js';
 import type { EventBus, KEvent } from '../util/events.js';
 
@@ -8,7 +8,7 @@ import type { EventBus, KEvent } from '../util/events.js';
  * Works fully offline: no CDN, no external fonts.
  */
 export function startDashboard(bus: EventBus, router: Router, port = 7420): Promise<{ server: Server; url: string }> {
-  const clients = new Set<import('node:http').ServerResponse>();
+  const clients = new Set<ServerResponse>();
   const onEvent = (e: KEvent) => {
     if (e.type === 'worker.token') return; // too chatty for the wire
     const data = `data: ${JSON.stringify(e)}\n\n`;

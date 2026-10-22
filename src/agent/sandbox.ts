@@ -1,4 +1,4 @@
-import { constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { type Dirent, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { Semaphore } from '../util/async.js';
 import type { Overlay } from './workspace.js';
@@ -85,7 +85,7 @@ export class SandboxPool {
   private scanNow(): Record<string, string> {
     const out: Record<string, string> = {};
     const walk = (dir: string) => {
-      let entries: import('node:fs').Dirent[];
+      let entries: Dirent[];
       try {
         entries = readdirSync(dir, { withFileTypes: true });
       } catch {

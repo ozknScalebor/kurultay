@@ -3,7 +3,7 @@ import { after, describe, it } from 'node:test';
 import { toTextProtocol } from '../../src/agent/worker.js';
 import { ConfigError, parseConfig, validateConfig } from '../../src/config.js';
 import { OpenAICompatClient, Watchdog } from '../../src/llm/client.js';
-import { LlmError, type ChatMessage } from '../../src/llm/types.js';
+import { type LlmError, type ChatMessage } from '../../src/llm/types.js';
 import { startMockServer, type MockServerHandle } from '../../src/mock/server.js';
 import { councilReview, type Candidate } from '../../src/orchestrator/council.js';
 import { caps, config, lastUser, recordingBus, routerFor } from '../helpers.js';

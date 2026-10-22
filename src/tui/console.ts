@@ -1,12 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
-import { cpSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { modifiedSince, readCheckpoint, rewindCheckpoint } from '../agent/checkpoint.js';
 import { ProjectAnalyzer } from '../analyze/summarizer.js';
 import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex, prepareRetrieval, type App } from '../app.js';
-import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type LlmConfig, type RunMode } from '../config.js';
+import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type RunMode } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
 import { readCapabilitiesFile, type CapabilitiesFile } from '../llm/models.js';
@@ -17,17 +15,19 @@ import { Orchestrator, fmtDuration, fmtTokens, renderPlan, renderUsageTable, typ
 import type { Plan } from '../orchestrator/planner.js';
 import { probeAll, writeCapabilities } from '../probe/probe.js';
 import { SkillRegistry } from '../skills/skills.js';
-import { startDashboard } from '../ui/dashboard.js';
 import { attachTerminal, color } from '../ui/terminal.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus } from '../util/events.js';
 import { truncateTokens } from '../util/text.js';
-import { branchConversation, findConversation, listConversations, loadConversation, newConversation, relativeTime, saveConversation, type Conversation, type Turn } from './conversation.js';
-import type { Completion, Suggestion } from './editor.js';
+import { listConversations, newConversation, relativeTime, saveConversation, type Conversation, type Turn } from './conversation.js';
+import type { Completion } from './editor.js';
 import { renderMarkdown } from './markdown.js';
-import { commitWorktree, createWorktree, currentBranch, listWorktrees, mergeWorktree, realPath, removeWorktree, repoRoot, worktreeDiff, type WorktreeInfo } from './worktree.js';
-import { banner, helpText, llmPanel, type EndpointHealth } from './panels.js';
+import { currentBranch } from './worktree.js';
+import { banner, llmPanel, type EndpointHealth } from './panels.js';
 import { Screen, type TermIO } from './screen.js';
+import { buildCommands } from './commands.js';
+import type { Command } from './command-types.js';
+import * as sessions from './session-commands.js';
 import { checkWorkspace, completePath, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath, type ConsoleState } from './state.js';
 
 export interface ConsoleOptions {
@@ -48,27 +48,6 @@ export interface ConsoleOptions {
   /** start inside a new git worktree with this name */
   worktree?: string;
 }
-
-interface Command {
-  name: string;
-  aliases?: string[];
-  args?: string;
-  description: string;
-  /** needs an open workspace */
-  ws?: boolean;
-  /** argument suggestions */
-  complete?: (arg: string) => Suggestion[];
-  run: (arg: string) => Promise<void> | void;
-}
-
-const MODES: RunMode[] = ['auto', 'single', 'split', 'race', 'council'];
-const MODE_HELP: Record<RunMode, string> = {
-  auto: 'tek alt görevde yarış, çok alt görevde paralel dağıtım',
-  single: 'tek model',
-  split: 'alt görevler farklı modellerde paralel',
-  race: 'aynı işi N model yarışarak yapar',
-  council: 'yarış + her zaman tam konsey incelemesi',
-};
 
 /** Questions go to the council, everything else is a task. Explicit /ask, /run or ? / /intent override. */
 export function classifyIntent(text: string): 'ask' | 'run' {
@@ -98,29 +77,29 @@ export function expandMentions(text: string, exists: (p: string) => boolean): { 
  * prompt that answers questions and carries out tasks with every model.
  */
 export class KurultayConsole {
-  private readonly screen: Screen;
-  private readonly cwd: string;
-  private readonly bus = new EventBus();
-  private readonly state: ConsoleState;
-  private config: KurultayConfig | undefined;
-  private configPath: string | undefined;
-  private app: App | undefined;
-  private index: ProjectIndex | undefined;
-  private router: Router | undefined;
-  private probed = false;
-  private health: EndpointHealth[] | undefined;
-  private detachLog: (() => void) | undefined;
-  private dashboard: Server | undefined;
-  private askHistory: AskTurn[] = [];
-  private lastReport: RunReport | undefined;
+  readonly screen: Screen;
+  readonly cwd: string;
+  readonly bus = new EventBus();
+  readonly state: ConsoleState;
+  config: KurultayConfig | undefined;
+  configPath: string | undefined;
+  app: App | undefined;
+  index: ProjectIndex | undefined;
+  router: Router | undefined;
+  probed = false;
+  health: EndpointHealth[] | undefined;
+  detachLog: (() => void) | undefined;
+  dashboard: Server | undefined;
+  askHistory: AskTurn[] = [];
+  lastReport: RunReport | undefined;
   /** the conversation being recorded (saved after every turn) */
-  private conversation: Conversation | undefined;
+  conversation: Conversation | undefined;
   /** main repository root while working inside a worktree */
-  private mainRoot: string | undefined;
-  private mainConfig: string | undefined;
-  private activeRequests = 0;
-  private exitRequested = false;
-  private readonly commands: Command[];
+  mainRoot: string | undefined;
+  mainConfig: string | undefined;
+  activeRequests = 0;
+  exitRequested = false;
+  readonly commands: Command[];
   readonly settings = {
     mode: undefined as RunMode | undefined,
     intent: 'auto' as 'auto' | 'ask' | 'run',
@@ -134,7 +113,7 @@ export class KurultayConsole {
 
   constructor(
     io: TermIO,
-    private readonly opts: ConsoleOptions,
+    readonly opts: ConsoleOptions,
   ) {
     this.cwd = opts.cwd ?? process.cwd();
     this.state = loadState();
@@ -142,7 +121,7 @@ export class KurultayConsole {
     this.screen.onExitRequest = () => {
       this.exitRequested = true;
     };
-    this.commands = this.buildCommands();
+    this.commands = buildCommands(this);
     // in-flight LLM requests for the activity line
     this.bus.on('event', (e: { type: string }) => {
       if (e.type === 'llm.request') this.activeRequests++;
@@ -151,22 +130,22 @@ export class KurultayConsole {
   }
 
   /** Markdown → terminal text (colours only on a real terminal). */
-  private md(text: string): string {
+  md(text: string): string {
     return renderMarkdown(text, { width: Math.min(this.screen.columns - 2, 120), ansi: this.screen.interactive && !process.env.NO_COLOR });
   }
 
   /** Where conversations live: the main repository even while inside a worktree. */
-  private get convStateDir(): string {
+  get convStateDir(): string {
     const root = this.mainRoot ?? this.app!.root;
     return join(root, this.app!.config.stateDir);
   }
 
-  private snapshotSettings(): Conversation['settings'] {
+  snapshotSettings(): Conversation['settings'] {
     const s = this.settings;
     return { mode: s.mode, intent: s.intent, dryRun: s.dryRun, autoApply: s.autoApply, skills: [...s.skills] };
   }
 
-  private recordTurn(t: Omit<Turn, 'n' | 'at'>): void {
+  recordTurn(t: Omit<Turn, 'n' | 'at'>): void {
     if (!this.app) return;
     this.conversation ??= newConversation(this.mainRoot ?? this.app.root, this.snapshotSettings());
     const c = this.conversation;
@@ -179,7 +158,7 @@ export class KurultayConsole {
     }
   }
 
-  private footer(): string {
+  footer(): string {
     const parts: string[] = [];
     const br = this.workspace ? currentBranch(this.workspace) : undefined;
     if (br) parts.push(`⎇ ${br}${this.mainRoot ? ' (worktree)' : ''}`);
@@ -198,15 +177,15 @@ export class KurultayConsole {
     return parts.join(' · ');
   }
 
-  private makeApp(root: string): Promise<App> {
+  makeApp(root: string): Promise<App> {
     return createApp({ root, config: this.opts.config ?? (this.mainRoot ? this.mainConfig : undefined), bus: this.bus, requireModels: true, discoverTimeoutMs: this.opts.healthTimeoutMs ?? 8000 });
   }
 
-  private out(s = ''): void {
+  out(s = ''): void {
     this.screen.print(s);
   }
 
-  private get workspace(): string | undefined {
+  get workspace(): string | undefined {
     return this.app?.root;
   }
 
@@ -234,7 +213,7 @@ export class KurultayConsole {
     }
   }
 
-  private shutdown(): void {
+  shutdown(): void {
     this.detachLog?.();
     this.dashboard?.close();
     this.state.history = this.screen.history;
@@ -242,7 +221,7 @@ export class KurultayConsole {
     this.screen.close();
   }
 
-  private async loop(): Promise<void> {
+  async loop(): Promise<void> {
     while (!this.exitRequested) {
       const name = basename(this.workspace ?? '') || 'kurultay';
       const flags = [this.settings.mode ?? '', this.settings.dryRun ? 'dry-run' : ''].filter(Boolean).join(' ');
@@ -259,7 +238,7 @@ export class KurultayConsole {
     const line = input.trim();
     if (!line) return;
     if (line.startsWith('/')) {
-      const [head, ...rest] = line.slice(1).split(/\s+/);
+      const [head] = line.slice(1).split(/\s+/);
       const cmd = this.findCommand(head);
       if (!cmd && /[\\/]/.test(line.slice(1)) && existsSync(line)) {
         this.out(color.yellow(`Bu bir klasör yolu. Çalışma alanını değiştirmek için: /workspace ${line}`));
@@ -289,14 +268,14 @@ export class KurultayConsole {
     else await this.runTask(line);
   }
 
-  private findCommand(name: string): Command | undefined {
+  findCommand(name: string): Command | undefined {
     const n = name.toLowerCase();
     return this.commands.find((c) => c.name === n || c.aliases?.includes(n));
   }
 
   // ------------------------------------------------------------------ LLM config & models
 
-  private async loadLlmConfig(): Promise<boolean> {
+  async loadLlmConfig(): Promise<boolean> {
     try {
       const r = loadConfig(this.opts.workspace ?? this.cwd, this.opts.config);
       this.config = r.config;
@@ -310,7 +289,7 @@ export class KurultayConsole {
   }
 
   /** First run: ask for one OpenAI-compatible endpoint and save it to ~/.kurultay/config.json. */
-  private async setupWizard(): Promise<boolean> {
+  async setupWizard(): Promise<boolean> {
     const path = join(kurultayHome(), 'config.json');
     this.out(`İlk kurulum: bir OpenAI-uyumlu endpoint girin (vLLM, llama.cpp, Ollama, LM Studio…). Kaydedileceği yer: ${shortPath(path)}`);
     for (;;) {
@@ -335,7 +314,7 @@ export class KurultayConsole {
   }
 
   /** Health-check endpoints and build a router from cached capabilities or discovery. */
-  private async refreshModels(): Promise<void> {
+  async refreshModels(): Promise<void> {
     const cfg = this.config!;
     const timeout = this.opts.healthTimeoutMs ?? 5000;
     this.health = await Promise.all(
@@ -375,7 +354,7 @@ export class KurultayConsole {
 
   // ------------------------------------------------------------------ workspace
 
-  private async selectWorkspace(): Promise<boolean> {
+  async selectWorkspace(): Promise<boolean> {
     if (this.opts.workspace) {
       const c = checkWorkspace(this.opts.workspace, this.cwd);
       if (c.path) {
@@ -418,7 +397,7 @@ export class KurultayConsole {
     }
   }
 
-  private workspaceCandidates(): Array<{ path: string; note?: string }> {
+  workspaceCandidates(): Array<{ path: string; note?: string }> {
     const out: Array<{ path: string; note?: string }> = [];
     if (checkWorkspace(this.cwd, this.cwd).path && looksLikeProject(this.cwd)) out.push({ path: this.cwd, note: 'şu anki klasör' });
     for (const r of this.state.recent) {
@@ -428,7 +407,7 @@ export class KurultayConsole {
     return out.slice(0, 9);
   }
 
-  private completeWorkspace(text: string, candidates: Array<{ path: string; note?: string }>): Completion | undefined {
+  completeWorkspace(text: string, candidates: Array<{ path: string; note?: string }>): Completion | undefined {
     const t = text.replace(/^\/workspace\s*/, '');
     const offset = text.length - t.length;
     if (!t || /^\d+$/.test(t)) {
@@ -481,9 +460,9 @@ export class KurultayConsole {
     if (skills.size) this.out(color.dim(`  ${skills.size} skill: ${skills.visible().map((s) => s.name).slice(0, 8).join(', ')}${skills.size > 8 ? '…' : ''}`));
   }
 
-  private embedder: ProjectIndex['embedder'];
+  embedder: ProjectIndex['embedder'];
 
-  private reindex(quiet = false): void {
+  reindex(quiet = false): void {
     const { index, stats } = loadOrBuildIndex(this.app!);
     index.embedder = this.embedder;
     this.index = index;
@@ -495,7 +474,7 @@ export class KurultayConsole {
 
   // ------------------------------------------------------------------ long operations
 
-  private async withAbort<T>(label: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+  async withAbort<T>(label: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     const ctrl = new AbortController();
     const stop = () => {
       if (ctrl.signal.aborted) return;
@@ -522,7 +501,7 @@ export class KurultayConsole {
     }
   }
 
-  private async probe(o: { quick?: boolean; deep?: boolean }): Promise<void> {
+  async probe(o: { quick?: boolean; deep?: boolean }): Promise<void> {
     const cfg = this.config!;
     const file = await this.withAbort('Yetenek analizi', (signal) => probeAll(cfg, this.bus, { quick: o.quick, deep: o.deep, signal }));
     if (!file) return;
@@ -543,7 +522,7 @@ export class KurultayConsole {
   }
 
   /** Embedding vectors for semantic search (incremental); quiet = only report problems / new vectors. */
-  private async semantic(quiet: boolean): Promise<void> {
+  async semantic(quiet: boolean): Promise<void> {
     if (!this.index || !this.app) return;
     const index = this.index;
     const r = await this.withAbort('Anlamsal indeks', (signal) => prepareRetrieval(this.app!, index, { signal }));
@@ -555,7 +534,7 @@ export class KurultayConsole {
     else if (!quiet || r.embedded) this.out(`  ${color.green('✓')} anlamsal arama: ${r.model} · ${r.vectors} parça${r.embedded ? color.dim(` (${r.embedded} yeni)`) : ''}`);
   }
 
-  private async analyze(force: boolean): Promise<void> {
+  async analyze(force: boolean): Promise<void> {
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok; analiz yapılamaz.'));
     this.reindex(true);
@@ -565,7 +544,7 @@ export class KurultayConsole {
     this.out(color.dim(`    ${shortPath(r.architecturePath)}${r.notesPath ? ` · ${shortPath(r.notesPath)}` : ''}`));
   }
 
-  private async ask(question: string): Promise<void> {
+  async ask(question: string): Promise<void> {
     if (!question) return this.out(color.yellow('Soru yazın: /ask <soru>'));
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok.'));
@@ -582,7 +561,7 @@ export class KurultayConsole {
     this.out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
   }
 
-  private async runTask(task: string, resumeId?: string | true): Promise<void> {
+  async runTask(task: string, resumeId?: string | true): Promise<void> {
     if (!task && !resumeId) return this.out(color.yellow('Görev yazın: /run <görev>'));
     const app = this.app!;
     if (!app.router.size) return this.out(color.yellow('Model yok.'));
@@ -622,7 +601,7 @@ export class KurultayConsole {
   }
 
   /** Plan mode: show the plan; Enter/e = approve, h = cancel, other text = feedback for a revised plan. */
-  private async approvePlan(plan: Plan, info: { mode: RunMode; round: number }): Promise<boolean | string> {
+  async approvePlan(plan: Plan, info: { mode: RunMode; round: number }): Promise<boolean | string> {
     this.out('');
     this.out(renderPlan(plan, info.mode));
     const a = ((await this.screen.readLine(`${color.bold('Plan onaylansın mı?')} ${color.dim('[Enter/e = evet · h = iptal · değişiklik isteğinizi yazın]')} ❯ `)) ?? 'h').trim();
@@ -632,7 +611,7 @@ export class KurultayConsole {
     return a;
   }
 
-  private continueRun(arg: string): Promise<void> | void {
+  continueRun(arg: string): Promise<void> | void {
     const list = Orchestrator.resumable(this.app!.root, this.app!.config.stateDir);
     if (!list.length) return this.out(color.dim('Sürdürülecek yarım kalmış görev yok.'));
     if (!arg) {
@@ -648,217 +627,28 @@ export class KurultayConsole {
   }
 
   /** Per-model consumption of the last run (and the learned success rates). */
-  private stats(): void {
+  stats(): void {
     const r = this.lastReport;
     if (!r?.usage) return this.out(color.dim('Bu oturumda henüz görev çalıştırılmadı. Model profili için /models.'));
     this.out(`${color.bold('Son görev')}: ${r.sessionId} · ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış · ${fmtDuration(r.usage.seconds)}`);
     this.out(this.md(renderUsageTable(r.usage).join('\n')));
   }
 
-  // ------------------------------------------------------------------ sessions: resume / branch / rewind / worktree
+  // ------------------------------------------------------------------ sessions (session-commands.ts)
 
-  private conversationList(): Conversation[] {
-    return this.app ? listConversations(this.convStateDir) : [];
-  }
-
-  private printConversations(): void {
-    const list = this.conversationList();
-    if (!list.length) return this.out(color.dim('Kayıtlı oturum yok. Soru sorun veya görev verin; her tur otomatik kaydedilir.'));
-    list.slice(0, 15).forEach((c, i) => {
-      const cur = c.id === this.conversation?.id ? color.green('●') : ' ';
-      const parent = c.parent ? color.dim(` ⑂ ${c.parent.id.slice(0, 19)} #${c.parent.turn}`) : '';
-      this.out(`${cur} ${color.cyan(String(i + 1).padStart(2))}) ${c.title || '(başlıksız)'}  ${color.dim(`${c.turns.length} tur · ${relativeTime(c.updatedAt)} · ${c.id}`)}${parent}`);
-    });
-    this.out(color.dim('Devam etmek için /resume <numara>, dallandırmak için /branch'));
-  }
-
-  private applyConversation(c: Conversation): void {
-    this.conversation = c;
-    const s = c.settings;
-    this.settings.mode = s.mode;
-    this.settings.intent = s.intent;
-    this.settings.dryRun = s.dryRun;
-    this.settings.autoApply = s.autoApply;
-    this.settings.skills = [...s.skills];
-    this.askHistory = c.turns.filter((t) => t.kind === 'ask').map((t) => ({ question: t.input, answer: t.output }));
-  }
-
-  /** Continue a saved conversation: settings, question history and a short recap. */
   async resume(ref: string): Promise<void> {
-    const list = this.conversationList();
-    if (!list.length) return this.out(color.dim('Devam edilecek kayıtlı oturum yok.'));
-    const c = findConversation(list, ref);
-    if (!c) return this.out(color.yellow(`Oturum bulunamadı: ${ref}. Liste için /sessions`));
-    this.applyConversation(c);
-    this.out(`${color.green('✓')} oturuma devam: ${color.bold(c.title || c.id)} ${color.dim(`(${c.turns.length} tur, ${relativeTime(c.updatedAt)})`)}`);
-    for (const t of c.turns.slice(-3)) {
-      this.out(color.dim(`  #${t.n} ${t.kind === 'ask' ? 'soru' : 'görev'}: `) + t.input.split('\n')[0].slice(0, 100));
-      this.out(color.dim(`     → ${t.output.replace(/\s+/g, ' ').slice(0, 160)}`));
-    }
+    return sessions.resume(this, ref);
   }
 
-  private branch(title: string): void {
-    const c = this.conversation;
-    if (!c?.turns.length) return this.out(color.yellow('Dallandırılacak bir konuşma yok (henüz tur yok).'));
-    saveConversation(this.convStateDir, c);
-    const b = branchConversation(c, c.turns.length, title);
-    saveConversation(this.convStateDir, b);
-    this.applyConversation(b);
-    this.out(`${color.green('✓')} dal oluşturuldu: ${color.bold(b.title)} ${color.dim(b.id)}`);
-    this.out(color.dim(`  ana konuşmaya dönmek için: /resume ${c.id}  (kod dallanmaz; ayrı kod için /worktree new <ad>)`));
-  }
-
-  private history(): void {
-    const c = this.conversation;
-    if (!c?.turns.length) return this.out(color.dim('Bu oturumda henüz tur yok.'));
-    for (const t of c.turns) {
-      const applied = t.run?.checkpointPath ? (readCheckpoint(t.run.checkpointPath)?.rewoundAt ? color.dim(' [geri alındı]') : color.yellow(` [${t.run.changedFiles.length} dosya uygulandı]`)) : '';
-      this.out(`  ${color.cyan(`#${t.n}`)} ${t.kind === 'ask' ? 'soru ' : 'görev'} ${t.input.split('\n')[0].slice(0, 90)}${applied}`);
-    }
-  }
-
-  /**
-   * Rewind to just before turn `n`: undo every change applied by that turn and
-   * the later ones (newest first), and drop those turns from the conversation.
-   */
   async rewind(arg: string): Promise<void> {
-    const c = this.conversation;
-    if (!c?.turns.length) return this.out(color.dim('Geri alınacak tur yok.'));
-    let ref = arg.trim();
-    if (!ref) {
-      this.history();
-      const a = await this.screen.readLine(`Hangi turun öncesine dönülsün? [1-${c.turns[c.turns.length - 1].n}, boş = vazgeç] ❯ `);
-      ref = (a ?? '').trim();
-      if (!ref) return this.out(color.dim('Vazgeçildi.'));
-    }
-    const n = Number(ref.replace(/^#/, ''));
-    if (!Number.isInteger(n) || !c.turns.some((t) => t.n === n)) return this.out(color.yellow(`Geçersiz tur: ${ref}`));
-    const undo = c.turns.filter((t) => t.n >= n && t.run?.checkpointPath && existsSync(t.run.checkpointPath) && !readCheckpoint(t.run.checkpointPath)?.rewoundAt).reverse();
-    const root = this.app!.root;
-    if (undo.length) {
-      const files = [...new Set(undo.flatMap((t) => Object.keys(readCheckpoint(t.run!.checkpointPath!)?.files ?? {})))];
-      this.out(`${undo.length} görevin uyguladığı ${files.length} dosya eski hâline dönecek: ${files.slice(0, 12).join(', ')}${files.length > 12 ? ' …' : ''}`);
-      // only the newest checkpoint of each file is compared with the disk: older ones were changed by later turns on purpose
-      const seen = new Set<string>();
-      const touched: string[] = [];
-      for (const t of undo) {
-        const cp = readCheckpoint(t.run!.checkpointPath!)!;
-        for (const f of modifiedSince(root, cp)) if (!seen.has(f)) touched.push(f);
-        for (const f of Object.keys(cp.files)) seen.add(f);
-      }
-      if (touched.length) this.out(color.yellow(`Uyarı: şu dosyalar uygulamadan sonra değişmiş, sizin değişiklikleriniz kaybolabilir: ${touched.join(', ')}`));
-      if (!(await this.screen.confirm('Geri alınsın mı?'))) return this.out(color.dim('Vazgeçildi.'));
-      for (const t of undo) {
-        const r = rewindCheckpoint(root, t.run!.checkpointPath!, { force: true });
-        this.out(`  ${color.green('↶')} #${t.n}: ${r.restored.length} dosya geri yüklendi`);
-      }
-    }
-    const dropped = c.turns.filter((t) => t.n >= n).length;
-    c.turns = c.turns.filter((t) => t.n < n);
-    saveConversation(this.convStateDir, c);
-    this.applyConversation(c);
-    this.out(`${color.green('✓')} #${n} öncesine dönüldü (${dropped} tur konuşmadan çıkarıldı${undo.length ? ', kod geri alındı' : ''}).`);
-    this.reindex(true);
+    return sessions.rewind(this, arg);
   }
 
-  private currentWorktrees(): WorktreeInfo[] {
-    const root = this.mainRoot ?? this.app!.root;
-    return listWorktrees(root);
-  }
-
-  /** /worktree new|list|exit|diff|merge|remove */
   async worktreeCommand(arg: string): Promise<void> {
-    const [sub = 'list', ...rest] = arg.trim().split(/\s+/).filter(Boolean);
-    const name = rest.join(' ');
-    const main = this.mainRoot ?? this.app!.root;
-    if (!repoRoot(main)) return this.out(color.yellow('Bu çalışma alanı bir git deposu değil; worktree kullanılamaz.'));
-    const find = (n: string): WorktreeInfo | undefined => {
-      const all = this.currentWorktrees();
-      if (!n && this.mainRoot) return all.find((w) => w.path === realPath(this.app!.root));
-      return all.find((w) => w.slug === n || w.branch === n);
-    };
-    try {
-      switch (sub) {
-        case 'new':
-        case 'add': {
-          if (!name) return this.out(color.yellow('Kullanım: /worktree new <ad>'));
-          const wt = createWorktree(main, name);
-          // reuse the main workspace's index, analysis and capability profile instead of recomputing
-          const src = join(main, this.app!.config.stateDir);
-          const dst = join(wt.path, this.app!.config.stateDir);
-          for (const item of ['index', 'ARCHITECTURE.md', 'INDEX.md', 'modules', 'flows', 'PROJECT_NOTES.md', 'capabilities.json', 'CAPABILITIES.md', 'rules', 'skills', 'review_rules.md']) {
-            if (existsSync(join(src, item))) cpSync(join(src, item), join(dst, item), { recursive: true });
-          }
-          this.mainConfig = existsSync(join(main, 'kurultay.config.json')) ? join(main, 'kurultay.config.json') : this.mainConfig;
-          this.mainRoot = main;
-          this.out(`${color.green('✓')} worktree: ${shortPath(wt.path)} (dal ${wt.branch})`);
-          await this.openWorkspace(wt.path, { keepConversation: true });
-          this.out(color.dim('  bitince: /worktree diff · /worktree merge · /worktree exit'));
-          return;
-        }
-        case 'list': {
-          const all = this.currentWorktrees();
-          this.out(`${color.bold('Ana depo')}: ${shortPath(main)} ${color.dim(`(⎇ ${currentBranch(main) ?? '?'})`)}${this.mainRoot ? '' : color.green('  ● şu an burada')}`);
-          if (!all.length) return this.out(color.dim('  worktree yok — /worktree new <ad>'));
-          for (const w of all) this.out(`  ${w.path === realPath(this.app!.root) ? color.green('●') : ' '} ${color.cyan(w.slug)}  ${color.dim(`${w.branch}${w.dirty ? ' · kaydedilmemiş değişiklik var' : ''}`)}`);
-          return;
-        }
-        case 'exit': {
-          if (!this.mainRoot) return this.out(color.dim('Zaten ana depodasınız.'));
-          const back = this.mainRoot;
-          this.mainRoot = undefined;
-          await this.openWorkspace(back, { keepConversation: true });
-          this.out(color.dim('  worktree korunuyor: /worktree list'));
-          return;
-        }
-        case 'diff': {
-          const wt = find(name);
-          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Hangi worktree? /worktree diff <ad>'));
-          const d = worktreeDiff(main, wt);
-          this.out(d.trim() ? this.md('```diff\n' + d + '\n```') : color.dim('(fark yok)'));
-          return;
-        }
-        case 'merge': {
-          const wt = find(name);
-          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Hangi worktree? /worktree merge <ad>'));
-          if (!(await this.screen.confirm(`${wt.branch} dalı ${shortPath(main)} içindeki ${currentBranch(main) ?? 'mevcut'} dalına birleştirilsin mi?`))) return this.out(color.dim('Vazgeçildi.'));
-          const r = mergeWorktree(main, wt);
-          if (!r.ok) return this.out(color.red(`Birleştirme başarısız (geri alındı):\n${r.output}`));
-          this.out(`${color.green('✓')} ${wt.branch} birleştirildi.`);
-          if (this.mainRoot) {
-            this.mainRoot = undefined;
-            await this.openWorkspace(main, { keepConversation: true });
-          } else this.reindex(true);
-          return;
-        }
-        case 'commit': {
-          const wt = find(name);
-          if (!wt) return this.out(color.yellow('Hangi worktree?'));
-          this.out(commitWorktree(wt, `kurultay: ${wt.slug}`) ? `${color.green('✓')} kaydedildi (${wt.branch})` : color.dim('Kaydedilecek değişiklik yok.'));
-          return;
-        }
-        case 'remove':
-        case 'rm': {
-          const wt = find(name);
-          if (!wt) return this.out(color.yellow(name ? `Worktree yok: ${name}` : 'Kullanım: /worktree remove <ad>'));
-          if (!(await this.screen.confirm(`${wt.slug} worktree'si ve ${wt.branch} dalı silinsin mi?${wt.dirty ? ' (kaydedilmemiş değişiklikler kaybolur)' : ''}`))) return this.out(color.dim('Vazgeçildi.'));
-          if (this.mainRoot && wt.path === realPath(this.app!.root)) {
-            this.mainRoot = undefined;
-            await this.openWorkspace(main, { keepConversation: true });
-          }
-          removeWorktree(main, wt);
-          this.out(`${color.green('✓')} ${wt.slug} silindi.`);
-          return;
-        }
-        default:
-          this.out(color.yellow('Kullanım: /worktree new <ad> | list | diff [ad] | merge [ad] | commit [ad] | exit | remove <ad>'));
-      }
-    } catch (e) {
-      this.out(color.red(errorMessage(e)));
-    }
+    return sessions.worktreeCommand(this, arg);
   }
 
-  private async shell(command: string): Promise<void> {
+  async shell(command: string): Promise<void> {
     if (!command) return this.out(color.yellow('Komut yazın: !<komut>'));
     if (!this.app) return this.out(color.yellow('Önce bir çalışma alanı seçin.'));
     const r = await this.withAbort('Komut', (signal) => runShell(command, this.app!.root, this.app!.config.tools.commandTimeoutMs, signal));
@@ -923,13 +713,13 @@ export class KurultayConsole {
 
   // ------------------------------------------------------------------ commands
 
-  private onOff(arg: string, cur: boolean): boolean {
+  onOff(arg: string, cur: boolean): boolean {
     if (/^(on|açık|aç|evet|1|true)$/i.test(arg)) return true;
     if (/^(off|kapalı|kapat|hayır|0|false)$/i.test(arg)) return false;
     return !cur;
   }
 
-  private writeConfig(mut: (raw: Record<string, unknown>) => void): void {
+  writeConfig(mut: (raw: Record<string, unknown>) => void): void {
     const path = this.configPath ?? join(kurultayHome(), 'config.json');
     const raw = existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>) : {};
     mut(raw);
@@ -941,7 +731,7 @@ export class KurultayConsole {
     this.out(`${color.green('✓')} kaydedildi: ${shortPath(path)}`);
   }
 
-  private async reloadModels(): Promise<void> {
+  async reloadModels(): Promise<void> {
     if (this.app) {
       this.app = await this.makeApp(this.app.root);
       this.config = this.app.config;
@@ -951,351 +741,6 @@ export class KurultayConsole {
     this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
   }
 
-  private buildCommands(): Command[] {
-    const sessionsDir = () => join(this.app!.stateDir, 'sessions');
-    const lastSession = (): string | undefined => {
-      if (this.lastReport) return this.lastReport.sessionDir;
-      if (!existsSync(sessionsDir())) return undefined;
-      const list = readdirSync(sessionsDir()).sort();
-      return list.length ? join(sessionsDir(), list[list.length - 1]) : undefined;
-    };
-    const llmKeys: Array<keyof LlmConfig> = ['firstTokenTimeoutMs', 'idleTimeoutMs', 'timeoutMs', 'prefillMsPerToken', 'timeoutRetries', 'timeoutCooldownMs', 'stickyFailover'];
-    const list: Command[] = [
-      { name: 'help', aliases: ['h', '?'], description: 'komutları ve kısayolları göster', run: () => this.out(helpText(this.commands)) },
-      {
-        name: 'models',
-        aliases: ['m'],
-        description: 'LLM paneli: endpoint sağlığı, modeller, yetenekler, kapasite',
-        run: async () => {
-          await this.refreshModels();
-          this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
-        },
-      },
-      {
-        name: 'llm',
-        args: '[set <ayar> <değer>]',
-        description: 'zaman aşımı / failover ayarlarını göster veya değiştir',
-        complete: (a) => {
-          const parts = a.split(/\s+/);
-          if (parts.length <= 1) return 'set'.startsWith(parts[0]) ? [{ value: 'set ', label: 'set', description: 'bir ayarı değiştir' }] : [];
-          if (parts.length === 2) return llmKeys.filter((k) => k.startsWith(parts[1])).map((k) => ({ value: `set ${k} `, label: k, description: String(this.config?.llm[k]) }));
-          return [];
-        },
-        run: (a) => {
-          const m = a.match(/^set\s+(\w+)\s+(\S+)$/);
-          if (m) {
-            const key = m[1] as keyof LlmConfig;
-            if (!llmKeys.includes(key)) return this.out(color.yellow(`Bilinmeyen ayar: ${m[1]}. Geçerli: ${llmKeys.join(', ')}`));
-            const value = key === 'stickyFailover' ? this.onOff(m[2], true) : Number(m[2]);
-            try {
-              this.writeConfig((raw) => {
-                raw.llm = { ...((raw.llm as object) ?? {}), [key]: value };
-              });
-            } catch (e) {
-              return this.out(color.red(errorMessage(e)));
-            }
-            this.out(color.dim('Yeni ayar bir sonraki istekten itibaren geçerli (çalışma alanı yeniden yüklenir).'));
-            if (this.app) return this.reloadModels();
-            return;
-          }
-          const l = this.config!.llm;
-          this.out(`${color.bold('LLM ayarları')} ${color.dim(shortPath(this.configPath ?? '-'))}`);
-          for (const k of llmKeys) this.out(`  ${k.padEnd(20)} ${String(l[k])}`);
-          for (const e of this.config!.endpoints) {
-            this.out(`  ${color.cyan(e.name.padEnd(12))} ${e.baseUrl}${e.disabled ? color.dim(' (kapalı)') : ''}${e.firstTokenTimeoutMs || e.idleTimeoutMs || e.timeoutMs ? color.dim(` · ilk token ${e.firstTokenTimeoutMs ?? '-'} · sessizlik ${e.idleTimeoutMs ?? '-'} · toplam ${e.timeoutMs ?? '-'}`) : ''}`);
-          }
-          this.out(color.dim('Değiştirmek için: /llm set firstTokenTimeoutMs 120000'));
-        },
-      },
-      {
-        name: 'endpoint',
-        args: 'add <ad> <url> [anahtar] | remove <ad>',
-        description: 'LLM endpoint ekle / çıkar',
-        complete: (a) => {
-          const parts = a.split(/\s+/);
-          if (parts.length <= 1) return ['add', 'remove'].filter((x) => x.startsWith(parts[0])).map((x) => ({ value: `${x} `, label: x }));
-          if (parts[0] === 'remove' && parts.length === 2) return (this.config?.endpoints ?? []).filter((e) => e.name.startsWith(parts[1])).map((e) => ({ value: `remove ${e.name}`, label: e.name, description: e.baseUrl }));
-          return [];
-        },
-        run: async (a) => {
-          const [sub, name, url, key] = a.split(/\s+/);
-          try {
-            if (sub === 'add' && name && url) {
-              this.writeConfig((raw) => {
-                const eps = ((raw.endpoints as Array<Record<string, unknown>>) ?? []).filter((e) => e.name !== name);
-                eps.push({ name, baseUrl: url, apiKey: key ?? 'none' });
-                raw.endpoints = eps;
-              });
-            } else if (sub === 'remove' && name) {
-              if (!this.config!.endpoints.some((e) => e.name === name)) return this.out(color.yellow(`Endpoint yok: ${name}`));
-              this.writeConfig((raw) => {
-                raw.endpoints = ((raw.endpoints as Array<Record<string, unknown>>) ?? []).filter((e) => e.name !== name);
-              });
-            } else return this.out(color.yellow('Kullanım: /endpoint add <ad> <url> [anahtar]  |  /endpoint remove <ad>'));
-          } catch (e) {
-            return this.out(color.red(errorMessage(e)));
-          }
-          await this.reloadModels();
-        },
-      },
-      {
-        name: 'probe',
-        args: '[--deep|--quick]',
-        description: 'tüm modellerin yeteneklerini ölç (bağlam, araç, hız, kod/düzenleme puanı)',
-        complete: (a) => ['--quick', '--deep'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x, description: x === '--deep' ? '256K bağlam, 16 paralel istek' : 'benchmark yok' })),
-        run: async (a) => {
-          await this.probe({ quick: a.includes('--quick'), deep: a.includes('--deep') });
-          this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
-        },
-      },
-      {
-        name: 'workspace',
-        aliases: ['ws', 'cd'],
-        args: '[klasör]',
-        description: 'çalışma alanını göster / değiştir',
-        complete: (a) => {
-          const recent = this.state.recent.filter((r) => existsSync(r.path) && r.path.startsWith(a)).map((r) => ({ value: r.path, label: shortPath(r.path), description: 'son kullanılan' }));
-          return a && !recent.length ? completePath(a, this.cwd) : [...recent, ...(a ? completePath(a, this.cwd) : [])];
-        },
-        run: async (a) => {
-          if (!a) {
-            this.out(`Çalışma alanı: ${this.workspace ? shortPath(this.workspace) : '-'}`);
-            const others = this.state.recent.filter((r) => r.path !== this.workspace && existsSync(r.path));
-            if (others.length) this.out(color.dim(`Son kullanılanlar: ${others.slice(0, 5).map((r) => shortPath(r.path)).join(', ')}`));
-            return;
-          }
-          const c = checkWorkspace(a, this.workspace ?? this.cwd);
-          if (!c.path) return this.out(color.red(c.error!));
-          await this.openWorkspace(c.path);
-        },
-      },
-      { name: 'index', ws: true, description: 'statik indeksi güncelle (LLM gerekmez)', run: () => this.reindex() },
-      { name: 'analyze', ws: true, args: '[--force]', description: 'mimari analiz: dosya özetleri, ARCHITECTURE.md, akışlar, proje notları', complete: (a) => ('--force'.startsWith(a) ? [{ value: '--force', label: '--force', description: 'tüm dosyaları yeniden özetle' }] : []), run: (a) => this.analyze(a.includes('--force')) },
-      { name: 'ask', aliases: ['a'], ws: true, args: '<soru>', description: 'soru sor (konsey cevaplar, kod değişmez)', run: (a) => this.ask(a) },
-      { name: 'run', aliases: ['r', 'do'], ws: true, args: '<görev>', description: 'görevi planla, modellere dağıt, doğrula, incele, uygula', run: (a) => this.runTask(a) },
-      {
-        name: 'mode',
-        args: '[auto|single|split|race|council]',
-        description: 'görev çalıştırma modu',
-        complete: (a) => MODES.filter((m) => m.startsWith(a)).map((m) => ({ value: m, label: m, description: MODE_HELP[m] })),
-        run: (a) => {
-          if (!a) return this.out(`Mod: ${this.settings.mode ?? `${this.config?.orchestrator.defaultMode} (varsayılan)`}\n${MODES.map((m) => `  ${m.padEnd(8)} ${MODE_HELP[m]}`).join('\n')}`);
-          if (!MODES.includes(a as RunMode)) return this.out(color.yellow(`Geçersiz mod: ${a}`));
-          this.settings.mode = a as RunMode;
-          this.out(`Mod: ${a}`);
-        },
-      },
-      {
-        name: 'intent',
-        args: '[auto|ask|run]',
-        description: 'düz metin soru mu iş mi sayılsın',
-        complete: (a) => ['auto', 'ask', 'run'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x, description: x === 'auto' ? 'metinden tahmin et' : x === 'ask' ? 'hep soru' : 'hep görev' })),
-        run: (a) => {
-          if (a && !['auto', 'ask', 'run'].includes(a)) return this.out(color.yellow('auto, ask veya run'));
-          if (a) this.settings.intent = a as 'auto' | 'ask' | 'run';
-          this.out(`Girdi yorumu: ${this.settings.intent}`);
-        },
-      },
-      {
-        name: 'skills',
-        ws: true,
-        args: '[ad]',
-        description: "skill'leri listele; ad verilirse sonraki işlerde baştan yükle/kaldır",
-        complete: (a) => {
-          if (!this.app) return [];
-          const reg = SkillRegistry.discover(this.app.root, { includeUser: this.app.config.skills.includeUser, extraPaths: this.app.config.skills.paths });
-          return reg.skills.filter((s) => s.name.startsWith(a)).map((s) => ({ value: s.name, label: s.name, description: s.description }));
-        },
-        run: (a) => {
-          const reg = SkillRegistry.discover(this.app!.root, { includeUser: this.app!.config.skills.includeUser, extraPaths: this.app!.config.skills.paths, disabled: this.app!.config.skills.disabled });
-          if (a) {
-            if (!reg.get(a)) return this.out(color.yellow(`Skill bulunamadı: ${a}`));
-            const name = reg.get(a)!.name;
-            this.settings.skills = this.settings.skills.includes(name) ? this.settings.skills.filter((s) => s !== name) : [...this.settings.skills, name];
-            return this.out(`Baştan yüklenecek skill'ler: ${this.settings.skills.join(', ') || '-'}`);
-          }
-          if (!reg.size) return this.out(color.dim("Skill yok. .kurultay/skills/<ad>/SKILL.md oluşturun (kurultay skills new <ad>)."));
-          for (const s of reg.skills) this.out(`  ${this.settings.skills.includes(s.name) ? color.green('●') : ' '} ${color.cyan(s.name)}  ${s.description}${s.hidden ? color.dim(' (yalnızca açık seçimle)') : ''}`);
-        },
-      },
-      { name: 'map', ws: true, args: '[odak]', description: 'repo haritası (önemli dosya ve semboller)', run: (a) => this.out(this.index!.repoMap(1200, { identifiers: a ? a.split(/[\s,]+/) : [], files: a ? a.split(/[\s,]+/) : [] })) },
-      {
-        name: 'search',
-        aliases: ['s'],
-        ws: true,
-        args: '<sorgu>',
-        description: 'kodda BM25 araması',
-        run: (a) => {
-          if (!a) return this.out(color.yellow('Kullanım: /search <sorgu>'));
-          const hits = this.index!.search(a, 10);
-          if (!hits.length) return this.out(color.dim('Sonuç yok.'));
-          for (const h of hits) this.out(`  ${color.cyan(`${h.path}:${h.startLine}-${h.endLine}`)} ${color.dim(h.score.toFixed(2))}`);
-        },
-      },
-      {
-        name: 'status',
-        description: 'çalışma alanı, indeks, modeller ve ayarlar',
-        run: () => {
-          this.out(`${color.bold('Çalışma alanı')}: ${this.workspace ? shortPath(this.workspace) : '-'}`);
-          this.out(`${color.bold('Yapılandırma')}: ${shortPath(this.configPath ?? '-')}`);
-          this.out(`${color.bold('Modeller')}: ${this.router?.size ?? 0} (${this.probed ? 'ölçülmüş' : 'keşif'}) · ${this.router?.totalCapacity() ?? 0} paralel slot`);
-          if (this.index) {
-            const s = this.index.stats();
-            this.out(`${color.bold('İndeks')}: ${s.files} dosya, ${s.defs} tanım, özetli ${this.index.files.filter((f) => f.summary).length}`);
-          }
-          this.out(`${color.bold('Ayarlar')}: mod ${this.settings.mode ?? this.config?.orchestrator.defaultMode} · girdi ${this.settings.intent} · dry-run ${this.settings.dryRun ? 'açık' : 'kapalı'} · onaysız uygula ${this.settings.autoApply ? 'açık' : 'kapalı'} · skill ${this.settings.skills.join(', ') || '-'}`);
-        },
-      },
-      {
-        name: 'runs',
-        ws: true,
-        description: 'son görev çalıştırmaları (rapor klasörleri)',
-        run: () => {
-          if (!existsSync(sessionsDir())) return this.out(color.dim('Henüz oturum yok.'));
-          const list = readdirSync(sessionsDir()).sort().slice(-10);
-          for (const s of list) {
-            let status = '';
-            try {
-              const j = JSON.parse(readFileSync(join(sessionsDir(), s, 'session.json'), 'utf8')) as { task?: string };
-              const rep = existsSync(join(sessionsDir(), s, 'REPORT.md')) ? readFileSync(join(sessionsDir(), s, 'REPORT.md'), 'utf8') : '';
-              const st = rep.match(/\*\*Durum:\*\* (\S+)/)?.[1] ?? 'yarım';
-              status = `${st.padEnd(10)} ${(j.task ?? '').split('\n')[0].slice(0, 70)}`;
-            } catch {
-              /* older or partial session */
-            }
-            this.out(`  ${color.cyan(s)}  ${status}`);
-          }
-        },
-      },
-      {
-        name: 'report',
-        ws: true,
-        description: 'son görev raporunu göster',
-        run: () => {
-          const dir = lastSession();
-          const p = dir && join(dir, 'REPORT.md');
-          if (!p || !existsSync(p)) return this.out(color.dim('Rapor yok.'));
-          this.out(this.md(readFileSync(p, 'utf8')));
-        },
-      },
-      {
-        name: 'diff',
-        ws: true,
-        description: 'son görevin değişiklikleri',
-        run: () => {
-          const dir = lastSession();
-          const p = dir && join(dir, 'changes.diff');
-          if (!p || !existsSync(p)) return this.out(color.dim('Diff yok.'));
-          const text = readFileSync(p, 'utf8');
-          this.out(text.split('\n').map((l) => (l.startsWith('+') && !l.startsWith('+++') ? color.green(l) : l.startsWith('-') && !l.startsWith('---') ? color.red(l) : l.startsWith('@@') ? color.cyan(l) : l)).join('\n') || color.dim('(boş)'));
-        },
-      },
-      { name: 'plan', args: '[on|off]', description: 'plan modu: kod yazılmadan önce planı göster, onay/geri bildirim iste', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`plan onayı: ${(this.settings.planApproval = this.onOff(a, this.settings.planApproval)) ? 'açık – her görevde plan gösterilir' : 'kapalı'}`) },
-      { name: 'continue-run', aliases: ['devam'], ws: true, args: '[numara|oturum]', description: 'yarıda kalan / bütçesi dolan görevi kaldığı yerden sürdür', run: (a) => this.continueRun(a.trim()) },
-      { name: 'stats', ws: true, description: 'son görevin model başına istek/token/süre tablosu', run: () => this.stats() },
-      { name: 'dry-run', args: '[on|off]', description: 'değişiklikleri projeye yazma, yalnızca diff üret', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`dry-run: ${(this.settings.dryRun = this.onOff(a, this.settings.dryRun)) ? 'açık' : 'kapalı'}`) },
-      { name: 'auto-apply', args: '[on|off]', description: 'sonucu onay sormadan projeye uygula', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => this.out(`onaysız uygula: ${(this.settings.autoApply = this.onOff(a, this.settings.autoApply)) ? 'açık' : 'kapalı'}`) },
-      {
-        name: 'verbose',
-        args: '[on|off]',
-        description: 'LLM istek/yanıt ayrıntılarını göster',
-        complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })),
-        run: (a) => {
-          this.settings.verbose = this.onOff(a, this.settings.verbose);
-          if (this.app) {
-            this.detachLog?.();
-            this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l) });
-          }
-          this.out(`ayrıntılı günlük: ${this.settings.verbose ? 'açık' : 'kapalı'}`);
-        },
-      },
-      {
-        name: 'ui',
-        args: '[port]',
-        description: 'tarayıcıda canlı pano aç (yerel, harici kaynak yok)',
-        run: async (a) => {
-          if (this.dashboard) return this.out('Pano zaten açık.');
-          if (!this.router) return this.out(color.yellow('Model yok.'));
-          try {
-            const { server, url } = await startDashboard(this.bus, this.router, Number(a) || 7420);
-            this.dashboard = server;
-            this.out(`Pano: ${url}`);
-          } catch (e) {
-            this.out(color.red(`Pano açılamadı: ${errorMessage(e)}`));
-          }
-        },
-      },
-      { name: 'sessions', ws: true, description: 'kayıtlı konuşma oturumları', run: () => this.printConversations() },
-      {
-        name: 'resume',
-        aliases: ['continue'],
-        ws: true,
-        args: '[numara|id]',
-        description: 'kayıtlı bir oturuma devam et (soru geçmişi ve ayarlarla)',
-        complete: (a) =>
-          this.conversationList()
-            .slice(0, 15)
-            .map((c, i) => ({ value: String(i + 1), label: `${i + 1}) ${c.title || c.id}`, description: `${c.turns.length} tur · ${relativeTime(c.updatedAt)}` }))
-            .filter((x) => !a || x.value.startsWith(a)),
-        run: async (a) => {
-          if (!a) return this.printConversations();
-          await this.resume(a);
-        },
-      },
-      { name: 'branch', aliases: ['fork'], ws: true, args: '[başlık]', description: 'konuşmayı buradan dallandır (yeni oturum, öncekisi korunur)', run: (a) => this.branch(a) },
-      { name: 'history', ws: true, description: 'bu oturumun turları', run: () => this.history() },
-      {
-        name: 'rewind',
-        aliases: ['undo'],
-        ws: true,
-        args: '[tur]',
-        description: 'bir turun öncesine dön: uygulanan değişiklikleri ve sonraki turları geri al',
-        complete: (a) => (this.conversation?.turns ?? []).map((t) => ({ value: String(t.n), label: `#${t.n}`, description: t.input.split('\n')[0].slice(0, 60) })).filter((x) => x.value.startsWith(a)).reverse(),
-        run: (a) => this.rewind(a),
-      },
-      {
-        name: 'worktree',
-        aliases: ['wt'],
-        ws: true,
-        args: '[new <ad>|list|diff|merge|commit|exit|remove <ad>]',
-        description: 'git worktree: ayrı dalda çalış, farkı gör, birleştir',
-        complete: (a) => {
-          const parts = a.split(/\s+/);
-          const subs: Array<[string, string]> = [['new ', 'yeni worktree + dal'], ['list', 'listele'], ['diff ', 'farkı göster'], ['merge ', 'ana dala birleştir'], ['commit ', 'değişiklikleri kaydet'], ['exit', 'ana depoya dön'], ['remove ', 'sil']];
-          if (parts.length <= 1) return subs.filter(([v]) => v.startsWith(parts[0])).map(([v, d]) => ({ value: v, label: v.trim(), description: d }));
-          if (['diff', 'merge', 'commit', 'remove', 'rm'].includes(parts[0]) && this.app) {
-            try {
-              return this.currentWorktrees().filter((w) => w.slug.startsWith(parts[1])).map((w) => ({ value: `${parts[0]} ${w.slug}`, label: w.slug, description: w.branch }));
-            } catch {
-              return [];
-            }
-          }
-          return [];
-        },
-        run: (a) => this.worktreeCommand(a),
-      },
-      {
-        name: 'clear',
-        aliases: ['new'],
-        description: 'ekranı temizle ve yeni oturum başlat (önceki kayıtlı kalır)',
-        run: () => {
-          this.askHistory = [];
-          this.conversation = undefined;
-          if (this.screen.interactive) this.screen.write('\x1b[2J\x1b[H');
-          this.out(color.dim('Yeni oturum başladı (öncekine /resume ile dönebilirsiniz).'));
-        },
-      },
-      {
-        name: 'exit',
-        aliases: ['quit', 'q'],
-        description: 'çık',
-        run: () => {
-          this.exitRequested = true;
-        },
-      },
-    ];
-    return list;
-  }
 }
 
 /** Merge a probe result into the per-user capability cache (shared by all workspaces). */

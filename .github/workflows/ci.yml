@@ -31,6 +31,8 @@ jobs:
       - run: npm ci
       - name: Tip kontrolü (strict)
         run: npm run typecheck
+      - name: ESLint (yüzen promise, kullanılmayan kod, güvensiz kalıplar)
+        run: npm run lint
       - name: Çalışma zamanı bağımlılığı olmamalı
         run: node -e "const p=require('./package.json');const d=Object.keys(p.dependencies||{});if(d.length){console.error('runtime deps:',d);process.exit(1)}"
       - name: npm paket içeriği (testler ve kaynaklar pakete girmemeli)
