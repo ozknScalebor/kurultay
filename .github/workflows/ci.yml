@@ -117,6 +117,25 @@ jobs:
           path: test-output.tap
           retention-days: 14
 
+  # 5b) sample projects: every eval task must fail on the base project and pass with its reference solution
+  samples:
+    name: Örnek projeler (Java 8 + C++17 görev setleri)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '8' }
+      - run: npm ci
+      - run: npm run build
+      - name: java-envanter (JDK 8, --validate)
+        run: node bin/kurultay.js eval samples/evals/java-envanter --validate
+      - name: cpp-telemetri (GCC + ASan/UBSan, --validate)
+        run: node bin/kurultay.js eval samples/evals/cpp-telemetri --validate
+
   # 6) offline distributables per platform (tarball + portable bundle with its own Node)
   package:
     name: Offline paket (${{ matrix.os }})
@@ -153,7 +172,7 @@ jobs:
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]'))
-    needs: [coverage, package]
+    needs: [coverage, package, samples]
     runs-on: ubuntu-latest
     permissions:
       contents: write

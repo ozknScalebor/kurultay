@@ -316,7 +316,7 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.overlay.write(path, content);
       ctx.writtenFiles?.add(path);
       ctx.bus?.emitEvent('tool.write', { source: ctx.workerId, data: { path } });
-      const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp))].filter(Boolean).join('\n');
+      const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp, { javaRelease: ctx.config.tools.javaRelease }))].filter(Boolean).join('\n');
       return { output: `${before !== undefined ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)${warn ? '\n' + warn : ''}` };
     },
   },
@@ -351,7 +351,7 @@ const TOOLS: Record<string, ToolDef> = {
         ctx.overlay.write(path, next);
         ctx.writtenFiles?.add(path);
         ctx.bus?.emitEvent('tool.edit', { source: ctx.workerId, data: { path } });
-        const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp))].filter(Boolean).join('\n');
+        const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp, { javaRelease: ctx.config.tools.javaRelease }))].filter(Boolean).join('\n');
         return { output: `${r.note}Düzenlendi: ${path}${warn ? '\n' + warn : ''}` };
       } catch (e) {
         if (e instanceof EditError) {

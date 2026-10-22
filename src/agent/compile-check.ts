@@ -168,7 +168,7 @@ export interface SyntaxCheckResult {
  * Check one edited file inside the worker's sandbox view. Never throws; a
  * missing compiler or timeout just means "not checked".
  */
-export async function syntaxCheck(path: string, overlay: Overlay, materializer: Materializer, cfg: SyntaxCheckConfig, signal?: AbortSignal, lsp?: LspConfig): Promise<SyntaxCheckResult> {
+export async function syntaxCheck(path: string, overlay: Overlay, materializer: Materializer, cfg: SyntaxCheckConfig, signal?: AbortSignal, lsp?: LspConfig, opts: { javaRelease?: number } = {}): Promise<SyntaxCheckResult> {
   if (cfg === 'off') return { checked: false, errors: [] };
   const ext = extname(path).toLowerCase();
   const root = materializer.root;
@@ -195,7 +195,7 @@ export async function syntaxCheck(path: string, overlay: Overlay, materializer: 
       );
     }
     if (C_EXT.has(ext) || CXX_EXT.has(ext)) return await checkC(path, ext, overlay, materializer, root, signal);
-    if (ext === '.java') return await checkJava(path, overlay, materializer, signal);
+    if (ext === '.java') return await checkJava(path, overlay, materializer, signal, opts.javaRelease);
   } catch {
     return { checked: false, errors: [] };
   }
@@ -281,7 +281,33 @@ function isCppHeaderContent(s: string): boolean {
   return /\b(class|namespace|template\s*<|std::|public:|private:|nullptr|constexpr)\b/.test(s);
 }
 
-async function checkJava(path: string, overlay: Overlay, materializer: Materializer, signal?: AbortSignal): Promise<SyntaxCheckResult> {
+/** Major version of the local javac (8 for "javac 1.8.0_402", 21 for "javac 21.0.2"). */
+let javacMajorCache: number | undefined;
+export function javacMajor(): number {
+  if (javacMajorCache === undefined) {
+    try {
+      const v = execFileSync('javac', ['-version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
+      javacMajorCache = parseJavacVersion(v);
+    } catch (e) {
+      javacMajorCache = parseJavacVersion(String((e as { stderr?: string }).stderr ?? ''));
+    }
+  }
+  return javacMajorCache;
+}
+
+export function parseJavacVersion(text: string): number {
+  const m = /javac\s+(?:1\.)?(\d+)/.exec(text);
+  return m ? Number(m[1]) : 0;
+}
+
+/** Flags that make javac reject language features / APIs newer than `release` (Java 8 projects). */
+export function javaReleaseArgs(release: number | undefined, major: number): string[] {
+  if (!release) return [];
+  if (major >= 9) return ['--release', String(release), '-Xlint:-options'];
+  return ['-source', release >= 9 ? String(release) : `1.${release}`, '-target', release >= 9 ? String(release) : `1.${release}`];
+}
+
+async function checkJava(path: string, overlay: Overlay, materializer: Materializer, signal?: AbortSignal, release?: number): Promise<SyntaxCheckResult> {
   if (!hasTool('javac')) return { checked: false, errors: [] };
   return materializer.execute(
     overlay,
@@ -292,7 +318,7 @@ async function checkJava(path: string, overlay: Overlay, materializer: Materiali
       const libs = ['lib', 'libs'].map((d) => join(cwd, d)).filter((d) => existsSync(d));
       const cp = libs.length ? ['-cp', libs.map((d) => join(d, '*')).join(process.platform === 'win32' ? ';' : ':')] : [];
       try {
-        const args = ['-proc:none', '-nowarn', '-encoding', 'UTF-8', '-d', out, '-sourcepath', srcRoot, ...cp, abs];
+        const args = ['-proc:none', '-nowarn', '-encoding', 'UTF-8', ...javaReleaseArgs(release, javacMajor()), '-d', out, '-sourcepath', srcRoot, ...cp, abs];
         const r = await runShell(['javac', ...args].map(shellQuote).join(' '), cwd, 60_000, signal);
         if (r.timedOut) return { checked: false, errors: [] };
         return { checked: true, tool: 'javac', errors: relevantErrors(materializer.rewriteOutput(r.output), path, 'java') };

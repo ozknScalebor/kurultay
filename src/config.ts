@@ -126,6 +126,8 @@ export interface ToolsConfig {
    * local compiler, Java via javac), "off", or {".ext": "command {file}"}
    */
   syntaxCheck: 'auto' | 'off' | Record<string, string>;
+  /** Java projects that must stay on an older Java: javac --release N in the post-edit check (e.g. 8) */
+  javaRelease?: number;
   sandbox: { size: number; exclude: string[]; link: string[] };
   /** "deny" (default): denyPatterns only; "allow": every command segment must match the allow-list */
   commandPolicy?: 'deny' | 'allow';
@@ -310,14 +312,25 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
       'Yapılandırma bulunamadı. Proje kökünde "kurultay init" çalıştırın veya kurultay.config.json oluşturun.',
     );
   }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    throw new ConfigError(`${path} okunamadı: ${(e as Error).message}`);
+  let raw = readJson(path);
+  // a project config without endpoints (build/test commands, rules) extends the user's config
+  const home = join(kurultayHome(), 'config.json');
+  const eps = (raw as { endpoints?: unknown[] } | null)?.endpoints;
+  if (resolve(path) !== resolve(home) && (!Array.isArray(eps) || !eps.length) && existsSync(home)) {
+    const base = readJson(home) as Record<string, unknown>;
+    raw = deepMerge(base, raw as Record<string, unknown>);
+    (raw as { endpoints?: unknown[] }).endpoints = base.endpoints as unknown[];
   }
   const config = parseConfig(raw);
   return { config, path };
+}
+
+function readJson(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new ConfigError(`${path} okunamadı: ${(e as Error).message}`);
+  }
 }
 
 export function parseConfig(raw: unknown): KurultayConfig {

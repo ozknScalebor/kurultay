@@ -92,7 +92,14 @@ export function loadSuite(dir: string): EvalSuite {
 
 function copyProject(src: string, dst: string): void {
   mkdirSync(dst, { recursive: true });
-  cpSync(src, dst, { recursive: true, filter: (p) => !/[\\/](\.kurultay|node_modules)([\\/]|$)/.test(p.slice(src.length)) });
+  // build outputs are not copied: a CMakeCache.txt with absolute paths breaks the copy, stale classes hide errors
+  cpSync(src, dst, {
+    recursive: true,
+    filter: (p) => {
+      const rel = p.slice(src.length);
+      return !/[\\/](\.kurultay|node_modules)([\\/]|$)/.test(rel) && !/^[\\/](\.build|build|out|target|cmake-build-[^\\/]*)([\\/]|$)/.test(rel);
+    },
+  });
 }
 
 function addHidden(suiteDir: string, task: EvalTask, work: string): void {
