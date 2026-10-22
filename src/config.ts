@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { LspConfig } from './lsp/client.js';
+import type { McpConfig } from './mcp/manager.js';
 
 export type Role = 'planner' | 'coder' | 'summarizer' | 'reviewer' | 'judge' | 'fast';
 export const ALL_ROLES: Role[] = ['planner', 'coder', 'summarizer', 'reviewer', 'judge', 'fast'];
@@ -172,6 +174,10 @@ export interface KurultayConfig {
   skills: SkillsConfig;
   llm: LlmConfig;
   embeddings?: EmbeddingsConfig;
+  /** MCP servers whose tools the workers may use: {"servers": {"name": {"command": "...", "args": []}}} */
+  mcp?: McpConfig;
+  /** LSP servers for diagnostics after edits: {"servers": {"clangd": {"command": "clangd", "extensions": [".c", ".cpp", ".h"]}}} */
+  lsp?: LspConfig;
   /** UI language */
   language: 'tr' | 'en';
   /** where per-project state lives (relative to project root) */

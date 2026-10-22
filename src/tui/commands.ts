@@ -257,7 +257,19 @@ export function buildCommands(con: KurultayConsole): Command[] {
           con.out(`plan onayı: ${con.settings.planApproval ? 'açık – her görevde plan gösterilir' : 'kapalı'}`);
         } },
       { name: 'continue-run', aliases: ['devam'], ws: true, args: '[numara|oturum]', description: 'yarıda kalan / bütçesi dolan görevi kaldığı yerden sürdür', run: (a) => con.continueRun(a.trim()) },
-      { name: 'stats', ws: true, description: 'son görevin model başına istek/token/süre tablosu', run: () => con.stats() },
+      {
+      name: 'mcp',
+      ws: true,
+      args: '[restart]',
+      description: 'MCP sunucularının araçları (config: mcp.servers); restart = yeniden başlat',
+      run: async (a) => {
+        if (a.trim() === 'restart') await con.startMcp();
+        const specs = con.mcp?.specs() ?? [];
+        if (!specs.length) return con.out(color.dim('MCP aracı yok. kurultay.config.json içine "mcp": {"servers": {"ad": {"command": "...", "args": []}}} ekleyin.'));
+        for (const t of specs) con.out(`  ${color.cyan(t.function.name)}${con.mcp!.isReadOnly(t.function.name) ? color.dim(' (salt okunur)') : ''}  ${t.function.description}`);
+      },
+    },
+    { name: 'stats', ws: true, description: 'son görevin model başına istek/token/süre tablosu', run: () => con.stats() },
       { name: 'dry-run', args: '[on|off]', description: 'değişiklikleri projeye yazma, yalnızca diff üret', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => {
           con.settings.dryRun = con.onOff(a, con.settings.dryRun);
           con.out(`dry-run: ${con.settings.dryRun ? 'açık' : 'kapalı'}`);

@@ -9,6 +9,7 @@ import { estimateTokens, truncateMiddle, tryExtractJson } from '../util/text.js'
 import { LoopGuard } from './loop-guard.js';
 import { TOOLSHIM_SCHEMA } from '../llm/schemas.js';
 import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
+import type { ExternalTools } from '../mcp/manager.js';
 import { executeTool, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
 
@@ -112,7 +113,7 @@ export class AgentWorker {
     private readonly spec: WorkerSpec,
     private readonly router: Router,
     private readonly cfg: KurultayConfig,
-    deps: { index?: ProjectIndex; materializer: Materializer; root: string; bus?: EventBus; signal?: AbortSignal },
+    deps: { index?: ProjectIndex; materializer: Materializer; root: string; bus?: EventBus; signal?: AbortSignal; external?: ExternalTools },
     private readonly bus = deps.bus,
     private readonly signal = deps.signal,
   ) {
@@ -137,6 +138,7 @@ export class AgentWorker {
       readFiles: this.touched.read,
       writtenFiles: this.touched.modified,
       staleFiles: this.staleFiles,
+      external: deps.external,
     };
     this.guard = new LoopGuard({ maxConsecutiveErrors: cfg.orchestrator.maxConsecutiveErrors ?? 6 });
   }
@@ -166,7 +168,7 @@ export class AgentWorker {
       if (cat) parts.push(cat);
       for (const s of sk.registry.visible()) if (!files || SkillRegistry.matchesFiles(s, files)) this.advertised.add(s.name);
     }
-    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills })));
+    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external })));
     return parts.join('\n\n');
   }
 
@@ -250,7 +252,7 @@ export class AgentWorker {
   private async callModel(): Promise<ChatResult> {
     const req = () => ({
       messages: this.messages,
-      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills }) : undefined,
+      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external }) : undefined,
       temperature: 0.2,
       purpose: `worker:${this.spec.id}`,
       signal: this.signal,
@@ -332,7 +334,7 @@ export class AgentWorker {
    */
   private async toolshim(text: string): Promise<ParsedCall[]> {
     if (!text.trim() || text.length > 20_000) return [];
-    const names = toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills }).map((t) => t.function.name);
+    const names = toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external }).map((t) => t.function.name);
     // only worth a model call when the prose looks like an attempted tool call
     if (!names.some((n) => text.includes(n)) && !/[{`]/.test(text)) return [];
     try {
@@ -341,7 +343,7 @@ export class AgentWorker {
           messages: [
             {
               role: 'user',
-              content: `An AI coding agent replied with plain text instead of a tool call. Extract the tool call(s) it intends to make, using ONLY these tools:\n${toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills })}\n\nReturn ONLY JSON: {"calls":[{"name":"...","arguments":{...}}]} – return {"calls":[]} if the text does not clearly intend a tool action (e.g. it only asks a question or says it is done without calling finish).\n\nAgent text:\n${text}`,
+              content: `An AI coding agent replied with plain text instead of a tool call. Extract the tool call(s) it intends to make, using ONLY these tools:\n${toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external })}\n\nReturn ONLY JSON: {"calls":[{"name":"...","arguments":{...}}]} – return {"calls":[]} if the text does not clearly intend a tool action (e.g. it only asks a question or says it is done without calling finish).\n\nAgent text:\n${text}`,
             },
           ],
           temperature: 0,
