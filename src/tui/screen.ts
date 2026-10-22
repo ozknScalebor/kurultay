@@ -1,6 +1,8 @@
 import type { Readable, Writable } from 'node:stream';
 import { LineEditor, type Completer } from './editor.js';
-import { KeyParser, type Key } from './keys.js';
+import { KeyParser, fitWidth, type Key } from './keys.js';
+
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 export interface TermIO {
   input: Readable & { isTTY?: boolean; setRawMode?: (on: boolean) => unknown };
@@ -28,6 +30,11 @@ export class Screen {
   private typeahead: Key[] = [];
   readonly history: string[];
   onExitRequest: (() => void) | undefined;
+  /** status line shown under the prompt (workspace, branch, mode …) */
+  private footer: (() => string) | undefined;
+  private showFooter = true;
+  /** long-running operation indicator */
+  private activityState: { label: string; info?: () => string; started: number; frame: number; timer: NodeJS.Timeout; drawn: boolean } | undefined;
 
   constructor(
     private readonly io: TermIO,
@@ -60,19 +67,69 @@ export class Screen {
     this.io.output.write(s);
   }
 
-  /** Print text; when a prompt is on screen it is redrawn below the text. */
+  /** Print text; a prompt or activity line on screen is redrawn below the text. */
   print(s = ''): void {
     const text = s.endsWith('\n') ? s : s + '\n';
     if (this.interactive && this.editor) {
       this.clearInput();
       this.write(text.replace(/\n/g, '\r\n'));
       this.render();
-    } else this.write(this.interactive ? text.replace(/\n/g, '\r\n') : text);
+    } else if (this.interactive) {
+      this.clearActivity();
+      this.write(text.replace(/\n/g, '\r\n'));
+      this.drawActivity();
+    } else this.write(text);
   }
 
-  /** Read one line. Resolves null on EOF / Ctrl+D. */
-  readLine(prompt: string, completer?: Completer): Promise<string | null> {
+  /**
+   * Show a spinner line ("⠹ Görev · 12 sn · 3 istek sürüyor") until the returned
+   * function is called. Log lines printed meanwhile appear above it.
+   */
+  activity(label: string, info?: () => string): () => void {
+    if (!this.interactive) return () => undefined;
+    this.endActivity();
+    const timer = setInterval(() => {
+      if (!this.activityState) return;
+      this.activityState.frame++;
+      this.clearActivity();
+      this.drawActivity();
+    }, 120);
+    timer.unref?.();
+    this.activityState = { label, info, started: Date.now(), frame: 0, timer, drawn: false };
+    this.drawActivity();
+    return () => this.endActivity();
+  }
+
+  private endActivity(): void {
+    if (!this.activityState) return;
+    clearInterval(this.activityState.timer);
+    this.clearActivity();
+    this.activityState = undefined;
+  }
+
+  private clearActivity(): void {
+    if (this.activityState?.drawn) {
+      this.write('\r\x1b[2K');
+      this.activityState.drawn = false;
+    }
+  }
+
+  private drawActivity(): void {
+    const a = this.activityState;
+    if (!a || this.editor) return;
+    const secs = Math.floor((Date.now() - a.started) / 1000);
+    const extra = a.info?.() ?? '';
+    const line = `${SPINNER[a.frame % SPINNER.length]} ${a.label} · ${secs >= 60 ? `${Math.floor(secs / 60)} dk ${secs % 60} sn` : `${secs} sn`}${extra ? ` · ${extra}` : ''} · Ctrl+C iptal`;
+    this.write(`\x1b[36m${fitWidth(line, this.columns - 1)}\x1b[39m`);
+    a.drawn = true;
+  }
+
+  /** Read one line. Resolves null on EOF / Ctrl+D. `footer` is a status line drawn under the input. */
+  readLine(prompt: string, completer?: Completer, footer?: () => string): Promise<string | null> {
     this.prompt = prompt;
+    this.footer = footer;
+    this.showFooter = true;
+    this.clearActivity();
     if (!this.interactive) {
       this.write(prompt);
       return new Promise((resolve) => {
@@ -115,6 +172,7 @@ export class Screen {
   }
 
   close(): void {
+    this.endActivity();
     if (this.interactive) {
       this.write('\x1b[?2004l');
       this.io.input.setRawMode?.(false);
@@ -174,10 +232,10 @@ export class Screen {
       return this.render();
     }
     if (action.type === 'eof') return this.finish(null);
-    // submit: leave the final text on screen, without the menu
-    this.editor.menu = undefined;
+    // submit: leave the final text on screen, without menu and status line
     this.editor.set(action.text);
     this.editor.menu = undefined;
+    this.showFooter = false;
     this.render();
     const v = this.editor.view(this.prompt, this.columns);
     const down = v.rows.length - 1 - this.renderedCursorRow;
@@ -194,6 +252,7 @@ export class Screen {
     this.renderedCursorRow = 0;
     const p = this.pending;
     this.pending = undefined;
+    this.drawActivity();
     p?.(v);
   }
 
@@ -206,9 +265,14 @@ export class Screen {
   private render(): void {
     if (!this.editor) return;
     const v = this.editor.view(this.prompt, this.columns);
+    const rows = [...v.rows];
+    if (this.footer && this.showFooter) {
+      const f = this.footer();
+      if (f) rows.push(`\x1b[2m${fitWidth(f, this.columns - 1)}\x1b[22m`);
+    }
     this.clearInput();
-    this.write(v.rows.join('\r\n'));
-    const up = v.rows.length - 1 - v.cursorRow;
+    this.write(rows.join('\r\n'));
+    const up = rows.length - 1 - v.cursorRow;
     if (up > 0) this.write(`\x1b[${up}A`);
     this.write('\r');
     if (v.cursorCol > 0) this.write(`\x1b[${v.cursorCol}C`);
