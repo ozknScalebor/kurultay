@@ -181,6 +181,11 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
   stateDir: '.kurultay',
 };
 
+/** Per-user Kurultay folder (global config, capability cache, console history). KURULTAY_HOME overrides. */
+export function kurultayHome(): string {
+  return process.env.KURULTAY_HOME || join(homedir(), '.kurultay');
+}
+
 export const CONFIG_FILE_NAMES = ['kurultay.config.json', '.kurultay/config.json'];
 
 function interpolateEnv(value: unknown): unknown {
@@ -239,7 +244,7 @@ export function findConfigFile(projectRoot: string, explicit?: string): string |
     const p = join(projectRoot, n);
     if (existsSync(p)) return p;
   }
-  const home = join(homedir(), '.kurultay', 'config.json');
+  const home = join(kurultayHome(), 'config.json');
   if (existsSync(home)) return home;
   return undefined;
 }
