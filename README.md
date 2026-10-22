@@ -324,6 +324,8 @@ statik kontroller ─┬─ birim       (Linux/Windows/macOS × Node 20/22)
                                   └─ sürüm yayını (v* etiketi → GitHub Release)
 ```
 
+**Sürüm çıkarmak:** `v0.2.0` gibi bir etiket gönderin ya da `package.json` sürümünü artırıp commit mesajına `[release]` yazarak `main`e gönderin. Tüm testler geçtikten sonra Linux/Windows/macOS offline paketleri GitHub Release'e eklenir.
+
 Başarısız testler GitHub üzerinde hata notu (annotation) olarak, sonuç ve kapsam tabloları iş özeti (job summary) olarak görünür. `v0.2.0` gibi bir etiket gönderildiğinde her platformun offline paketi otomatik olarak Release'e eklenir.
 
 Lisans: MIT
