@@ -368,13 +368,15 @@ describe('Kurultay console', () => {
       { cwd: proj },
     );
     assert.equal(code, 0, out);
-    assert.match(out, /henüz görev çalıştırılmadı/);
+    assert.match(out, /Bu oturum: \d+ istek · [\d.K]+ giriş \/ [\d.K]+ çıkış token/, 'workspace analysis already used the models');
     assert.match(out, /Sürdürülecek yarım kalmış görev yok/);
     assert.match(out, /plan onayı: açık/);
     assert.match(out, /Plan \(\w+ modu[\s\S]*Plan onaylansın mı\?[\s\S]*kenar durumlarını da test et\nPlan geri bildirimle yeniden hazırlanıyor[\s\S]*Plan onaylansın mı\?/);
     assert.match(out, /Sonuç: completed/);
-    assert.match(out, /Tüketim: \d+ istek/);
-    assert.match(out, /Son görev: .* \d+ istek[\s\S]*Model[\s\S]*mock-coder/);
+    assert.match(out, /⟡ \d+ istek · [\d.K]+ giriş \/ [\d.K]+ çıkış token · en dolu bağlam \d+% \([\d.K]+\/[\d.K]+\) \(mock-/);
+    assert.match(out, /Son cevabın bağlamı: [▰▱]{10} \d+% /);
+    assert.match(out, /Model[│\s]+İstek[│\s]+Giriş[│\s]+Çıkış[│\s]+Ort\. yanıt[│\s]+En dolu bağlam[\s\S]*mock-coder-\w+@mock[│\s]+\d+[\s\S]*\d+% \/ 66K/);
+    assert.match(out, /Son görev: .* \d+ istek/);
     assert.match(out, /plan onayı: kapalı/);
   });
 

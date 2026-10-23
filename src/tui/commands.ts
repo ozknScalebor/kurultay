@@ -269,7 +269,7 @@ export function buildCommands(con: KurultayConsole): Command[] {
         for (const t of specs) con.out(`  ${color.cyan(t.function.name)}${con.mcp!.isReadOnly(t.function.name) ? color.dim(' (salt okunur)') : ''}  ${t.function.description}`);
       },
     },
-    { name: 'stats', ws: true, description: 'son görevin model başına istek/token/süre tablosu', run: () => con.stats() },
+    { name: 'stats', aliases: ['context', 'tokens'], args: '[reset]', description: 'harcanan token, istek ve model başına bağlam doluluğu (oturum + son görev)', complete: (a) => ('reset'.startsWith(a) ? [{ value: 'reset', label: 'reset', description: 'oturum sayaçlarını sıfırla' }] : []), run: (a) => con.stats(a) },
       { name: 'dry-run', args: '[on|off]', description: 'değişiklikleri projeye yazma, yalnızca diff üret', complete: (a) => ['on', 'off'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x })), run: (a) => {
           con.settings.dryRun = con.onOff(a, con.settings.dryRun);
           con.out(`dry-run: ${con.settings.dryRun ? 'açık' : 'kapalı'}`);
