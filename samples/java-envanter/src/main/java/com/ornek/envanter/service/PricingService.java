@@ -6,7 +6,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * Prices are BigDecimal with 2 decimals, rounded HALF_UP (kuruş).
+ * Prices are BigDecimal with 2 decimals, rounded HALF_UP (to the kuruş).
  * total = subtotal - tier discount + VAT, VAT per line on the discounted amount.
  */
 public class PricingService {
