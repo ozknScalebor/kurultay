@@ -131,7 +131,7 @@ jobs:
             cxx: clang++
             generator: Ninja
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Compiler and generator
         if: matrix.cxx
