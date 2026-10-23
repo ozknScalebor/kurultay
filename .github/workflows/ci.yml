@@ -119,14 +119,22 @@ jobs:
 
   # 5b) sample projects: every eval task must fail on the base project and pass with its reference solution
   samples:
-    name: Örnek projeler (${{ matrix.os }})
+    name: Örnek projeler (${{ matrix.os }}${{ matrix.cxx && format(', {0}', matrix.cxx) || '' }})
     needs: static
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]   # GCC + ASan/UBSan, MSVC (multi-config generator)
+        include:
+          - os: ubuntu-latest                 # GCC + ASan/UBSan
+          - os: windows-latest                # MSVC, Visual Studio (multi-config) generator
+          - os: windows-latest                # clang++ + Ninja, as on a developer PC with LLVM
+            cxx: clang++
+            generator: Ninja
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      CXX: ${{ matrix.cxx }}
+      CMAKE_GENERATOR: ${{ matrix.generator }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
