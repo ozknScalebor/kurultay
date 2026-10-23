@@ -36,3 +36,4 @@ add_executable(telemetri_tests ${TELEMETRI_TESTS})
 target_link_libraries(telemetri_tests PRIVATE telemetri)
 target_include_directories(telemetri_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME telemetri_tests COMMAND telemetri_tests)
+set_tests_properties(telemetri_tests PROPERTIES TIMEOUT 120) # a hang must fail, not block the run
