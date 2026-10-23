@@ -109,7 +109,7 @@ function loadSkillFile(file: string, source: string, scope: Skill['scope'], diag
   try {
     text = readFileSync(file, 'utf8');
   } catch (e) {
-    diagnostics.push({ level: 'warning', path: file, message: `okunamadı: ${(e as Error).message}` });
+    diagnostics.push({ level: 'warning', path: file, message: `unreadable: ${(e as Error).message}` });
     return undefined;
   }
   const fm = parseFrontmatter(text);
@@ -122,15 +122,15 @@ function loadSkillFile(file: string, source: string, scope: Skill['scope'], diag
   if (!description) {
     // a plain markdown file without description is not a skill (no warning);
     // a declared SKILL.md must have one.
-    if (isFolder) diagnostics.push({ level: 'error', path: file, message: 'description zorunlu (Agent Skills spesifikasyonu)' });
+    if (isFolder) diagnostics.push({ level: 'error', path: file, message: 'description is required (Agent Skills specification)' });
     if (!isFolder || !fm.body.trim()) return undefined;
   }
-  if (name.length > MAX_NAME) diagnostics.push({ level: 'warning', path: file, message: `name ${MAX_NAME} karakteri aşıyor` });
-  if (!NAME_RE.test(name)) diagnostics.push({ level: 'warning', path: file, message: `name yalnızca küçük harf, rakam ve tek tire içermeli: "${name}"` });
-  if (isFolder && fmString(d.name) && name !== basename(dir)) diagnostics.push({ level: 'warning', path: file, message: `name ("${name}") klasör adıyla ("${basename(dir)}") aynı olmalı` });
-  if (description.length > MAX_DESC) diagnostics.push({ level: 'warning', path: file, message: `description ${MAX_DESC} karakteri aşıyor` });
+  if (name.length > MAX_NAME) diagnostics.push({ level: 'warning', path: file, message: `name is longer than ${MAX_NAME} characters` });
+  if (!NAME_RE.test(name)) diagnostics.push({ level: 'warning', path: file, message: `name may only contain lowercase letters, digits and single hyphens: "${name}"` });
+  if (isFolder && fmString(d.name) && name !== basename(dir)) diagnostics.push({ level: 'warning', path: file, message: `name ("${name}") must match the folder name ("${basename(dir)}")` });
+  if (description.length > MAX_DESC) diagnostics.push({ level: 'warning', path: file, message: `description is longer than ${MAX_DESC} characters` });
   const tokens = estimateTokens(fm.body);
-  if (tokens > 5000) diagnostics.push({ level: 'warning', path: file, message: `gövde ~${tokens} token; spesifikasyon 5000 altını öneriyor (ayrıntıyı references/ altına taşıyın)` });
+  if (tokens > 5000) diagnostics.push({ level: 'warning', path: file, message: `body is ~${tokens} tokens; the spec recommends under 5000 (move details to references/)` });
   return {
     name,
     description: description || fm.body.trim().split('\n').find((l) => l.trim() && !l.startsWith('#'))?.trim().slice(0, 200) || name,
@@ -211,7 +211,7 @@ export class SkillRegistry {
     for (const p of opts.extraPaths ?? []) {
       const abs = isAbsolute(p) ? p : resolve(projectRoot, p.replace(/^~(?=$|[\\/])/, home));
       if (!existsSync(abs)) {
-        diagnostics.push({ level: 'warning', path: abs, message: 'skill yolu bulunamadı' });
+        diagnostics.push({ level: 'warning', path: abs, message: 'skill path not found' });
         continue;
       }
       if (statSync(abs).isDirectory()) found.push(...scanRoot(abs, p, 'config', diagnostics));
@@ -242,7 +242,7 @@ export class SkillRegistry {
       if (disabled.has(s.name.toLowerCase())) continue;
       const prev = byName.get(s.name);
       if (prev) {
-        diagnostics.push({ level: 'warning', path: s.path, message: `"${s.name}" adı çakışıyor; ${prev.source} içindeki kullanılıyor` });
+        diagnostics.push({ level: 'warning', path: s.path, message: `name "${s.name}" is taken; using the one from ${prev.source}` });
         continue;
       }
       byName.set(s.name, s);
@@ -323,8 +323,8 @@ ${list.map((s) => `  <skill><name>${esc(s.name)}</name><description>${esc(s.desc
   readFile(s: Skill, path: string, maxTokens = 8000): string {
     const target = normalize(join(s.dir, path));
     const rel = relative(s.dir, target);
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`skill klasörü dışındaki yol reddedildi: ${path}`);
-    if (!existsSync(target) || !statSync(target).isFile()) throw new Error(`skill dosyası yok: ${path}. Mevcut: ${s.files.join(', ') || '-'}`);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`path outside the skill folder rejected: ${path}`);
+    if (!existsSync(target) || !statSync(target).isFile()) throw new Error(`no such skill file: ${path}. Available: ${s.files.join(', ') || '-'}`);
     return truncateTokens(readFileSync(target, 'utf8'), maxTokens);
   }
 }
@@ -349,14 +349,14 @@ export function selectSkillsFor(reg: SkillRegistry, args: { text: string; files:
     preload.push(s);
     reasons[s.name] = why;
   };
-  for (const n of args.explicit ?? []) add(reg.get(n), 'açıkça seçildi');
-  for (const s of reg.mentioned(args.text)) add(s, '$ ile anıldı');
+  for (const n of args.explicit ?? []) add(reg.get(n), 'selected explicitly');
+  for (const s of reg.mentioned(args.text)) add(s, 'mentioned with $');
   const max = args.maxPreload ?? 3;
   for (const s of reg.visible()) if (s.always && SkillRegistry.matchesFiles(s, args.files)) add(s, 'always');
-  for (const s of reg.triggered(args.text)) if (preload.length < max + (args.explicit?.length ?? 0) && SkillRegistry.matchesFiles(s, args.files)) add(s, 'anahtar kelime');
+  for (const s of reg.triggered(args.text)) if (preload.length < max + (args.explicit?.length ?? 0) && SkillRegistry.matchesFiles(s, args.files)) add(s, 'keyword match');
   for (const n of args.planned ?? []) {
     const s = reg.get(n);
-    if (s && !s.hidden && preload.length < max + (args.explicit?.length ?? 0)) add(s, 'planlayıcı seçti');
+    if (s && !s.hidden && preload.length < max + (args.explicit?.length ?? 0)) add(s, 'chosen by the planner');
   }
   const recommended = reg
     .visible()
@@ -372,21 +372,21 @@ export function selectSkillsFor(reg: SkillRegistry, args: { text: string; files:
 export const SKILL_TEMPLATE = (name: string, description: string) => `---
 name: ${name}
 description: ${description}
-# keywords: [anahtar, kelimeler]     # görevde geçerse otomatik yüklenir
-# paths: ["src/drivers/**"]          # yalnızca bu dosyalarla çalışırken önerilir
-# always: false                      # her çalışana baştan yükle
-# disable-model-invocation: false    # true → yalnızca --skill veya $${name} ile
+# keywords: [some, keywords]        # loaded automatically when the task mentions them
+# paths: ["src/drivers/**"]          # suggested only when working on these files
+# always: false                      # preload for every worker
+# disable-model-invocation: false    # true → only with --skill or $${name}
 ---
 # ${name}
 
-Bu skill'in ne zaman kullanılacağını ve adımlarını yazın.
+Describe when to use this skill and its steps.
 
-## Adımlar
+## Steps
 1. ...
 2. ...
 
-## Doğrulama
-- Derleme ve testleri çalıştırın.
+## Verification
+- Run the build and the tests.
 
-Ayrıntılı başvuru dokümanlarını \`references/\`, betikleri \`scripts/\`, şablonları \`assets/\` altına koyun; buradan göreli yolla anın.
+Put detailed reference docs in \`references/\`, scripts in \`scripts/\` and templates in \`assets/\`; refer to them by relative path.
 `;

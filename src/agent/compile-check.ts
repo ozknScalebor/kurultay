@@ -338,5 +338,5 @@ function shellQuote(s: string): string {
 /** Text appended to edit tool results. */
 export function renderSyntaxResult(path: string, r: SyntaxCheckResult): string {
   if (!r.checked || !r.errors.length) return '';
-  return `⚠ ${r.tool} ${path} için derleme hatası buldu (düzeltin):\n${r.errors.slice(0, 8).join('\n')}`;
+  return `⚠ ${r.tool} found compile errors in ${path} (fix them):\n${r.errors.slice(0, 8).join('\n')}`;
 }

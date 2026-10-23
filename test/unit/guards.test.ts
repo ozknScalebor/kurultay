@@ -79,14 +79,14 @@ describe('post-edit syntax check', () => {
   it('warns when an edit makes the balance worse, not when it was already off', () => {
     const before = 'int f() {\n  return 1;\n}\n';
     assert.equal(postEditCheck('src/a.c', before, 'int f() {\n  return 2;\n}\n'), '');
-    assert.match(postEditCheck('src/a.c', before, 'int f() {\n  return (2;\n'), /\{ \} dengesi \+1, \( \) dengesi \+1/);
-    assert.match(postEditCheck('src/a.ts', undefined, 'const a = [1, 2;'), /\[ \] dengesi \+1/);
+    assert.match(postEditCheck('src/a.c', before, 'int f() {\n  return (2;\n'), /\{ \} balance \+1, \( \) balance \+1/);
+    assert.match(postEditCheck('src/a.ts', undefined, 'const a = [1, 2;'), /\[ \] balance \+1/);
     assert.equal(postEditCheck('src/a.c', 'int f() {', 'int g() {'), '', 'pre-existing imbalance is not blamed on the edit');
-    assert.match(postEditCheck('src/a.c', '}', '}}'), /dengesi -2/);
+    assert.match(postEditCheck('src/a.c', '}', '}}'), /balance -2/);
   });
 
   it('validates JSON and skips unknown or bracket-free languages', () => {
-    assert.match(postEditCheck('package.json', '{"a":1}', '{"a":1,}'), /geçerli JSON değil/);
+    assert.match(postEditCheck('package.json', '{"a":1}', '{"a":1,}'), /is not valid JSON/);
     assert.equal(postEditCheck('package.json', '{"a":1}', '{"a":2}'), '');
     assert.equal(postEditCheck('broken.json', '{', '{{'), '', 'already invalid JSON is not reported');
     assert.equal(postEditCheck('new.json', undefined, '[1]'), '');
@@ -156,12 +156,12 @@ describe('read-before-write guard and path resolution', () => {
     const c = ctx(root);
     const blind = await executeTool('write_file', { path: 'src/app.c', content: 'x' }, c);
     assert.equal(blind.isError, true);
-    assert.match(blind.output, /read_file ile okumalısınız/);
+    assert.match(blind.output, /with read_file before/);
     assert.equal((await executeTool('delete_file', { path: 'src/app.c' }, c)).isError, true);
     assert.equal((await executeTool('write_file', { path: 'src/new.c', content: 'int n;' }, c)).isError, undefined, 'new files are fine');
     assert.equal((await executeTool('write_file', { path: 'src/new.c', content: 'int m;' }, c)).isError, undefined, 'own files are fine');
     await executeTool('read_file', { path: 'src/app.c' }, c);
-    assert.match((await executeTool('write_file', { path: 'src/app.c', content: 'int main(void){return 1;}\n' }, c)).output, /Güncellendi/);
+    assert.match((await executeTool('write_file', { path: 'src/app.c', content: 'int main(void){return 1;}\n' }, c)).output, /Updated/);
     const off = ctx(tmpProject(files), false);
     assert.equal((await executeTool('write_file', { path: 'src/app.c', content: 'x' }, off)).isError, undefined, 'guard can be disabled');
   });
@@ -169,17 +169,17 @@ describe('read-before-write guard and path resolution', () => {
   it('lets exact edits through but requires a re-read after a failed match', async () => {
     const root = tmpProject(files);
     const c = ctx(root);
-    assert.match((await executeTool('edit_file', { path: 'src/app.c', old_text: 'return 0;', new_text: 'return 2;' }, c)).output, /Düzenlendi/);
+    assert.match((await executeTool('edit_file', { path: 'src/app.c', old_text: 'return 0;', new_text: 'return 2;' }, c)).output, /Edited/);
     const miss = await executeTool('edit_file', { path: 'src/drivers/uart.c', old_text: 'return 42;', new_text: 'return 1;' }, c);
     assert.equal(miss.isError, true);
-    assert.match(miss.output, /yeniden okuyun/);
+    assert.match(miss.output, /read the file again/i);
     const stale = await executeTool('edit_file', { path: 'src/drivers/uart.c', old_text: 'return 0;', new_text: 'return 1;' }, c);
     assert.equal(stale.isError, true);
-    assert.match(stale.output, /son düzenleme eşleşmedi/);
+    assert.match(stale.output, /did not match/);
     await executeTool('read_file', { path: 'src/drivers/uart.c' }, c);
-    assert.match((await executeTool('edit_file', { path: 'src/drivers/uart.c', old_text: 'return 0;', new_text: 'return 1;' }, c)).output, /Düzenlendi/);
+    assert.match((await executeTool('edit_file', { path: 'src/drivers/uart.c', old_text: 'return 0;', new_text: 'return 1;' }, c)).output, /Edited/);
     const same = await executeTool('edit_file', { path: 'src/app.c', old_text: 'x', new_text: 'x' }, c);
-    assert.match(same.output, /aynı/);
+    assert.match(same.output, /the same/);
   });
 
   it('appends syntax warnings and resolves unique basenames', async () => {
@@ -189,12 +189,12 @@ describe('read-before-write guard and path resolution', () => {
     assert.match(r.output, /src\/drivers\/uart\.c/);
     const broken = await executeTool('edit_file', { path: 'uart.c', old_text: '  return 0;\n}', new_text: '  return 0;' }, c);
     assert.match(broken.output, /src\/drivers\/uart\.c/);
-    assert.match(broken.output, /parantez dengesi bozuldu/);
+    assert.match(broken.output, /brackets in .* are unbalanced/);
     await executeTool('read_file', { path: 'cfg.json' }, c);
-    assert.match((await executeTool('write_file', { path: 'cfg.json', content: '{"a":' }, c)).output, /geçerli JSON değil/);
+    assert.match((await executeTool('write_file', { path: 'cfg.json', content: '{"a":' }, c)).output, /is not valid JSON/);
     const missing = await executeTool('read_file', { path: 'src/uart.h' }, c);
     assert.equal(missing.isError, true);
-    assert.match(missing.output, /Benzer dosyalar: src\/drivers\/uart\.c/);
+    assert.match(missing.output, /Similar files: src\/drivers\/uart\.c/);
   });
 });
 

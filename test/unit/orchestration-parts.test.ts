@@ -78,7 +78,7 @@ describe('council review', () => {
     ]);
     const r = await councilAnswer(router, 'Where is clamp?', 'context', { members: 2, contextTokens: 4000, language: 'Turkish' });
     assert.equal(r.members.length, 2);
-    assert.match(r.answer, /Nihai cevap/);
+    assert.match(r.answer, /Final answer/);
     assert.ok(r.chair);
     const single = await councilAnswer(router, 'q', 'c', { members: 1, contextTokens: 4000, language: 'English' });
     assert.equal(single.chair, undefined);
@@ -113,7 +113,7 @@ describe('planner', () => {
     const { router, bus } = await routerWith([{ id: 'x', quality: 'good', tools: true, ctx: 65536, handler: () => ({ content: 'no plan, sorry' }) }]);
     const fb = await makePlan(router, 'the task', 'ctx', { drafts: 1, contextTokens: 4000, bus });
     assert.deepEqual(fb.subtasks.map((s) => s.description), ['the task']);
-    assert.ok(bus.ofType('log.warn').some((e) => /geçerli plan/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /no valid plan/.test(e.message ?? '')));
     const many = Array.from({ length: 12 }, (_, i) => ({ id: `T${i}`, title: `t${i}`, depends_on: i === 0 ? ['T1'] : i === 1 ? ['T0'] : [] }));
     const { router: r2 } = await routerWith([{ id: 'y', quality: 'good', tools: true, ctx: 65536, handler: () => ({ content: JSON.stringify({ subtasks: many }) }) }]);
     const capped = await makePlan(r2, 't', 'c', { drafts: 1, contextTokens: 4000 });
@@ -138,7 +138,7 @@ describe('verification', () => {
     assert.match(renderVerify(brokenBuild), /build: ❌/);
     const skipped = await verifyOverlay(o, m, config(base));
     assert.deepEqual([skipped.skipped, skipped.ok], [true, true]);
-    assert.match(renderVerify(skipped), /tanımlı değil/);
+    assert.match(renderVerify(skipped), /No verification commands/);
     // the overlay content is what the commands see
     o.write('ok.txt', 'from-overlay');
     const sees = await verifyOverlay(o, m, config({ ...base, verify: { test: `node -e "process.exit(require('fs').readFileSync('ok.txt','utf8')==='from-overlay'?0:1)"` } }));
@@ -191,6 +191,6 @@ describe('orchestrator helpers', () => {
       },
       '--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-a\n+b\n',
     );
-    for (const want of ['**Durum:** incomplete', '(+1 / -1)', '🏆', '**[engelleyici]** leak', 'Düzeltme turu: 1', 'İnceleyen modeller: b@e — bağımsız', '1. düzeltme yeniden incelendi (c@e): engelleyici bulgu yok', 'adım 2: x@e → a@e (ilk token gelmedi)', '- add docs', 'çakışma: 1', '- g.c', '- c1']) assert.ok(md.includes(want), want);
+    for (const want of ['**Status:** incomplete', '(+1 / -1)', '🏆', '**[blocking]** leak', 'Fix rounds: 1', 'Reviewers: b@e – independent', 'fix 1 re-reviewed (c@e): no blocking findings', 'step 2: x@e → a@e (ilk token gelmedi)', '- add docs', 'conflicts: 1', '- g.c', '- c1']) assert.ok(md.includes(want), want);
   });
 });

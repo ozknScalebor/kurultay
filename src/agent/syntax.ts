@@ -54,7 +54,7 @@ export function postEditCheck(path: string, before: string | undefined, after: s
       try {
         JSON.parse(after);
       } catch (e) {
-        return `⚠ Düzenleme sonrası ${path} geçerli JSON değil: ${(e as Error).message}. Dosyayı okuyup düzeltin.`;
+        return `⚠ After the edit ${path} is not valid JSON: ${(e as Error).message}. Read the file and fix it.`;
       }
     }
     return '';
@@ -65,8 +65,8 @@ export function postEditCheck(path: string, before: string | undefined, after: s
   const problems: string[] = [];
   const names: Record<keyof Balance, string> = { curly: '{ }', paren: '( )', square: '[ ]' };
   for (const k of Object.keys(a) as Array<keyof Balance>) {
-    if (Math.abs(a[k]) > Math.abs(b[k])) problems.push(`${names[k]} dengesi ${a[k] > 0 ? '+' : ''}${a[k]}`);
+    if (Math.abs(a[k]) > Math.abs(b[k])) problems.push(`${names[k]} balance ${a[k] > 0 ? '+' : ''}${a[k]}`);
   }
   if (!problems.length) return '';
-  return `⚠ Düzenleme sonrası ${path} içinde parantez dengesi bozuldu (${problems.join(', ')}). Büyük olasılıkla eksik/fazla parantez var: ilgili bölgeyi read_file ile okuyup düzeltin.`;
+  return `⚠ After the edit the brackets in ${path} are unbalanced (${problems.join(', ')}). Probably a missing/extra bracket: read that region with read_file and fix it.`;
 }

@@ -12,9 +12,9 @@ import { caps, tmpProject } from '../helpers.js';
 describe('config', () => {
   const ep = { name: 'a', baseUrl: 'http://h:1/v1' };
   it('rejects invalid configurations with clear messages', () => {
-    assert.throws(() => parseConfig({}), /en az bir/);
-    assert.throws(() => parseConfig({ endpoints: [ep, ep] }), /tekrar/);
-    assert.throws(() => parseConfig({ endpoints: [{ name: 'bad name', baseUrl: 'http://h' }] }), /Geçersiz endpoint adı/);
+    assert.throws(() => parseConfig({}), /at least one endpoint/);
+    assert.throws(() => parseConfig({ endpoints: [ep, ep] }), /Duplicate endpoint name/);
+    assert.throws(() => parseConfig({ endpoints: [{ name: 'bad name', baseUrl: 'http://h' }] }), /Invalid endpoint name/);
     assert.throws(() => parseConfig({ endpoints: [{ name: 'a', baseUrl: 'ftp://h' }] }), /baseUrl/);
     assert.throws(() => parseConfig({ endpoints: [{ name: 'a', baseUrl: 'not a url' }] }), ConfigError);
     assert.throws(() => parseConfig({ endpoints: [ep], orchestrator: { defaultMode: 'chaos' } }), /defaultMode/);
@@ -36,7 +36,7 @@ describe('config', () => {
     writeFileSync(join(root, 'kurultay.config.json'), JSON.stringify({ endpoints: [{ name: 'top', baseUrl: 'http://h:2/v1' }] }));
     assert.equal(loadConfig(root).config.endpoints[0].name, 'top');
     writeFileSync(join(root, 'broken.json'), '{ nope');
-    assert.throws(() => loadConfig(root, join(root, 'broken.json')), /okunamadı/);
+    assert.throws(() => loadConfig(root, join(root, 'broken.json')), /could not read/);
     const empty = tmpProject({});
     mkdirSync(join(empty, 'sub'));
     if (!findConfigFile(empty)) assert.throws(() => loadConfig(empty), /kurultay init/);
@@ -69,7 +69,7 @@ describe('text utils', () => {
     assert.equal(estimateTokens(''), 0);
     assert.ok(estimateTokens('x'.repeat(360)) === 100);
     const t = truncateMiddle('a'.repeat(1000), 200);
-    assert.ok(t.length < 260 && t.includes('kırpıldı'));
+    assert.ok(t.length < 260 && t.includes('characters cut'));
     assert.equal(truncateMiddle('short', 100), 'short');
     assert.ok(truncateTokens('b'.repeat(10_000), 100).length < 500);
   });
@@ -159,8 +159,8 @@ describe('event bus and capability report', () => {
   });
   it('renders the capability markdown table with notes', () => {
     const md = renderCapabilitiesMarkdown({ version: 1, generatedAt: 'now', models: [caps('qwen', 'gpu1', { notes: ['slow'], nativeTools: false }), caps('down', 'gpu2', { reachable: false })] });
-    assert.match(md, /\| qwen@gpu1 \| ✅ \|/);
-    assert.match(md, /\| down@gpu2 \| ❌ \|/);
+    assert.match(md, /\| qwen@gpu1 \| yes \|/);
+    assert.match(md, /\| down@gpu2 \| no \|/);
     assert.match(md, /prompt/);
     assert.match(md, /\*\*qwen@gpu1\*\*: slow/);
   });

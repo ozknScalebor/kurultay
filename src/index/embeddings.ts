@@ -71,7 +71,7 @@ export async function resolveEmbedder(config: KurultayConfig, bus?: EventBus, si
       const ids = await new OpenAICompatClient(ep).listModels(signal ?? AbortSignal.timeout(5000));
       const m = ids.find((x) => EMBED_MODEL.test(x.id) && !/rerank/i.test(x.id));
       if (m) {
-        bus?.info('embeddings', `anlamsal arama modeli: ${m.id}@${ep.name}`);
+        bus?.info('embeddings', `semantic search model: ${m.id}@${ep.name}`);
         return clientEmbedder(ep, m.id, ec.timeoutMs);
       }
     } catch {

@@ -3,7 +3,7 @@ import { ALL_ROLES, DEFAULT_CONFIG, type KurultayConfig, type LlmConfig, type Mo
 import { Semaphore, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens } from '../util/text.js';
-import { OpenAICompatClient } from './client.js';
+import { OpenAICompatClient, clientFor } from './client.js';
 import type { ModelStats } from './stats.js';
 import { defaultCapabilities, type ModelCapabilities } from './models.js';
 import { LlmError, type ChatRequest, type ChatResult } from './types.js';
@@ -97,7 +97,7 @@ export class Router {
       };
       this.models.set(c.key, {
         caps: merged,
-        client: new OpenAICompatClient(ep),
+        client: clientFor(ep, override),
         override,
         health: { consecutiveFailures: 0, circuitOpenUntil: 0, successes: 0, failures: 0, ewmaMsPerToken: 0, consecutiveTimeouts: 0, timeouts: 0 },
       });
@@ -123,7 +123,7 @@ export class Router {
             try {
               ids = await new OpenAICompatClient(ep).listModels(signal);
             } catch (e) {
-              this.bus?.warn('router', `${ep.name}: model listesi alınamadı – ${(e as Error).message}`);
+              this.bus?.warn('router', `${ep.name}: could not list models – ${(e as Error).message}`);
             }
           }
           for (const m of ids) {
@@ -285,19 +285,19 @@ export class Router {
         const cooldown = base * Math.min(8, 2 ** (h.health.consecutiveTimeouts - 1));
         h.health.circuitOpenUntil = Math.max(h.health.circuitOpenUntil, Date.now() + cooldown);
         this.bus?.emitEvent('model.quarantine', { source: h.caps.key, message: e.message, data: { ms: cooldown } });
-        this.bus?.warn('router', `${h.caps.key} yanıt vermedi; ${Math.round(cooldown / 1000)} sn karantinada, işler diğer modellere aktarılıyor`, { error: e.message });
+        this.bus?.warn('router', `${h.caps.key} stopped answering; paused for ${Math.round(cooldown / 1000)} s, work moves to the other models`, { error: e.message });
         return;
       }
     }
     if (e.kind === 'auth' || e.kind === 'not_found') {
       h.health.circuitOpenUntil = Date.now() + 10 * 60_000;
-      this.bus?.warn('router', `${h.caps.key} devre dışı (10 dk): ${e.kind}`);
+      this.bus?.warn('router', `${h.caps.key} disabled for 10 min: ${e.kind}`);
       return;
     }
     if (h.health.consecutiveFailures >= CIRCUIT_THRESHOLD) {
       const cooldown = CIRCUIT_COOLDOWN_MS * Math.min(8, 2 ** (h.health.consecutiveFailures - CIRCUIT_THRESHOLD));
       h.health.circuitOpenUntil = Date.now() + cooldown;
-      this.bus?.warn('router', `${h.caps.key} devre kesici açık (${Math.round(cooldown / 1000)} sn)`, { error: e.message });
+      this.bus?.warn('router', `${h.caps.key} circuit breaker open (${Math.round(cooldown / 1000)} s)`, { error: e.message });
     }
   }
 
@@ -324,7 +324,7 @@ export class Router {
       if (structured) {
         const bigger = Math.min(ceiling, maxTokens * 2);
         if (bigger <= maxTokens * 1.2) return first;
-        this.bus?.info('router', `${h.caps.key} cevabı ${maxTokens} token sınırında kesildi; ${bigger} token ile yeniden isteniyor`);
+        this.bus?.info('router', `${h.caps.key} answer was cut at ${maxTokens} tokens; asking again with ${bigger}`);
         const again = await send(bigger);
         return { ...again, usage: { promptTokens: first.usage.promptTokens + again.usage.promptTokens, completionTokens: first.usage.completionTokens + again.usage.completionTokens } };
       }
@@ -352,7 +352,7 @@ export class Router {
     let timeouts = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (h.health.circuitOpenUntil > Date.now()) {
-        throw new LlmError(`${h.caps.key} devre kesici açık`, 'circuit_open', undefined, h.caps.key);
+        throw new LlmError(`${h.caps.key} circuit breaker open`, 'circuit_open', undefined, h.caps.key);
       }
       await slots.acquire(req.signal);
       // reasoning models spend part of the output budget on thinking – give them more room
@@ -394,7 +394,7 @@ export class Router {
         // server rejected json_schema → remember and retry right away with plain JSON mode
         if (err.kind === 'bad_request' && req.jsonSchema && h.caps.jsonSchema !== false && /response_format|json_schema|schema|guided|grammar/i.test(err.message)) {
           h.caps.jsonSchema = false;
-          this.bus?.info('router', `${h.caps.key} json_schema desteklemiyor; JSON moduna geçildi`);
+          this.bus?.info('router', `${h.caps.key} does not support json_schema; using JSON mode`);
           attempt--;
           continue;
         }
@@ -412,7 +412,7 @@ export class Router {
         slots.release();
       }
     }
-    throw lastErr ?? new LlmError('bilinmeyen hata', 'server', undefined, h.caps.key);
+    throw lastErr ?? new LlmError('unknown error', 'server', undefined, h.caps.key);
   }
 
   /**
@@ -421,7 +421,7 @@ export class Router {
    * until `recoveryWaitMs` elapses (wait and retry when the connection drops).
    */
   async chat(req: ChatRequest, opts: RouteOptions = {}): Promise<ChatResult> {
-    if (this.models.size === 0) throw new LlmError('Kayıtlı model yok – endpoint yapılandırmasını ve "kurultay probe" çıktısını kontrol edin', 'not_found');
+    if (this.models.size === 0) throw new LlmError('No registered model – check the endpoint configuration and the output of "kurultay probe"', 'not_found');
     const promptTokens = estimateTokens(req.messages.map((m) => m.content ?? '').join('\n')) + 512;
     const deadline = Date.now() + (opts.recoveryWaitMs ?? 10 * 60_000);
     const tried = new Set<string>();
@@ -449,7 +449,7 @@ export class Router {
       }
       const candidates = ordered.filter((h) => !opts.exclude?.includes(h.caps.key) && (!opts.only || opts.only.includes(h.caps.key)) && !tried.has(h.caps.key));
       if (!candidates.length && !lastErr && !this.rank(opts.role, { exclude: opts.exclude, only: opts.only, includeUnavailable: true }).length) {
-        throw new LlmError('İstenen kısıtlara uyan model yok', 'not_found');
+        throw new LlmError('No model matches the requested constraints', 'not_found');
       }
 
       for (const h of candidates) {
@@ -461,7 +461,7 @@ export class Router {
           lastErr = err;
           if (err.kind === 'aborted') throw err;
           tried.add(h.caps.key);
-          this.bus?.info('router', `${h.caps.key} başarısız (${err.kind}), sıradaki modele geçiliyor`);
+          this.bus?.info('router', `${h.caps.key} failed (${err.kind}), trying the next model`);
         }
       }
 
@@ -469,7 +469,7 @@ export class Router {
       if (!connectionTrouble || Date.now() >= deadline) break;
       round++;
       const wait = Math.min(60_000, (opts.recoveryIntervalMs ?? 5000) * 2 ** Math.min(round - 1, 4), Math.max(0, deadline - Date.now()));
-      this.bus?.warn('router', `Tüm modeller erişilemez durumda; ${Math.round(wait / 1000)} sn sonra tekrar denenecek`, { round });
+      this.bus?.warn('router', `All models are unreachable; retrying in ${Math.round(wait / 1000)} s`, { round });
       await sleep(wait, req.signal);
       tried.clear();
       // let open circuits be re-tested after waiting
@@ -477,6 +477,6 @@ export class Router {
         if (h.health.circuitOpenUntil > Date.now() && h.health.consecutiveFailures < 10) h.health.circuitOpenUntil = 0;
       }
     }
-    throw lastErr ?? new LlmError('Uygun model bulunamadı', 'not_found');
+    throw lastErr ?? new LlmError('No suitable model found', 'not_found');
   }
 }

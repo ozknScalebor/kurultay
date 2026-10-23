@@ -72,8 +72,8 @@ export class LspClient {
       for (const p of this.pending.values()) p.reject(e);
       this.pending.clear();
     };
-    child.on('exit', (code) => die(new Error(`LSP ${this.name} kapandı (çıkış ${code ?? '-'})`)));
-    child.on('error', (e) => die(new Error(`LSP ${this.name} başlatılamadı: ${e.message}`)));
+    child.on('exit', (code) => die(new Error(`LSP ${this.name} exited (code ${code ?? '-'})`)));
+    child.on('error', (e) => die(new Error(`LSP ${this.name} could not start: ${e.message}`)));
     const rootUri = pathToFileURL(this.root).href;
     await withTimeout(
       this.request('initialize', {
@@ -106,7 +106,7 @@ export class LspClient {
     const first = new Promise<Diagnostic[]>((res) => this.waiters.set(uri, [...(this.waiters.get(uri) ?? []), res]));
     if (version === 1) this.notify('textDocument/didOpen', { textDocument: { uri, languageId: this.cfg.languageIds?.[ext] ?? LANG[ext] ?? ext.slice(1), version, text } });
     else this.notify('textDocument/didChange', { textDocument: { uri, version }, contentChanges: [{ text }] });
-    await withTimeout(first, this.cfg.timeoutMs ?? 20_000, `LSP ${this.name} tanılama`);
+    await withTimeout(first, this.cfg.timeoutMs ?? 20_000, `LSP ${this.name} diagnostics`);
     // servers often publish twice (fast syntax pass, then semantic pass): settle briefly
     await new Promise((r) => setTimeout(r, this.cfg.settleMs ?? 400));
     return this.latest.get(uri) ?? [];
@@ -121,7 +121,7 @@ export class LspClient {
     } catch {
       this.child.kill();
     }
-    this.dead = new Error('kapatıldı');
+    this.dead = new Error('closed');
   }
 
   private request(method: string, params: unknown): Promise<unknown> {
@@ -177,7 +177,7 @@ export class LspClient {
       } else if (typeof msg.id === 'number' && this.pending.has(msg.id)) {
         const p = this.pending.get(msg.id)!;
         this.pending.delete(msg.id);
-        if (msg.error) p.reject(new Error(`LSP ${this.name}: ${msg.error.message ?? 'hata'}`));
+        if (msg.error) p.reject(new Error(`LSP ${this.name}: ${msg.error.message ?? 'error'}`));
         else p.resolve(msg.result);
       }
     }
@@ -186,7 +186,7 @@ export class LspClient {
 
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error(`${what} zaman aşımı (${Math.round(ms / 1000)} sn)`)), ms);
+    const t = setTimeout(() => rej(new Error(`${what} timed out (${Math.round(ms / 1000)} s)`)), ms);
     t.unref?.();
     p.then(
       (v) => {

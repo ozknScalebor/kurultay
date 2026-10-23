@@ -70,8 +70,8 @@ export class McpClient {
     child.stderr.on('data', (d: Buffer) => {
       this.stderr = (this.stderr + d.toString('utf8')).slice(-4000);
     });
-    child.on('exit', (code) => this.fail(new Error(`MCP sunucusu ${this.name} kapandı (çıkış ${code ?? '-'})${this.stderr ? `: ${this.stderr.trim().split('\n').slice(-3).join(' | ')}` : ''}`)));
-    child.on('error', (e) => this.fail(new Error(`MCP sunucusu ${this.name} başlatılamadı: ${e.message}`)));
+    child.on('exit', (code) => this.fail(new Error(`MCP server ${this.name} exited (code ${code ?? '-'})${this.stderr ? `: ${this.stderr.trim().split('\n').slice(-3).join(' | ')}` : ''}`)));
+    child.on('error', (e) => this.fail(new Error(`MCP server ${this.name} could not start: ${e.message}`)));
     const init = (await this.request(
       'initialize',
       { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'kurultay', version: '1' } },
@@ -97,7 +97,7 @@ export class McpClient {
     const id = this.nextId;
     const onAbort = () => {
       this.notify('notifications/cancelled', { requestId: id, reason: 'aborted' });
-      this.pending.get(id)?.reject(new Error('iptal edildi'));
+      this.pending.get(id)?.reject(new Error('cancelled'));
       this.pending.delete(id);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -108,7 +108,7 @@ export class McpClient {
         isError?: boolean;
       };
       const parts = (r?.content ?? []).map((c) =>
-        c.type === 'text' ? (c.text ?? '') : c.type === 'resource' ? `[kaynak ${c.resource?.uri ?? ''}]\n${c.resource?.text ?? ''}` : `[${c.type}${c.mimeType ? ` ${c.mimeType}` : ''}]`,
+        c.type === 'text' ? (c.text ?? '') : c.type === 'resource' ? `[resource ${c.resource?.uri ?? ''}]\n${c.resource?.text ?? ''}` : `[${c.type}${c.mimeType ? ` ${c.mimeType}` : ''}]`,
       );
       if (!parts.length && r?.structuredContent !== undefined) parts.push(JSON.stringify(r.structuredContent, null, 1));
       return { text: parts.join('\n'), isError: !!r?.isError };
@@ -120,7 +120,7 @@ export class McpClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.fail(new Error('kapatıldı'));
+    this.fail(new Error('closed'));
     try {
       this.child?.stdin.end();
       this.child?.kill();
@@ -130,12 +130,12 @@ export class McpClient {
   }
 
   private request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-    if (this.closed || !this.child) return Promise.reject(new Error(`MCP sunucusu ${this.name} çalışmıyor`));
+    if (this.closed || !this.child) return Promise.reject(new Error(`MCP server ${this.name} is not running`));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`MCP ${this.name}: ${method} zaman aşımı (${Math.round(timeoutMs / 1000)} sn)`));
+        reject(new Error(`MCP ${this.name}: ${method} timed out (${Math.round(timeoutMs / 1000)} s)`));
       }, timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, timer });
@@ -178,7 +178,7 @@ export class McpClient {
       if (!p) continue;
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
-      if (msg.error) p.reject(new Error(`MCP ${this.name}: ${msg.error.message ?? 'hata'} (${msg.error.code ?? '?'})`));
+      if (msg.error) p.reject(new Error(`MCP ${this.name}: ${msg.error.message ?? 'error'} (${msg.error.code ?? '?'})`));
       else p.resolve(msg.result);
     }
   }

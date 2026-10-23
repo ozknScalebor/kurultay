@@ -105,14 +105,14 @@ export function findConversation(list: Conversation[], ref: string): Conversatio
 export function branchConversation(c: Conversation, upTo = c.turns.length, title?: string): Conversation {
   const b = newConversation(c.workspace, c.settings, { id: c.id, turn: upTo });
   b.turns = c.turns.filter((t) => t.n <= upTo).map((t) => ({ ...t }));
-  b.title = title?.trim() || `${c.title || 'konuşma'} (dal)`;
+  b.title = title?.trim() || `${c.title || 'conversation'} (branch)`;
   return b;
 }
 
 export function relativeTime(iso: string, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (s < 60) return 'az önce';
-  if (s < 3600) return `${Math.floor(s / 60)} dk önce`;
-  if (s < 86_400) return `${Math.floor(s / 3600)} sa önce`;
-  return `${Math.floor(s / 86_400)} gün önce`;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86_400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86_400)} days ago`;
 }

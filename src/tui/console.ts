@@ -9,18 +9,18 @@ import type { McpManager } from '../mcp/manager.js';
 import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type RunMode } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
-import { readCapabilitiesFile, type CapabilitiesFile } from '../llm/models.js';
 import { Router } from '../llm/router.js';
 import { ModelStats } from '../llm/stats.js';
 import { askProject, type AskTurn } from '../ops.js';
 import { Orchestrator, fmtDuration, fmtTokens, renderPlan, type RunReport } from '../orchestrator/orchestrator.js';
 import type { Plan } from '../orchestrator/planner.js';
-import { probeAll, writeCapabilities } from '../probe/probe.js';
+import { unprofiledModels, writeCapabilities } from '../probe/probe.js';
+import { loadProfile, profilePath, runProbe } from '../probe/profile.js';
 import { SkillRegistry } from '../skills/skills.js';
-import { attachTerminal, color } from '../ui/terminal.js';
+import { attachTerminal, color, fmtSeconds } from '../ui/terminal.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus } from '../util/events.js';
-import { truncateTokens } from '../util/text.js';
+import { truncateTokens, plural } from '../util/text.js';
 import { listConversations, newConversation, relativeTime, saveConversation, type Conversation, type Turn } from './conversation.js';
 import type { Completion } from './editor.js';
 import { renderMarkdown } from './markdown.js';
@@ -160,7 +160,7 @@ export class KurultayConsole {
     try {
       saveConversation(this.convStateDir, c);
     } catch (e) {
-      this.out(color.yellow(`konuşma kaydedilemedi: ${errorMessage(e)}`));
+      this.out(color.yellow(`could not save the conversation: ${errorMessage(e)}`));
     }
   }
 
@@ -172,14 +172,14 @@ export class KurultayConsole {
     if (this.router) {
       const st = this.router.stats();
       const ready = st.filter((x) => !x.circuitOpen).length;
-      parts.push(`${ready}/${st.length} model hazır`);
+      parts.push(`${ready}/${plural(st.length, 'model')} ready`);
     }
     const u = this.usage.footerText();
     if (u) parts.push(u);
     if (this.settings.dryRun) parts.push('dry-run');
     if (this.settings.skills.length) parts.push(`skill: ${this.settings.skills.join(',')}`);
     const c = this.conversation;
-    parts.push(c?.turns.length ? `oturum: ${(c.title || c.id).slice(0, 30)} (${c.turns.length} tur)` : 'yeni oturum');
+    parts.push(c?.turns.length ? `session: ${(c.title || c.id).slice(0, 30)} (${plural(c.turns.length, 'turn')})` : 'new session');
     // the path goes last: the most useful facts survive when the line is cut to the terminal width
     if (this.workspace) parts.push(shortPath(this.workspace));
     return parts.join(' · ');
@@ -210,11 +210,11 @@ export class KurultayConsole {
       if (!(await this.selectWorkspace())) return 0;
       if (this.opts.resume) await this.resume(this.opts.resume === true ? '1' : this.opts.resume);
       if (this.opts.worktree) await this.worktreeCommand(`new ${this.opts.worktree}`);
-      this.out(color.dim(`Soru sorun veya yapılacak işi yazın. Komutlar için ${color.cyan('/')} yazın.`));
+      this.out(color.dim(`Ask a question or describe a task. Type ${color.cyan('/')} for commands.`));
       await this.loop();
       return 0;
     } catch (e) {
-      this.out(color.red(`Hata: ${errorMessage(e)}`));
+      this.out(color.red(`Error: ${errorMessage(e)}`));
       return 1;
     } finally {
       this.shutdown();
@@ -251,16 +251,16 @@ export class KurultayConsole {
       const [head] = line.slice(1).split(/\s+/);
       const cmd = this.findCommand(head);
       if (!cmd && /[\\/]/.test(line.slice(1)) && existsSync(line)) {
-        this.out(color.yellow(`Bu bir klasör yolu. Çalışma alanını değiştirmek için: /workspace ${line}`));
+        this.out(color.yellow(`That is a folder path. To switch the workspace: /workspace ${line}`));
         return;
       }
       if (!cmd) {
         const near = this.commands.filter((c) => c.name.startsWith(head.slice(0, 2))).map((c) => `/${c.name}`);
-        this.out(color.yellow(`Bilinmeyen komut: /${head}.${near.length ? ` Bunu mu demek istediniz: ${near.join(', ')}?` : ''} Tüm komutlar için /help.`));
+        this.out(color.yellow(`Unknown command: /${head}.${near.length ? ` Did you mean: ${near.join(', ')}?` : ''} /help lists all commands.`));
         return;
       }
       if (cmd.ws && !this.app) {
-        this.out(color.yellow('Önce bir çalışma alanı seçin: /workspace <klasör>'));
+        this.out(color.yellow('Select a workspace first: /workspace <folder>'));
         return;
       }
       await cmd.run(line.slice(1 + head.length).trim());
@@ -268,12 +268,12 @@ export class KurultayConsole {
     }
     if (line.startsWith('!')) return this.shell(line.slice(1).trim());
     if (!this.app) {
-      this.out(color.yellow('Önce bir çalışma alanı seçin: /workspace <klasör>'));
+      this.out(color.yellow('Select a workspace first: /workspace <folder>'));
       return;
     }
     if (line.startsWith('?')) return this.ask(line.slice(1).trim());
     const intent = this.settings.intent === 'auto' ? classifyIntent(line) : this.settings.intent;
-    this.out(color.dim(intent === 'ask' ? '→ soru: modeller konsey olarak cevaplayacak (görev olarak çalıştırmak için /run)' : '→ görev: planlanıp modellere dağıtılacak (yalnızca sormak için /ask)'));
+    this.out(color.dim(intent === 'ask' ? '→ question: the models answer as a council (/run to run it as a task)' : '→ task: planned and spread over the models (/ask to only ask)'));
     if (intent === 'ask') await this.ask(line);
     else await this.runTask(line);
   }
@@ -293,22 +293,35 @@ export class KurultayConsole {
       return true;
     } catch (e) {
       if (!(e instanceof ConfigError)) throw e;
-      this.out(color.yellow('LLM yapılandırması bulunamadı.'));
+      this.out(color.yellow('No LLM configuration found.'));
       return this.setupWizard();
     }
   }
 
-  /** First run: ask for one OpenAI-compatible endpoint and save it to ~/.kurultay/config.json. */
+  /**
+   * First run: one OpenAI-compatible endpoint, one API key and the model names.
+   * Saved in the short form to ~/.kurultay/config.json:
+   *   { "baseUrl": "...", "apiKey": "...", "models": ["a", "b", { "id": "c", "apiKey": "own key" }] }
+   */
   async setupWizard(): Promise<boolean> {
     const path = join(kurultayHome(), 'config.json');
-    this.out(`İlk kurulum: bir OpenAI-uyumlu endpoint girin (vLLM, llama.cpp, Ollama, LM Studio…). Kaydedileceği yer: ${shortPath(path)}`);
+    this.out(`First-time setup – an OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, LM Studio…).`);
+    this.out(color.dim(`  saved to ${shortPath(path)}`));
     for (;;) {
-      const url = await this.screen.readLine('Endpoint adresi (ör. http://10.0.0.5:8000/v1) ❯ ');
+      const url = await this.screen.readLine('Endpoint URL (e.g. http://10.0.0.5:8000/v1) ❯ ');
       if (url === null || url.trim() === '/exit') return false;
       if (!url.trim()) continue;
-      const name = (await this.screen.readLine('Kısa ad [gpu1] ❯ '))?.trim() || 'gpu1';
-      const apiKey = (await this.screen.readLine('API anahtarı (boş = yok) ❯ '))?.trim() || 'none';
-      const raw = { endpoints: [{ name, baseUrl: url.trim(), apiKey }], language: 'tr' };
+      const apiKey = (await this.screen.readLine('API key (empty = none) ❯ '))?.trim() || 'none';
+      this.out(color.dim('  Model names, one per line. Add a key after a space if that model needs its own: "name key".'));
+      this.out(color.dim('  Empty line to finish; no names = use every model the endpoint lists.'));
+      const models: Array<string | { id: string; apiKey: string }> = [];
+      for (;;) {
+        const line = (await this.screen.readLine(`  model ${models.length + 1} ❯ `))?.trim();
+        if (!line) break;
+        const [id, key] = line.split(/\s+/);
+        models.push(key ? { id, apiKey: key } : id);
+      }
+      const raw: Record<string, unknown> = { baseUrl: url.trim(), apiKey, ...(models.length ? { models } : {}) };
       try {
         this.config = parseConfig(raw);
       } catch (e) {
@@ -318,7 +331,7 @@ export class KurultayConsole {
       mkdirSync(kurultayHome(), { recursive: true });
       writeFileSync(path, JSON.stringify(raw, null, 2));
       this.configPath = path;
-      this.out(`${color.green('✓')} kaydedildi: ${shortPath(path)} — başka endpoint eklemek için /endpoint add <ad> <url> [anahtar]`);
+      this.out(`${color.green('✓')} saved ${shortPath(path)} – add models later with /model add <name> [apiKey]`);
       return true;
     }
   }
@@ -336,8 +349,8 @@ export class KurultayConsole {
             const models = await new OpenAICompatClient(ep).listModels(AbortSignal.timeout(timeout));
             return { name: ep.name, baseUrl: ep.baseUrl, ok: true, ms: Date.now() - t0, models: models.map((m) => m.id) };
           } catch (e) {
-            const msg = errorMessage(e).replace(/^bağlantı hatası \([^)]*\): /, '');
-            return { name: ep.name, baseUrl: ep.baseUrl, ok: false, ms: Date.now() - t0, models: [], error: /abort|timeout/i.test(msg) ? `${timeout / 1000} sn içinde yanıt yok` : msg };
+            const msg = errorMessage(e).replace(/^connection error \([^)]*\): /, '');
+            return { name: ep.name, baseUrl: ep.baseUrl, ok: false, ms: Date.now() - t0, models: [], error: /abort|timeout/i.test(msg) ? `no answer within ${timeout / 1000} s` : msg };
           }
         }),
     );
@@ -348,7 +361,7 @@ export class KurultayConsole {
     }
     const router = new Router(cfg, this.bus);
     router.learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
-    const caps = readCapabilitiesFile(join(kurultayHome(), 'capabilities.json'));
+    const caps = loadProfile();
     const live = new Set(this.health.filter((h) => h.ok).map((h) => h.name));
     const cached = (caps?.models ?? []).filter((m) => m.reachable && live.has(m.endpoint));
     if (cached.length) {
@@ -374,11 +387,11 @@ export class KurultayConsole {
       this.out(color.red(c.error!));
     }
     const candidates = this.workspaceCandidates();
-    this.out(color.bold('Çalışma alanı seçin') + color.dim(' (zorunlu — projenin kök klasörü)'));
+    this.out(color.bold('Select a workspace') + color.dim(' (required – the root folder of the project)'));
     candidates.forEach((c, i) => this.out(`  ${color.cyan(String(i + 1))}) ${shortPath(c.path)}${c.note ? color.dim(`  ${c.note}`) : ''}`));
-    if (!candidates.length) this.out(color.dim('  (son kullanılan yok) bir klasör yolu yazın; Tab ile tamamlanır'));
+    if (!candidates.length) this.out(color.dim('  (nothing recent) type a folder path; Tab completes'));
     for (;;) {
-      const input = await this.screen.readLine(`${color.bold('Çalışma alanı')} ${color.dim('[numara veya yol]')} ❯ `, (t) => this.completeWorkspace(t, candidates));
+      const input = await this.screen.readLine(`${color.bold('Workspace')} ${color.dim('[number or path]')} ❯ `, (t) => this.completeWorkspace(t, candidates));
       if (input === null) return false;
       const v = input.trim();
       if (!v) continue;
@@ -386,7 +399,7 @@ export class KurultayConsole {
       // "/models" is a command, "/home/me/proje" is a path
       const cmd = v.startsWith('/') ? this.findCommand(v.slice(1).split(/\s+/)[0]) : undefined;
       if (cmd && cmd.name !== 'workspace') {
-        if (cmd.ws) this.out(color.yellow('Önce çalışma alanı seçilmeli.'));
+        if (cmd.ws) this.out(color.yellow('Select a workspace first.'));
         else await cmd.run(v.slice(1).split(/\s+/).slice(1).join(' '));
         if (this.exitRequested) return false;
         continue;
@@ -394,7 +407,7 @@ export class KurultayConsole {
       const raw = v.replace(/^\/workspace\s*/, '');
       const pick = /^\d+$/.test(raw) ? candidates[Number(raw) - 1]?.path : raw;
       if (!pick) {
-        this.out(color.yellow(`Listede ${raw} numaralı seçenek yok.`));
+        this.out(color.yellow(`There is no option ${raw} in the list.`));
         continue;
       }
       const c = checkWorkspace(pick, this.cwd);
@@ -409,10 +422,10 @@ export class KurultayConsole {
 
   workspaceCandidates(): Array<{ path: string; note?: string }> {
     const out: Array<{ path: string; note?: string }> = [];
-    if (checkWorkspace(this.cwd, this.cwd).path && looksLikeProject(this.cwd)) out.push({ path: this.cwd, note: 'şu anki klasör' });
+    if (checkWorkspace(this.cwd, this.cwd).path && looksLikeProject(this.cwd)) out.push({ path: this.cwd, note: 'current folder' });
     for (const r of this.state.recent) {
       if (out.some((o) => o.path === r.path) || !existsSync(r.path)) continue;
-      out.push({ path: r.path, note: `son kullanım ${r.lastUsed.slice(0, 10)}` });
+      out.push({ path: r.path, note: `last used ${r.lastUsed.slice(0, 10)}` });
     }
     return out.slice(0, 9);
   }
@@ -431,7 +444,7 @@ export class KurultayConsole {
   /** Open a workspace: load its config, index it, and (optionally) probe and analyze automatically. */
   async openWorkspace(path: string, o: { keepConversation?: boolean } = {}): Promise<void> {
     this.detachLog?.();
-    this.out(`${color.bold('Çalışma alanı')}: ${shortPath(path)}`);
+    this.out(`${color.bold('Workspace')}: ${shortPath(path)}`);
     if (!o.keepConversation) {
       this.mainRoot = undefined;
       rememberWorkspace(this.state, path);
@@ -439,7 +452,7 @@ export class KurultayConsole {
     }
     this.app = await this.makeApp(path);
     this.config = this.app.config;
-    if (this.app.configPath !== this.configPath) this.out(color.dim(`  yapılandırma: ${shortPath(this.app.configPath)}`));
+    if (this.app.configPath !== this.configPath) this.out(color.dim(`  config: ${shortPath(this.app.configPath)}`));
     this.configPath = this.app.configPath;
     this.router = this.app.router;
     this.probed = this.app.probed;
@@ -448,27 +461,31 @@ export class KurultayConsole {
       this.askHistory = [];
       this.conversation = undefined;
       const prev = listConversations(join(path, this.app.config.stateDir))[0];
-      if (prev && !this.opts.resume) this.out(color.dim(`  son oturum: "${prev.title}" (${prev.turns.length} tur, ${relativeTime(prev.updatedAt)}) — devam etmek için /resume`));
+      if (prev && !this.opts.resume) this.out(color.dim(`  last session: "${prev.title}" (${plural(prev.turns.length, 'turn')}, ${relativeTime(prev.updatedAt)}) – /resume to continue`));
     }
 
     if (this.opts.autoIndex !== false) this.reindex();
-    if (this.opts.autoProbe !== false && !this.probed && this.app.router.size > 0) {
-      this.out(color.dim('  yetenek profili yok → hızlı yetenek analizi (Ctrl+C ile atlanır; ayrıntılı ölçüm için /probe --deep)'));
-      await this.probe({ quick: true });
+    if (this.opts.autoProbe !== false && this.app.router.size > 0) {
+      // measured once per model and saved; only models without a profile are probed here
+      const missing = await unprofiledModels(this.app.config, loadProfile());
+      if (missing.length) {
+        this.out(color.dim(`  capability probe for ${missing.length} new model${missing.length === 1 ? '' : 's'} (once; Ctrl+C skips, /probe re-measures)`));
+        await this.probe({ models: missing });
+      } else this.out(`  ${color.green('✓')} capability profile saved ${color.dim('(/probe to re-measure)')}`);
     }
     if (this.opts.autoAnalyze !== false && this.app.router.size > 0 && this.index) {
       const pending = this.index.needsSummary().length;
       const hasArch = existsSync(join(this.app.stateDir, 'ARCHITECTURE.md'));
       if (pending > 0 || !hasArch) {
-        this.out(color.dim(`  mimari analiz: ${pending} dosya özetlenecek (Ctrl+C ile atlanır, sonra /analyze)`));
+        this.out(color.dim(`  architecture analysis: ${plural(pending, 'file')} to summarise (Ctrl+C skips, later /analyze)`));
         await this.analyze(false);
-      } else this.out(`  ${color.green('✓')} mimari analiz güncel (${shortPath(join(this.app.stateDir, 'ARCHITECTURE.md'))})`);
+      } else this.out(`  ${color.green('✓')} architecture analysis up to date (${shortPath(join(this.app.stateDir, 'ARCHITECTURE.md'))})`);
     }
     if (this.opts.autoAnalyze !== false && this.index) await this.semantic(false);
     await this.startMcp();
-    if (!this.app.router.size) this.out(color.yellow('  Kullanılabilir model yok: /models ile durumu görün, /endpoint ile ekleyin.'));
+    if (!this.app.router.size) this.out(color.yellow('  No usable model: /models shows the status, /model add adds one.'));
     const skills = SkillRegistry.discover(path, { extraPaths: this.app.config.skills.paths, disabled: this.app.config.skills.disabled, includeUser: this.app.config.skills.includeUser });
-    if (skills.size) this.out(color.dim(`  ${skills.size} skill: ${skills.visible().map((s) => s.name).slice(0, 8).join(', ')}${skills.size > 8 ? '…' : ''}`));
+    if (skills.size) this.out(color.dim(`  ${plural(skills.size, 'skill')}: ${skills.visible().map((s) => s.name).slice(0, 8).join(', ')}${skills.size > 8 ? '…' : ''}`));
   }
 
   embedder: ProjectIndex['embedder'];
@@ -482,7 +499,7 @@ export class KurultayConsole {
     const m = await startMcp(this.app);
     if (!m) return;
     this.mcp = m;
-    this.out(`  ${color.green('✓')} MCP: ${m.size} araç (${Object.keys(this.app.config.mcp?.servers ?? {}).join(', ')})`);
+    this.out(`  ${color.green('✓')} MCP: ${plural(m.size, 'tool')} (${Object.keys(this.app.config.mcp?.servers ?? {}).join(', ')})`);
   }
 
   reindex(quiet = false): void {
@@ -491,7 +508,7 @@ export class KurultayConsole {
     this.index = index;
     const s = index.stats();
     if (!quiet || (stats && stats.added + stats.changed + stats.removed > 0)) {
-      this.out(`  ${color.green('✓')} indeks: ${s.files} dosya, ${s.defs} tanım, ${s.edges} bağımlılık${stats && (stats.changed || stats.added || stats.removed) ? color.dim(` (+${stats.added} ~${stats.changed} -${stats.removed})`) : ''}${Object.keys(s.langs).length ? color.dim(` · ${Object.entries(s.langs).map(([l, n]) => `${l}:${n}`).join(' ')}`) : ''}`);
+      this.out(`  ${color.green('✓')} index: ${plural(s.files, 'file')}, ${plural(s.defs, 'definition')}, ${plural(s.edges, 'dependency')}${stats && (stats.changed || stats.added || stats.removed) ? color.dim(` (+${stats.added} ~${stats.changed} -${stats.removed})`) : ''}${Object.keys(s.langs).length ? color.dim(` · ${Object.entries(s.langs).map(([l, n]) => `${l}:${n}`).join(' ')}`) : ''}`);
     }
   }
 
@@ -501,23 +518,23 @@ export class KurultayConsole {
     const ctrl = new AbortController();
     const stop = () => {
       if (ctrl.signal.aborted) return;
-      this.out(color.yellow(`${label} durduruluyor… (yarım kalan değişiklikler geri alınır)`));
-      ctrl.abort(new Error('kullanıcı iptal etti'));
+      this.out(color.yellow(`stopping ${label.toLowerCase()}… (unfinished changes are rolled back)`));
+      ctrl.abort(new Error('cancelled by the user'));
     };
     const release = this.screen.busy(stop);
     const mark = this.usage.begin();
     this.lastOp = mark;
-    const endActivity = this.screen.activity(label, () => this.usage.activityText(mark));
+    const endActivity = this.screen.activity(label, () => [this.activityNote, this.usage.activityText(mark)].filter(Boolean).join(' · '));
     // in line mode (no raw terminal) Ctrl+C arrives as SIGINT
     if (!this.screen.interactive) process.once('SIGINT', stop);
     try {
       return await fn(ctrl.signal);
     } catch (e) {
       if (ctrl.signal.aborted) {
-        this.out(color.yellow(`${label} iptal edildi.`));
+        this.out(color.yellow(`${label} cancelled.`));
         return undefined;
       }
-      this.out(color.red(`${label} başarısız: ${errorMessage(e)}`));
+      this.out(color.red(`${label} failed: ${errorMessage(e)}`));
       return undefined;
     } finally {
       this.usage.end(mark);
@@ -527,72 +544,86 @@ export class KurultayConsole {
     }
   }
 
-  async probe(o: { quick?: boolean; deep?: boolean }): Promise<void> {
+  /** Measure models and save the profile. Without `models` every configured model is measured again. */
+  async probe(o: { quick?: boolean; deep?: boolean; models?: string[] } = {}): Promise<void> {
     const cfg = this.config!;
-    const file = await this.withAbort('Yetenek analizi', (signal) => probeAll(cfg, this.bus, { quick: o.quick, deep: o.deep, signal }));
-    if (!file) return;
-    if (this.app) writeCapabilities(this.app.stateDir, file);
-    saveGlobalCapabilities(file);
-    const ok = file.models.filter((m) => m.reachable);
-    this.out(`  ${color.green('✓')} yetenek analizi: ${ok.length}/${file.models.length} model erişilebilir`);
+    const t0 = Date.now();
+    const run = await this.withAbort('Capability probe', (signal) =>
+      runProbe(cfg, this.bus, {
+        quick: o.quick,
+        deep: o.deep,
+        signal,
+        scope: 'all',
+        models: o.models,
+        onStep: (key, step, i, n) => (this.activityNote = `${key}: ${step} ${i}/${n}`),
+      }),
+    );
+    this.activityNote = '';
+    if (!run) return;
+    if (this.app) writeCapabilities(this.app.stateDir, run.profile);
+    const ok = run.measured.models.filter((m) => m.reachable);
+    this.out(`  ${color.green('✓')} capability probe: ${ok.length}/${plural(run.measured.models.length, 'model')} reachable in ${fmtSeconds((Date.now() - t0) / 1000)} ${color.dim(`– saved to ${shortPath(profilePath())}`)}`);
     if (this.app) {
       this.app = await this.makeApp(this.app.root);
       this.router = this.app.router;
       this.probed = this.app.probed;
     } else {
       const r = new Router(cfg, this.bus);
-      r.register(ok);
+      r.register(run.profile.models.filter((m) => m.reachable));
       this.router = r;
       this.probed = true;
     }
   }
 
+  /** shown in the spinner line next to the elapsed time (e.g. the current probe step) */
+  activityNote = '';
+
   /** Embedding vectors for semantic search (incremental); quiet = only report problems / new vectors. */
   async semantic(quiet: boolean): Promise<void> {
     if (!this.index || !this.app) return;
     const index = this.index;
-    const r = await this.withAbort('Anlamsal indeks', (signal) => prepareRetrieval(this.app!, index, { signal }));
+    const r = await this.withAbort('Semantic index', (signal) => prepareRetrieval(this.app!, index, { signal }));
     this.embedder = index.embedder;
     if (!r) return;
     if (!r.model) {
-      if (!quiet) this.out(color.dim('  anlamsal arama: embedding modeli bulunamadı (BM25 kullanılıyor)'));
-    } else if (r.error) this.out(color.yellow(`  anlamsal arama: ${r.model} kullanılamadı – ${r.error}`));
-    else if (!quiet || r.embedded) this.out(`  ${color.green('✓')} anlamsal arama: ${r.model} · ${r.vectors} parça${r.embedded ? color.dim(` (${r.embedded} yeni)`) : ''}`);
+      if (!quiet) this.out(color.dim('  semantic search: no embedding model found (using BM25)'));
+    } else if (r.error) this.out(color.yellow(`  semantic search: ${r.model} unavailable – ${r.error}`));
+    else if (!quiet || r.embedded) this.out(`  ${color.green('✓')} semantic search: ${r.model} · ${plural(r.vectors, 'chunk')}${r.embedded ? color.dim(` (${r.embedded} new)`) : ''}`);
   }
 
   async analyze(force: boolean): Promise<void> {
     const app = this.app!;
-    if (!app.router.size) return this.out(color.yellow('Model yok; analiz yapılamaz.'));
+    if (!app.router.size) return this.out(color.yellow('No model; cannot analyse.'));
     this.reindex(true);
-    const r = await this.withAbort('Analiz', (signal) => new ProjectAnalyzer(this.index!, app.router, app.config, this.bus).run({ force, signal }));
+    const r = await this.withAbort('Analysis', (signal) => new ProjectAnalyzer(this.index!, app.router, app.config, this.bus).run({ force, signal }));
     if (!r) return;
-    this.out(`  ${color.green('✓')} ${r.filesSummarized} dosya özetlendi · ${r.modules} modül · ${r.flowPaths.length} akış dokümanı${r.failures ? color.yellow(` · ${r.failures} hata`) : ''}`);
+    this.out(`  ${color.green('✓')} ${plural(r.filesSummarized, 'file')} summarised · ${plural(r.modules, 'module')} · ${plural(r.flowPaths.length, 'flow document')}${r.failures ? color.yellow(` · ${plural(r.failures, 'failure')}`) : ''}`);
     this.out(color.dim(`    ${shortPath(r.architecturePath)}${r.notesPath ? ` · ${shortPath(r.notesPath)}` : ''}`));
     this.printUsage();
   }
 
   async ask(question: string): Promise<void> {
-    if (!question) return this.out(color.yellow('Soru yazın: /ask <soru>'));
+    if (!question) return this.out(color.yellow('Type a question: /ask <question>'));
     const app = this.app!;
-    if (!app.router.size) return this.out(color.yellow('Model yok.'));
+    if (!app.router.size) return this.out(color.yellow('No model.'));
     const m = expandMentions(question, (p) => this.index?.files.some((f) => f.path === p) ?? false);
     const extra = m.files.length
       ? `\n\n# MENTIONED FILES\n${m.files.map((f) => `## ${f}\n${truncateTokens(readFileSync(join(app.root, f), 'utf8'), 2500)}`).join('\n\n')}`
       : '';
-    const r = await this.withAbort('Soru', (signal) => askProject(app, this.index!, m.text + extra, { history: this.askHistory, signal }));
+    const r = await this.withAbort('Question', (signal) => askProject(app, this.index!, m.text + extra, { history: this.askHistory, signal }));
     if (!r) return;
     this.askHistory.push({ question: m.text, answer: r.answer });
     this.recordTurn({ kind: 'ask', input: question, output: r.answer, models: r.members });
     this.out('');
     this.out(this.md(r.answer.trim()));
-    this.out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
+    this.out(color.dim(`\n– council: ${r.members.join(', ')}${r.chair ? ` · chair: ${r.chair}` : ''}`));
     this.printUsage();
   }
 
   async runTask(task: string, resumeId?: string | true): Promise<void> {
-    if (!task && !resumeId) return this.out(color.yellow('Görev yazın: /run <görev>'));
+    if (!task && !resumeId) return this.out(color.yellow('Type a task: /run <task>'));
     const app = this.app!;
-    if (!app.router.size) return this.out(color.yellow('Model yok.'));
+    if (!app.router.size) return this.out(color.yellow('No model.'));
     this.reindex(true);
     if (this.embedder) await this.semantic(true);
     const m = expandMentions(task, (p) => this.index?.files.some((f) => f.path === p) ?? false);
@@ -607,22 +638,22 @@ export class KurultayConsole {
       confirm: (q: string) => this.screen.confirm(q),
       approvePlan: this.settings.planApproval || app.config.orchestrator.approvePlan ? (plan: Plan, info: { mode: RunMode; round: number }) => this.approvePlan(plan, info) : undefined,
     };
-    const report = await this.withAbort('Görev', (signal) => (resumeId ? orch.resume(resumeId === true ? undefined : resumeId, { ...opts, signal }) : orch.run(text, { ...opts, signal })));
+    const report = await this.withAbort('Task', (signal) => (resumeId ? orch.resume(resumeId === true ? undefined : resumeId, { ...opts, signal }) : orch.run(text, { ...opts, signal })));
     if (!report) return;
     this.lastReport = report;
     const st = report.status === 'completed' ? color.green(report.status) : color.yellow(report.status);
     this.out('');
-    this.out(`${color.bold('Sonuç')}: ${st} · ${report.changedFiles.length} dosya · ${report.iterations} iterasyon · modeller: ${report.modelsUsed.join(', ')}`);
+    this.out(`${color.bold('Result')}: ${st} · ${report.changedFiles.length} file${report.changedFiles.length === 1 ? '' : 's'} · ${report.iterations} iteration${report.iterations === 1 ? '' : 's'} · models: ${report.modelsUsed.join(', ')}`);
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
-    if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} dosya daha`));
-    if (report.merge?.conflicts.length) this.out(color.yellow(`Çakışmalar: ${report.merge.conflicts.join(', ')}`));
+    if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} more files`));
+    if (report.merge?.conflicts.length) this.out(color.yellow(`Conflicts: ${report.merge.conflicts.join(', ')}`));
     this.printUsage(report.usage ? fmtDuration(report.usage.seconds) : undefined);
-    if (report.stopReason && report.status === 'incomplete') this.out(color.yellow(`Durduruldu: ${report.stopReason}. Sürdürmek için: /continue-run`));
-    this.out(color.dim(`Rapor: ${shortPath(report.reportPath)} (/report) · Diff: /diff${report.checkpointPath ? ' · Geri almak için: /rewind' : ''}`));
+    if (report.stopReason && report.status === 'incomplete') this.out(color.yellow(`Stopped: ${report.stopReason}. To continue: /continue-run`));
+    this.out(color.dim(`Report: ${shortPath(report.reportPath)} (/report) · diff: /diff${report.checkpointPath ? ' · undo: /rewind' : ''}`));
     this.recordTurn({
       kind: 'run',
-      input: task || `(sürdürüldü) ${report.task.split('\n')[0]}`,
-      output: `${report.status} · ${report.changedFiles.length} dosya · ${report.iterations} iterasyon`,
+      input: task || `(continued) ${report.task.split('\n')[0]}`,
+      output: `${report.status} · ${plural(report.changedFiles.length, 'file')} · ${plural(report.iterations, 'iteration')}`,
       models: report.modelsUsed,
       run: { sessionId: report.sessionId, sessionDir: report.sessionDir, status: report.status, changedFiles: report.changedFiles, checkpointPath: report.checkpointPath },
     });
@@ -633,20 +664,19 @@ export class KurultayConsole {
   async approvePlan(plan: Plan, info: { mode: RunMode; round: number }): Promise<boolean | string> {
     this.out('');
     this.out(renderPlan(plan, info.mode));
-    const a = ((await this.screen.readLine(`${color.bold('Plan onaylansın mı?')} ${color.dim('[Enter/e = evet · h = iptal · değişiklik isteğinizi yazın]')} ❯ `)) ?? 'h').trim();
+    const a = ((await this.screen.readLine(`${color.bold('Approve the plan?')} ${color.dim('[Enter/y = yes · n = cancel · or type the changes you want]')} ❯ `)) ?? 'n').trim();
     if (!a || /^(e|evet|y|yes)$/i.test(a)) return true;
-    if (/^(h|hayır|hayir|n|no)$/i.test(a)) return false;
-    this.out(color.dim('Plan geri bildirimle yeniden hazırlanıyor…'));
+    if (/^(n|no)$/i.test(a)) return false;
     return a;
   }
 
   continueRun(arg: string): Promise<void> | void {
     const list = Orchestrator.resumable(this.app!.root, this.app!.config.stateDir);
-    if (!list.length) return this.out(color.dim('Sürdürülecek yarım kalmış görev yok.'));
+    if (!list.length) return this.out(color.dim('No unfinished task to continue.'));
     if (!arg) {
       if (list.length > 1) {
-        list.slice(0, 10).forEach((r, i) => this.out(`  ${color.cyan(String(i + 1).padStart(2))}) ${r.task.split('\n')[0].slice(0, 70)}  ${color.dim(`${r.left} alt görev kaldı · ${r.stopReason ?? 'yarıda kaldı'} · ${r.id}`)}`));
-        this.out(color.dim('En yenisi sürdürülüyor; başkası için /continue-run <numara|oturum>'));
+        list.slice(0, 10).forEach((r, i) => this.out(`  ${color.cyan(String(i + 1).padStart(2))}) ${r.task.split('\n')[0].slice(0, 70)}  ${color.dim(`${plural(r.left, 'subtask')} left · ${r.stopReason ?? 'interrupted'} · ${r.id}`)}`));
+        this.out(color.dim('Continuing the most recent one; for another: /continue-run <number|session>'));
       }
       return this.runTask('', list[0].id);
     }
@@ -667,16 +697,16 @@ export class KurultayConsole {
   stats(arg = ''): void {
     if (arg.trim() === 'reset') {
       this.usage.reset();
-      return this.out(color.dim('Oturum sayaçları sıfırlandı.'));
+      return this.out(color.dim('Session counters reset.'));
     }
     const u = this.usage;
-    if (!u.requests && !u.errors) return this.out(color.dim('Bu oturumda henüz LLM isteği yapılmadı.'));
-    this.out(`${color.bold('Bu oturum')}: ${u.requests} istek · ${fmtTok(u.tokensIn)} giriş / ${fmtTok(u.tokensOut)} çıkış token${u.errors ? ` · ${u.errors} hata` : ''}`);
-    if (u.last) this.out(`${color.bold('Son cevabın bağlamı')}: ${fillBar(u.last.fill)} ${fillText(u.last)} · ${u.last.model}`);
+    if (!u.requests && !u.errors) return this.out(color.dim('No LLM requests in this session yet.'));
+    this.out(`${color.bold('This session')}: ${plural(u.requests, 'request')} · ${fmtTok(u.tokensIn)} in / ${fmtTok(u.tokensOut)} out tokens${u.errors ? ` · ${plural(u.errors, 'error')}` : ''}`);
+    if (u.last) this.out(`${color.bold('Context of the last answer')}: ${fillBar(u.last.fill)} ${fillText(u.last)} · ${u.last.model}`);
     this.out(this.md(u.table().join('\n')));
     const r = this.lastReport;
     if (r?.usage) {
-      this.out(`${color.bold('Son görev')}: ${r.sessionId} · ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış · ${fmtDuration(r.usage.seconds)}`);
+      this.out(`${color.bold('Last task')}: ${r.sessionId} · ${plural(r.usage.requests, 'request')} · ${fmtTokens(r.usage.tokensIn)} in / ${fmtTokens(r.usage.tokensOut)} out · ${fmtDuration(r.usage.seconds)}`);
     }
   }
 
@@ -696,12 +726,12 @@ export class KurultayConsole {
   }
 
   async shell(command: string): Promise<void> {
-    if (!command) return this.out(color.yellow('Komut yazın: !<komut>'));
-    if (!this.app) return this.out(color.yellow('Önce bir çalışma alanı seçin.'));
-    const r = await this.withAbort('Komut', (signal) => runShell(command, this.app!.root, this.app!.config.tools.commandTimeoutMs, signal));
+    if (!command) return this.out(color.yellow('Type a command: !<command>'));
+    if (!this.app) return this.out(color.yellow('Select a workspace first.'));
+    const r = await this.withAbort('Command', (signal) => runShell(command, this.app!.root, this.app!.config.tools.commandTimeoutMs, signal));
     if (!r) return;
     if (r.output.trim()) this.out(r.output.trimEnd());
-    this.out(color.dim(`(çıkış kodu ${r.code ?? '-'}${r.timedOut ? ', zaman aşımı' : ''})`));
+    this.out(color.dim(`(exit code ${r.code ?? '-'}${r.timedOut ? ', timed out' : ''})`));
   }
 
   // ------------------------------------------------------------------ completion
@@ -719,7 +749,7 @@ export class KurultayConsole {
         ...this.commands.filter((c) => c !== exactCmd && (!q || c.name.startsWith(q) || c.aliases?.some((a) => a.startsWith(q)))),
         ...(q ? this.commands.filter((c) => c !== exactCmd && !c.name.startsWith(q) && !c.aliases?.some((a) => a.startsWith(q)) && c.name.includes(q)) : []),
       ]
-        .map((c) => ({ value: `/${c.name}${c.args ? ' ' : ''}`, label: `/${c.name}${c.args ? ' ' + c.args : ''}`, description: c.description + (c.ws && !this.app ? ' (çalışma alanı gerekir)' : ''), submit: !c.args }));
+        .map((c) => ({ value: `/${c.name}${c.args ? ' ' : ''}`, label: `/${c.name}${c.args ? ' ' + c.args : ''}`, description: c.description + (c.ws && !this.app ? ' (needs a workspace)' : ''), submit: !c.args }));
       if (!items.length) return undefined;
       // Enter runs the highlighted command; commands that need an argument stop for it first
       const exact = this.findCommand(q);
@@ -761,8 +791,8 @@ export class KurultayConsole {
   // ------------------------------------------------------------------ commands
 
   onOff(arg: string, cur: boolean): boolean {
-    if (/^(on|açık|aç|evet|1|true)$/i.test(arg)) return true;
-    if (/^(off|kapalı|kapat|hayır|0|false)$/i.test(arg)) return false;
+    if (/^(on|yes|1|true)$/i.test(arg)) return true;
+    if (/^(off|no|0|false)$/i.test(arg)) return false;
     return !cur;
   }
 
@@ -775,7 +805,7 @@ export class KurultayConsole {
     writeFileSync(path, JSON.stringify(raw, null, 2));
     this.config = parsed;
     this.configPath = path;
-    this.out(`${color.green('✓')} kaydedildi: ${shortPath(path)}`);
+    this.out(`${color.green('✓')} saved ${shortPath(path)}`);
   }
 
   async reloadModels(): Promise<void> {
@@ -788,18 +818,4 @@ export class KurultayConsole {
     this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
   }
 
-}
-
-/** Merge a probe result into the per-user capability cache (shared by all workspaces). */
-export function saveGlobalCapabilities(file: CapabilitiesFile): void {
-  try {
-    const path = join(kurultayHome(), 'capabilities.json');
-    const prev = readCapabilitiesFile(path);
-    const endpoints = new Set(file.models.map((m) => m.endpoint));
-    const models = [...(prev?.models ?? []).filter((m) => !endpoints.has(m.endpoint)), ...file.models];
-    mkdirSync(kurultayHome(), { recursive: true });
-    writeFileSync(path, JSON.stringify({ ...file, models }, null, 2));
-  } catch {
-    /* cache only */
-  }
 }

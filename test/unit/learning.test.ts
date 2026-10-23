@@ -109,6 +109,6 @@ describe('constrained JSON output', () => {
     await r.chat(req, { only: ['old@e'] });
     assert.equal(rf(3)?.type, 'json_object', 'not tried again');
     assert.equal(r.get('old@e')!.health.failures, 0, 'not counted as a model failure');
-    assert.ok(bus.ofType('log.info').some((e) => /json_schema desteklemiyor/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.info').some((e) => /does not support json_schema/.test(e.message ?? '')));
   });
 });

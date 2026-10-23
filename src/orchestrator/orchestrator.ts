@@ -13,7 +13,7 @@ import type { ExternalTools } from '../mcp/manager.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
-import { estimateTokens, truncateTokens, tryExtractJson } from '../util/text.js';
+import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
 import { councilReview, type Candidate, type CouncilVerdict } from './council.js';
 import { makePlan, type Plan, type SubTask } from './planner.js';
 import { renderVerify, verifyFailureText, verifyOverlay, type VerifyResult } from './verify.js';
@@ -221,15 +221,15 @@ export class Orchestrator {
     mkdirSync(this.sessionDir, { recursive: true });
     this.bus.attachLog(join(this.sessionDir, 'events.jsonl'));
     const restored = this.materializer.recover();
-    if (restored.length) this.bus.warn('orchestrator', `önceki yarım kalan çalışmadan ${restored.length} dosya geri yüklendi`);
+    if (restored.length) this.bus.warn('orchestrator', `restored ${plural(restored.length, 'file')} from the previous unfinished run`);
     const nested = this.index?.files.map((f) => f.path).filter((p) => /(^|\/)(AGENTS|CLAUDE)\.md$/i.test(p) && p.includes('/')) ?? [];
     this.rules = loadProjectRules(this.root, this.stateDir, nested);
     this.skills =
       opts.skillRegistry ??
       SkillRegistry.discover(this.root, { extraPaths: this.cfg.skills.paths, disabled: this.cfg.skills.disabled, includeUser: this.cfg.skills.includeUser });
     this.explicitSkills = [...(opts.skills ?? []), ...this.skills.mentioned(task).map((s) => s.name)];
-    for (const n of opts.skills ?? []) if (!this.skills.get(n)) this.bus.warn('skills', `istenen skill bulunamadı: ${n}`);
-    if (this.skills.size) this.bus.info('skills', `${this.skills.size} skill bulundu${this.explicitSkills.length ? `; seçilen: ${this.explicitSkills.join(', ')}` : ''}`);
+    for (const n of opts.skills ?? []) if (!this.skills.get(n)) this.bus.warn('skills', `requested skill not found: ${n}`);
+    if (this.skills.size) this.bus.info('skills', `${this.skills.size} skills found${this.explicitSkills.length ? `; selected: ${this.explicitSkills.join(', ')}` : ''}`);
     this.stopReason = undefined;
   }
 
@@ -283,17 +283,17 @@ export class Orchestrator {
    */
   async resume(sessionId: string | undefined, opts: RunOptions = {}): Promise<RunReport> {
     const id = sessionId ?? Orchestrator.resumable(this.root, this.cfg.stateDir)[0]?.id;
-    if (!id) throw new Error('Sürdürülecek yarım kalmış görev yok.');
+    if (!id) throw new Error('No unfinished task to continue.');
     const file = join(this.stateDir, 'sessions', id, 'session.json');
-    if (!existsSync(file)) throw new Error(`Oturum bulunamadı: ${id}`);
+    if (!existsSync(file)) throw new Error(`Session not found: ${id}`);
     const st = JSON.parse(readFileSync(file, 'utf8')) as SessionState;
-    if (st.version !== 2) throw new Error(`${id} eski biçimde kaydedilmiş; sürdürülemez.`);
-    if (st.phase === 'finished') throw new Error(`${id} zaten tamamlanmış.`);
+    if (st.version !== 2) throw new Error(`${id} was saved in an old format and cannot be continued.`);
+    if (st.phase === 'finished') throw new Error(`${id} is already finished.`);
     this.begin(id, { ...opts, skills: opts.skills ?? st.options.skills }, st.task);
     st.phase = 'running';
     st.stopReason = undefined;
     const left = st.inProgress ? st.queue.filter((t) => !st.doneIds.includes(t.id)).length : st.queue.length;
-    this.bus.info('orchestrator', `${id} sürdürülüyor: iterasyon ${st.iteration}, ${left} alt görev kaldı`);
+    this.bus.info('orchestrator', `continuing ${id}: iteration ${st.iteration}, ${plural(left, 'subtask')} left`);
     this.bus.emitEvent('run.start', { message: st.task, data: { sessionId: id, models: this.router.size, resumed: true } });
     const meter = this.startMeter(st.usage ?? emptyUsage(), opts);
     try {
@@ -334,10 +334,10 @@ export class Orchestrator {
       usage.seconds = Math.round((base + (Date.now() - t0) / 1000) * 10) / 10;
       if (this.stopReason) return;
       const used = usage.tokensIn + usage.tokensOut;
-      if (tokens > 0 && used >= tokens) this.stopReason = `token bütçesi doldu (${used} / ${tokens})`;
-      else if (minutes > 0 && usage.seconds >= minutes * 60) this.stopReason = `süre bütçesi doldu (${(usage.seconds / 60).toFixed(1)} / ${minutes} dk)`;
+      if (tokens > 0 && used >= tokens) this.stopReason = `token budget used up (${used} / ${tokens})`;
+      else if (minutes > 0 && usage.seconds >= minutes * 60) this.stopReason = `time budget used up (${(usage.seconds / 60).toFixed(1)} / ${minutes} min)`;
       if (this.stopReason) {
-        this.bus.warn('orchestrator', `${this.stopReason}; çalışma durduruluyor (devam: kurultay run --resume)`);
+        this.bus.warn('orchestrator', `${this.stopReason}; stopping the run (continue: kurultay run --resume)`);
         ctrl.abort(new Error(this.stopReason));
       }
     };
@@ -395,7 +395,7 @@ export class Orchestrator {
       if (!opts.approvePlan) return { plan, mode };
       const answer = await opts.approvePlan(plan, { mode, round });
       if (answer === false) {
-        this.bus.info('orchestrator', 'plan reddedildi; görev iptal edildi');
+        this.bus.info('orchestrator', 'plan rejected; task cancelled');
         return undefined;
       }
       if (answer === true || !answer.trim()) return { plan, mode };
@@ -426,13 +426,13 @@ export class Orchestrator {
           st.doneIds.push(id);
           save();
         });
-        if (signal?.aborted) throw signal.reason ?? new Error('iptal edildi');
+        if (signal?.aborted) throw signal.reason ?? new Error('cancelled');
 
         const finalVerify = await verifyOverlay(integration, this.materializer, this.cfg, signal);
         st.finalVerify = finalVerify;
         this.bus.emitEvent('run.verify', { data: { ok: finalVerify.ok, skipped: finalVerify.skipped } });
         const reqCheck = await this.requirementCheck(st.fullTask, st.plan, integration, finalVerify, st.reports, signal);
-        if (signal?.aborted) throw signal.reason ?? new Error('iptal edildi');
+        if (signal?.aborted) throw signal.reason ?? new Error('cancelled');
         st.requirementCheck = reqCheck;
         this.bus.emitEvent('run.requirements', { data: reqCheck });
         st.inProgress = false;
@@ -453,7 +453,7 @@ export class Orchestrator {
         if (!finalVerify.skipped && !finalVerify.ok) {
           followups.unshift({
             id: `V${st.iteration}`,
-            title: 'Derleme/test hatalarını düzelt',
+            title: 'Fix the build/test errors',
             description: `The combined changes fail verification. Fix the failures without reverting the intended functionality:\n${verifyFailureText(finalVerify)}`,
             files: [],
             dependsOn: [],
@@ -461,7 +461,7 @@ export class Orchestrator {
           });
         }
         // merge follow-ups touching the same concern into a single task when there are many
-        st.queue = followups.length > 3 ? [{ ...followups[0], id: `F${st.iteration}`, title: 'Eksikleri tamamla', description: followups.map((f) => `- ${f.description}`).join('\n'), critical: true }] : followups;
+        st.queue = followups.length > 3 ? [{ ...followups[0], id: `F${st.iteration}`, title: 'Complete the missing parts', description: followups.map((f) => `- ${f.description}`).join('\n'), critical: true }] : followups;
         save();
       }
     } catch (e) {
@@ -493,7 +493,7 @@ export class Orchestrator {
       let go = true;
       if (this.cfg.orchestrator.confirmMerge && opts.confirm) {
         const ds = diffStat(diff);
-        go = await opts.confirm(`${changedFiles.length} dosya, +${ds.added}/-${ds.removed} satır. Projeye uygulansın mı?`);
+        go = await opts.confirm(`${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}, +${ds.added}/-${ds.removed} lines. Apply to the project?`);
       }
       if (go) {
         // everything applied is recorded so it can be rewound later (/rewind, kurultay rewind)
@@ -549,7 +549,7 @@ export class Orchestrator {
     const maxParallel = Math.max(1, Math.floor(this.router.totalCapacity() / avgWidth));
 
     while (pending.size || running.size) {
-      if (signal?.aborted) throw new Error('iptal edildi');
+      if (signal?.aborted) throw new Error('cancelled');
       for (const [id, t] of pending) {
         if (running.size >= maxParallel) break;
         const deps = t.dependsOn;
@@ -557,7 +557,7 @@ export class Orchestrator {
           pending.delete(id);
           failed.add(id);
           reports.push({ subtask: t, iteration, candidates: [], fixes: 0, status: 'failed' });
-          this.bus.warn('orchestrator', `${id} atlandı: bağımlılığı başarısız`);
+          this.bus.warn('orchestrator', `${id} skipped: a dependency failed`);
           onDone?.(id);
           continue;
         }
@@ -574,7 +574,7 @@ export class Orchestrator {
             failed.add(id);
             if (signal?.aborted) return;
             reports.push({ subtask: t, iteration, candidates: [], fixes: 0, status: 'failed' });
-            this.bus.error('orchestrator', `${id} hata: ${errorMessage(e)}`);
+            this.bus.error('orchestrator', `${id} error: ${errorMessage(e)}`);
             onDone?.(id);
           })
           .finally(() => running.delete(id));
@@ -601,7 +601,7 @@ export class Orchestrator {
   }
 
   private recordSkills(worker: string, r: WorkerResult, reasons: Record<string, string>): void {
-    for (const s of r.skills) this.skillUsage.push({ name: s.name, worker, how: s.how, reason: s.how === 'preload' ? reasons[s.name] : 'model istedi' });
+    for (const s of r.skills) this.skillUsage.push({ name: s.name, worker, how: s.how, reason: s.how === 'preload' ? reasons[s.name] : 'requested by the model' });
   }
 
   private workerTask(st: SubTask, plan: Plan, fullTask: string): string {
@@ -653,7 +653,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const tried = new Set(runs.flatMap((r) => r.result.models).concat(models.map((m) => m.caps.key)));
       const others = this.router.pick('coder', Math.max(1, Math.min(2, width)), [...tried]);
       if (others.length) {
-        this.bus.warn(st.id, `hiçbir aday değişiklik üretmedi; ${others.map((o) => o.caps.key).join(', ')} ile yeniden deneniyor`);
+        this.bus.warn(st.id, `no candidate produced changes; retrying with ${others.map((o) => o.caps.key).join(', ')}`);
         const again = (await launch(others.map((o) => o.caps.key), 'r')).filter((r): r is { ok: true; value: Winner } => r.ok).map((r) => r.value);
         runs = runs.concat(again);
         usable = again.filter((r) => r.result.status !== 'failed' && r.overlay.ownChanges().length > 0);
@@ -676,7 +676,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const v = await verifyOverlay(r.overlay, this.materializer, this.cfg, signal);
       verifies.set(r.overlay.id, v);
       const c = report.candidates.find((x) => x.worker === r.overlay.id);
-      if (c) c.verify = v.skipped ? 'yok' : v.ok ? 'geçti' : `kaldı (${v.score.toFixed(2)})`;
+      if (c) c.verify = v.skipped ? 'none' : v.ok ? 'passed' : `failed (${v.score.toFixed(2)})`;
     }
 
     // ---- council review (anonymous ranking); single candidates still get a reviewer when possible
@@ -704,7 +704,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
         if (verdict.winner) winner = usable.find((u) => u.overlay.id === verdict!.winner!.id) ?? winner;
         report.verdict = { ranking: verdict.ranking, winnerIssues: verdict.winnerIssues, reviewers: verdict.reviews.map((r) => r.reviewer), independent: !!verdict.independent };
       } catch (e) {
-        this.bus.warn(st.id, `konsey incelemesi başarısız: ${errorMessage(e)}`);
+        this.bus.warn(st.id, `council review failed: ${errorMessage(e)}`);
       }
     } else if (usable.length > 1) {
       winner = [...usable].sort((a, b) => (verifies.get(b.overlay.id)?.score ?? 0) - (verifies.get(a.overlay.id)?.score ?? 0))[0];
@@ -772,16 +772,16 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
             re.reviews.forEach((r) => this.used.add(r.reviewer));
             blocking = re.winnerIssues.filter((i) => i.blocking);
             (report.fixReviews ??= []).push({ round, reviewers: re.reviews.map((r) => r.reviewer), blocking: blocking.length, independent: !!re.independent });
-            if (blocking.length) this.bus.warn(st.id, `düzeltme yeniden incelendi: ${blocking.length} engelleyici bulgu kaldı`);
+            if (blocking.length) this.bus.warn(st.id, `fix re-reviewed: ${blocking.length} blocking findings left`);
           } catch (e) {
-            this.bus.warn(st.id, `düzeltmenin yeniden incelemesi başarısız: ${errorMessage(e)}`);
+            this.bus.warn(st.id, `re-review of the fix failed: ${errorMessage(e)}`);
           }
         }
       } else break;
     }
 
     const absorbed = integration.absorb(winner.overlay);
-    if (absorbed.conflicts.length) this.bus.warn(st.id, `birleştirme çakışması: ${absorbed.conflicts.join(', ')} (çakışma işaretleri eklendi)`);
+    if (absorbed.conflicts.length) this.bus.warn(st.id, `merge conflict: ${absorbed.conflicts.join(', ')} (conflict markers added)`);
     report.winner = { worker: winner.overlay.id, models: winner.result.models };
     report.status = 'done';
     return report;
@@ -789,7 +789,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
 
   private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
     const diff = integration.diff();
-    if (!diff.trim()) return { complete: false, missing: ['Hiçbir değişiklik üretilmedi'], judges: [] };
+    if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
     // judges that did not write the winning code come first
     const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
     const want = Math.min(2, this.router.size);
@@ -868,18 +868,18 @@ export function testingGuidance(text: string, testCommand: string): string {
 export function renderReport(r: RunReport, diff: string): string {
   const st = diffStat(diff);
   const lines: string[] = [
-    `# Kurultay Çalışma Raporu`,
+    `# Kurultay Run Report`,
     '',
-    `- **Oturum:** ${r.sessionId}`,
-    `- **Durum:** ${r.status}`,
-    `- **Mod:** ${r.mode} · **İterasyon:** ${r.iterations}`,
-    `- **Değişen dosyalar:** ${r.changedFiles.length} (+${st.added} / -${st.removed})`,
-    `- **Kullanılan modeller:** ${r.modelsUsed.join(', ') || '-'}`,
-    ...(r.usage ? [`- **Tüketim:** ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış token · ${fmtDuration(r.usage.seconds)}${r.resumed ? ' (sürdürülen oturum dahil)' : ''}`] : []),
-    ...(r.stopReason ? [`- **Durduruldu:** ${r.stopReason} — kaldığı yerden devam: \`kurultay run --resume ${r.sessionId}\``] : []),
-    ...(r.status === 'cancelled' ? ['- **İptal:** plan onaylanmadı, kod yazılmadı'] : []),
+    `- **Session:** ${r.sessionId}`,
+    `- **Status:** ${r.status}`,
+    `- **Mode:** ${r.mode} · **Iterations:** ${r.iterations}`,
+    `- **Changed files:** ${r.changedFiles.length} (+${st.added} / -${st.removed})`,
+    `- **Models used:** ${r.modelsUsed.join(', ') || '-'}`,
+    ...(r.usage ? [`- **Usage:** ${plural(r.usage.requests, 'request')} · ${fmtTokens(r.usage.tokensIn)} in / ${fmtTokens(r.usage.tokensOut)} out tokens · ${fmtDuration(r.usage.seconds)}${r.resumed ? ' (including the resumed session)' : ''}`] : []),
+    ...(r.stopReason ? [`- **Stopped:** ${r.stopReason} – continue with \`kurultay run --resume ${r.sessionId}\``] : []),
+    ...(r.status === 'cancelled' ? ['- **Cancelled:** the plan was not approved, no code was written'] : []),
     '',
-    '## Görev',
+    '## Task',
     '',
     r.task,
     '',
@@ -887,54 +887,54 @@ export function renderReport(r: RunReport, diff: string): string {
     '',
     r.plan.understanding || '-',
     '',
-    `Plan yazarları: ${r.plan.authors.join(', ') || '-'}`,
+    `Plan authors: ${r.plan.authors.join(', ') || '-'}`,
     '',
-    ...(r.plan.acceptance.length ? ['### Kabul kriterleri', '', ...r.plan.acceptance.map((a) => `- ${a}`), ''] : []),
-    '## Alt görevler',
+    ...(r.plan.acceptance.length ? ['### Acceptance criteria', '', ...r.plan.acceptance.map((a) => `- ${a}`), ''] : []),
+    '## Subtasks',
     '',
   ];
   for (const s of r.subtasks) {
-    lines.push(`### ${s.subtask.id} – ${s.subtask.title} (${s.status}, iterasyon ${s.iteration})`, '');
+    lines.push(`### ${s.subtask.id} – ${s.subtask.title} (${s.status}, iteration ${s.iteration})`, '');
     for (const c of s.candidates) {
       const win = s.winner?.worker === c.worker ? ' 🏆' : '';
-      lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${c.files} dosya, doğrulama: ${c.verify ?? '-'}${win}`);
+      lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${plural(c.files, 'file')}, verification: ${c.verify ?? '-'}${win}`);
     }
     if (s.verdict) {
       const how = s.verdict.independent
-        ? 'bağımsız (kodu yazan model incelemedi)'
+        ? 'independent (no author reviewed its own code)'
         : s.candidates.length > 1 && s.verdict.reviewers.length
-          ? 'kısmen bağımsız (inceleyenler aynı zamanda aday yazarı; kendi adaylarına verdikleri oy sayılmadı)'
-          : '⚠ bağımsız inceleme yapılamadı (kodu yazan modeller dışında kullanılabilir model yok)';
-      lines.push('', `İnceleyen modeller: ${s.verdict.reviewers.join(', ') || '-'} — ${how}`);
+          ? 'partly independent (reviewers also wrote candidates; votes for their own candidates were not counted)'
+          : '⚠ no independent review (no usable model other than the authors)';
+      lines.push('', `Reviewers: ${s.verdict.reviewers.join(', ') || '-'} – ${how}`);
     }
-    if (s.verdict?.ranking.length) lines.push('', `Konsey sıralaması: ${s.verdict.ranking.map((x) => `${x.id} (${x.points})`).join(' > ')}`);
-    if (s.verdict?.winnerIssues.length) lines.push('', 'İnceleme bulguları:', ...s.verdict.winnerIssues.map((i) => `- ${i.blocking ? '**[engelleyici]** ' : ''}${i.text} — _${i.reviewer}_`));
-    if (s.fixes) lines.push('', `Düzeltme turu: ${s.fixes}`);
-    for (const fr of s.fixReviews ?? []) lines.push(`- ${fr.round}. düzeltme yeniden incelendi (${fr.reviewers.join(', ') || '-'}): ${fr.blocking ? `${fr.blocking} engelleyici bulgu kaldı` : 'engelleyici bulgu yok'}`);
-    if (s.failovers?.length) lines.push('', 'Model değişimleri (yanıt vermeyen model bırakıldı):', ...s.failovers.map((f) => `- \`${f.worker}\` adım ${f.step}: ${f.from} → ${f.to} (${f.reason})`));
+    if (s.verdict?.ranking.length) lines.push('', `Council ranking: ${s.verdict.ranking.map((x) => `${x.id} (${x.points})`).join(' > ')}`);
+    if (s.verdict?.winnerIssues.length) lines.push('', 'Review findings:', ...s.verdict.winnerIssues.map((i) => `- ${i.blocking ? '**[blocking]** ' : ''}${i.text} – _${i.reviewer}_`));
+    if (s.fixes) lines.push('', `Fix rounds: ${s.fixes}`);
+    for (const fr of s.fixReviews ?? []) lines.push(`- fix ${fr.round} re-reviewed (${fr.reviewers.join(', ') || '-'}): ${fr.blocking ? `${fr.blocking} blocking findings left` : 'no blocking findings'}`);
+    if (s.failovers?.length) lines.push('', 'Model failovers (a model stopped answering):', ...s.failovers.map((f) => `- \`${f.worker}\` step ${f.step}: ${f.from} → ${f.to} (${f.reason})`));
     lines.push('');
   }
-  if (r.finalVerify) lines.push('## Son doğrulama', '', renderVerify(r.finalVerify), '');
+  if (r.finalVerify) lines.push('## Final verification', '', renderVerify(r.finalVerify), '');
   if (r.requirementCheck) {
-    lines.push('## Gereksinim kontrolü', '', `Tamamlandı: ${r.requirementCheck.complete ? 'evet' : 'hayır'} (hakemler: ${r.requirementCheck.judges.join(', ') || '-'})`);
+    lines.push('## Requirement check', '', `Complete: ${r.requirementCheck.complete ? 'yes' : 'no'} (judges: ${r.requirementCheck.judges.join(', ') || '-'})`);
     if (r.requirementCheck.missing.length) lines.push('', ...r.requirementCheck.missing.map((m) => `- ${m}`));
     lines.push('');
   }
   if (r.merge) {
-    lines.push('## Projeye uygulama', '', `Yazılan: ${r.merge.written.length}, silinen: ${r.merge.deleted.length}, 3-yollu birleştirme: ${r.merge.merged3way.length}, çakışma: ${r.merge.conflicts.length}`);
-    if (r.merge.conflicts.length) lines.push('', 'Çakışan dosyalar (işaretleri elle çözün):', ...r.merge.conflicts.map((c) => `- ${c}`));
+    lines.push('## Applied to the project', '', `Written: ${r.merge.written.length}, deleted: ${r.merge.deleted.length}, 3-way merged: ${r.merge.merged3way.length}, conflicts: ${r.merge.conflicts.length}`);
+    if (r.merge.conflicts.length) lines.push('', 'Conflicting files (resolve the markers by hand):', ...r.merge.conflicts.map((c) => `- ${c}`));
     lines.push('');
   }
   if (r.skills && (r.skills.used.length || r.skills.available)) {
-    lines.push("## Skill'ler", '', `Bulunan: ${r.skills.available}`);
+    lines.push('## Skills', '', `Found: ${r.skills.available}`);
     if (r.skills.used.length) {
-      lines.push('', '| Skill | Çalışan | Nasıl | Neden |', '|---|---|---|---|', ...r.skills.used.map((u) => `| ${u.name} | ${u.worker} | ${u.how === 'preload' ? 'baştan yüklendi' : 'model yükledi'} | ${u.reason ?? '-'} |`));
-    } else lines.push('', 'Bu çalışmada skill kullanılmadı.');
-    if (r.skills.diagnostics.length) lines.push('', 'Uyarılar:', ...r.skills.diagnostics.map((d) => `- ${d.path}: ${d.message}`));
+      lines.push('', '| Skill | Worker | How | Why |', '|---|---|---|---|', ...r.skills.used.map((u) => `| ${u.name} | ${u.worker} | ${u.how === 'preload' ? 'preloaded' : 'loaded by the model'} | ${u.reason ?? '-'} |`));
+    } else lines.push('', 'No skills were used in this run.');
+    if (r.skills.diagnostics.length) lines.push('', 'Warnings:', ...r.skills.diagnostics.map((d) => `- ${d.path}: ${d.message}`));
     lines.push('');
   }
-  if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model kullanımı', '', ...renderUsageTable(r.usage), '');
-  lines.push('## Değişiklikler', '', `Tam diff: \`${r.diffPath}\``, '');
+  if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model usage', '', ...renderUsageTable(r.usage), '');
+  lines.push('## Changes', '', `Full diff: \`${r.diffPath}\``, '');
   return lines.join('\n');
 }
 
@@ -949,7 +949,7 @@ export function loadRunUsage(stateDir: string, n = 10): Array<{ id: string; task
       const st = JSON.parse(readFileSync(join(dir, id, 'session.json'), 'utf8')) as Partial<SessionState>;
       if (!st.usage) continue;
       const rep = existsSync(join(dir, id, 'REPORT.md')) ? readFileSync(join(dir, id, 'REPORT.md'), 'utf8') : '';
-      out.push({ id, task: st.task ?? '', status: rep.match(/\*\*Durum:\*\* (\S+)/)?.[1] ?? st.phase ?? '?', usage: st.usage });
+      out.push({ id, task: st.task ?? '', status: rep.match(/\*\*(?:Status|Durum):\*\* (\S+)/)?.[1] ?? st.phase ?? '?', usage: st.usage });
     } catch {
       /* not a run session */
     }
@@ -973,9 +973,9 @@ export function mergeUsage(into: RunUsage, u: RunUsage): RunUsage {
 export function renderUsageTable(u: RunUsage): string[] {
   const rows = Object.entries(u.byModel).sort((a, b) => b[1].tokensIn + b[1].tokensOut - (a[1].tokensIn + a[1].tokensOut));
   return [
-    '| Model | İstek | Giriş token | Çıkış token | Ort. yanıt | Hata | Kesilme |',
+    '| Model | Requests | Tokens in | Tokens out | Avg. response | Errors | Truncated |',
     '|---|---:|---:|---:|---:|---:|---:|',
-    ...rows.map(([k, m]) => `| ${k} | ${m.requests} | ${fmtTokens(m.tokensIn)} | ${fmtTokens(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' sn' : '-'} | ${m.errors} | ${m.truncated} |`),
+    ...rows.map(([k, m]) => `| ${k} | ${m.requests} | ${fmtTokens(m.tokensIn)} | ${fmtTokens(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.errors} | ${m.truncated} |`),
   ];
 }
 
@@ -984,17 +984,17 @@ export function fmtTokens(n: number): string {
 }
 
 export function fmtDuration(sec: number): string {
-  return sec >= 3600 ? `${Math.floor(sec / 3600)} sa ${Math.round((sec % 3600) / 60)} dk` : sec >= 60 ? `${Math.floor(sec / 60)} dk ${Math.round(sec % 60)} sn` : `${sec.toFixed(1)} sn`;
+  return sec >= 3600 ? `${Math.floor(sec / 3600)} h ${Math.round((sec % 3600) / 60)} min` : sec >= 60 ? `${Math.floor(sec / 60)} min ${Math.round(sec % 60)} s` : `${sec.toFixed(1)} s`;
 }
 
 /** Plan as shown for approval (console /plan, run --approve-plan). */
 export function renderPlan(plan: Plan, mode: RunMode): string {
-  const lines = [`Plan (${mode} modu, ${plan.subtasks.length} alt görev; yazarlar: ${plan.authors.join(', ') || '-'})`];
+  const lines = [`Plan (${mode} mode, ${plural(plan.subtasks.length, 'subtask')}; authors: ${plan.authors.join(', ') || '-'})`];
   if (plan.understanding) lines.push('', plan.understanding);
   for (const s of plan.subtasks) {
-    lines.push('', `${s.id}. ${s.title}${s.critical ? ' [kritik]' : ''}${s.dependsOn.length ? ` (önce: ${s.dependsOn.join(', ')})` : ''}`, ...s.description.split('\n').map((l) => `   ${l}`));
-    if (s.files.length) lines.push(`   dosyalar: ${s.files.join(', ')}`);
+    lines.push('', `${s.id}. ${s.title}${s.critical ? ' [critical]' : ''}${s.dependsOn.length ? ` (after: ${s.dependsOn.join(', ')})` : ''}`, ...s.description.split('\n').map((l) => `   ${l}`));
+    if (s.files.length) lines.push(`   files: ${s.files.join(', ')}`);
   }
-  if (plan.acceptance.length) lines.push('', 'Kabul kriterleri:', ...plan.acceptance.map((a) => `  - ${a}`));
+  if (plan.acceptance.length) lines.push('', 'Acceptance criteria:', ...plan.acceptance.map((a) => `  - ${a}`));
   return lines.join('\n');
 }

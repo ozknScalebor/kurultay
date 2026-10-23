@@ -132,13 +132,13 @@ describe('SkillRegistry discovery', () => {
     assert.equal(reg.get('/driver'), driver);
     assert.equal(reg.get('skill:DRIVER'), driver);
     const msgs = reg.diagnostics.map((d) => `${d.level}:${d.message}`).join('\n');
-    assert.match(msgs, /error:description zorunlu/);
-    assert.match(msgs, /küçük harf/);
-    assert.match(msgs, /1024 karakteri aşıyor/);
-    assert.match(msgs, /5000 altını/);
-    assert.match(msgs, /klasör adıyla/);
-    assert.match(msgs, /"shared" adı çakışıyor/);
-    assert.match(msgs, /skill yolu bulunamadı/);
+    assert.match(msgs, /error:description is required/);
+    assert.match(msgs, /lowercase letters/);
+    assert.match(msgs, /longer than 1024 characters/);
+    assert.match(msgs, /under 5000/);
+    assert.match(msgs, /must match the folder name/);
+    assert.match(msgs, /name "shared" is taken/);
+    assert.match(msgs, /skill path not found/);
     assert.ok(!reg.visible().some((s) => s.name === 'gizli'));
     assert.equal(SkillRegistry.empty().size, 0);
     // user skills can be turned off; a home that IS the project is not scanned twice
@@ -163,7 +163,7 @@ describe('SkillRegistry discovery', () => {
     }
     const reg = SkillRegistry.discover(root, { includeUser: false });
     assert.equal(reg.skills.filter((s) => s.name === 'linked').length, 1);
-    assert.ok(!reg.diagnostics.some((d) => /çakışıyor/.test(d.message)), 'same physical file is not a collision');
+    assert.ok(!reg.diagnostics.some((d) => /is taken/.test(d.message)), 'same physical file is not a collision');
   });
 });
 
@@ -193,12 +193,12 @@ describe('skill selection and rendering', () => {
   it('selects preload in priority order and recommends lexically', () => {
     const sel = selectSkillsFor(reg, { text: 'sürücü ekle, $logging kullan', files: ['src/drivers/spi.c'], explicit: ['gizli', 'unknown'], planned: ['driver', 'logging', 'nope'], maxPreload: 3 });
     assert.deepEqual(sel.preload.map((s) => s.name), ['gizli', 'logging', 'always-on', 'c-only', 'driver']);
-    assert.equal(sel.reasons.gizli, 'açıkça seçildi');
-    assert.equal(sel.reasons.logging, '$ ile anıldı');
+    assert.equal(sel.reasons.gizli, 'selected explicitly');
+    assert.equal(sel.reasons.logging, 'mentioned with $');
     assert.equal(sel.reasons['always-on'], 'always');
     const planned = selectSkillsFor(reg, { text: 'başka iş', files: ['README.md'], planned: ['logging', 'gizli'] });
     assert.deepEqual(planned.preload.map((s) => s.name), ['always-on', 'logging'], 'hidden skills are never planner-selected');
-    assert.equal(planned.reasons.logging, 'planlayıcı seçti');
+    assert.equal(planned.reasons.logging, 'chosen by the planner');
     const rec = selectSkillsFor(reg, { text: 'log formatı kuralları nedir', files: [] });
     assert.deepEqual(rec.recommended, ['logging']);
   });
@@ -219,9 +219,9 @@ describe('skill selection and rendering', () => {
     assert.match(body, /- references\/api\.md/);
     assert.ok(!body.includes('keywords:'), 'front matter stripped');
     assert.match(reg.readFile(reg.get('driver')!, 'references/api.md'), /API kuralları/);
-    assert.throws(() => reg.readFile(reg.get('driver')!, '../logging/SKILL.md'), /dışındaki yol/);
-    assert.throws(() => reg.readFile(reg.get('driver')!, 'references/none.md'), /skill dosyası yok: .*references\/api\.md/);
-    assert.throws(() => reg.readFile(reg.get('logging')!, 'x.md'), /Mevcut: -/);
+    assert.throws(() => reg.readFile(reg.get('driver')!, '../logging/SKILL.md'), /outside the skill folder/);
+    assert.throws(() => reg.readFile(reg.get('driver')!, 'references/none.md'), /no such skill file: .*references\/api\.md/);
+    assert.throws(() => reg.readFile(reg.get('logging')!, 'x.md'), /Available: -/);
     const tpl = SKILL_TEMPLATE('yeni-is', 'Yeni iş açıklaması');
     assert.match(tpl, /^---\nname: yeni-is\ndescription: Yeni iş açıklaması\n/);
     assert.equal(parseFrontmatter(tpl).data.name, 'yeni-is');
@@ -250,10 +250,10 @@ describe('skill selection and rendering', () => {
     const loaded = await executeTool('skill', { name: 'driver', args: 'spi' }, ctx);
     assert.match(loaded.output, /Sürücü spi için/);
     assert.deepEqual(events, ['skill.load']);
-    assert.match((await executeTool('skill', { name: 'driver' }, ctx)).output, /zaten yüklü/);
+    assert.match((await executeTool('skill', { name: 'driver' }, ctx)).output, /already loaded/);
     const missing = await executeTool('skill', { name: 'nope' }, ctx);
     assert.equal(missing.isError, true);
-    assert.match(missing.output, /Mevcut skill'ler: .*logging/);
+    assert.match(missing.output, /Available skills: .*logging/);
     const hidden = await executeTool('skill', { name: 'gizli' }, ctx);
     assert.equal(hidden.isError, true);
     ctx.explicitSkills!.add('gizli');
@@ -262,7 +262,7 @@ describe('skill selection and rendering', () => {
     assert.equal((await executeTool('skill_file', { name: 'nope', path: 'x' }, ctx)).isError, true);
     assert.equal((await executeTool('skill_file', { name: 'driver', path: '../../x' }, ctx)).isError, true);
     const none = await executeTool('skill', { name: 'driver' }, { ...ctx, skills: SkillRegistry.empty() });
-    assert.match(none.output, /skill yok/);
+    assert.match(none.output, /has no skills/);
   });
 });
 

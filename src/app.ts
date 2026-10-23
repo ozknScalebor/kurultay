@@ -5,7 +5,8 @@ import { ProjectIndex } from './index/project-index.js';
 import { resolveEmbedder } from './index/embeddings.js';
 import { McpManager } from './mcp/manager.js';
 import { errorMessage } from './util/async.js';
-import { readCapabilitiesFile } from './llm/models.js';
+import { defaultCapabilities, readCapabilitiesFile } from './llm/models.js';
+import { loadProfile } from './probe/profile.js';
 import { Router } from './llm/router.js';
 import { ModelStats } from './llm/stats.js';
 import { EventBus } from './util/events.js';
@@ -30,20 +31,19 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   const router = new Router(config, bus);
   // learned per-role quality, shared by every project of this user
   if (opts.learn !== false) router.learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
-  const caps = readCapabilitiesFile(join(stateDir, 'capabilities.json'));
+  // the capability profile is per user (measured once, see probe/profile.ts); a project-local
+  // file from older versions is only used when there is no user profile yet
+  const caps = loadProfile() ?? readCapabilitiesFile(join(stateDir, 'capabilities.json'));
   let probed = false;
-  if (caps?.models.length) {
-    router.register(caps.models.filter((m) => m.reachable));
+  const endpoints = config.endpoints.filter((e) => !e.disabled);
+  const usable = (caps?.models ?? []).filter((m) => m.reachable && endpoints.some((e) => e.name === m.endpoint));
+  if (usable.length) {
+    router.register(usable);
     probed = true;
-  } else {
-    // capability profiles are about the models, not the project: reuse the per-user cache
-    const shared = readCapabilitiesFile(join(kurultayHome(), 'capabilities.json'));
-    const endpoints = new Set(config.endpoints.filter((e) => !e.disabled).map((e) => e.name));
-    const usable = (shared?.models ?? []).filter((m) => m.reachable && endpoints.has(m.endpoint));
-    if (usable.length) {
-      router.register(usable);
-      probed = true;
-    }
+    // models added to the config after the probe still work, with default capabilities until probed
+    const known = new Set((caps?.models ?? []).map((m) => m.key));
+    const fresh = endpoints.flatMap((e) => (e.models ?? []).filter((id) => !known.has(`${id}@${e.name}`)).map((id) => defaultCapabilities(id, e.name)));
+    if (fresh.length) router.register(fresh);
   }
   if (router.size === 0 && opts.requireModels !== false) {
     router.register(await router.discover(opts.discoverTimeoutMs ? AbortSignal.timeout(opts.discoverTimeoutMs) : undefined));
@@ -63,7 +63,7 @@ export async function prepareRetrieval(app: App, index: ProjectIndex, opts: { si
     return { model: index.embedder.key, embedded: r.embedded, vectors: index.vectorCount };
   } catch (e) {
     const error = errorMessage(e);
-    app.bus.warn('embeddings', `vektörler oluşturulamadı (${error}); arama BM25 ile devam ediyor`);
+    app.bus.warn('embeddings', `could not build vectors (${error}); search continues with BM25`);
     return { model: index.embedder.key, embedded: 0, vectors: index.vectorCount, error };
   }
 }

@@ -85,8 +85,8 @@ export function modifiedSince(root: string, cp: Checkpoint): string[] {
  */
 export function rewindCheckpoint(root: string, file: string, opts: { force?: boolean } = {}): { restored: string[]; skipped: string[] } {
   const cp = readCheckpoint(file);
-  if (!cp) throw new Error(`kontrol noktası okunamadı: ${file}`);
-  if (cp.rewoundAt) throw new Error(`bu değişiklik zaten geri alınmış (${cp.rewoundAt})`);
+  if (!cp) throw new Error(`could not read the checkpoint: ${file}`);
+  if (cp.rewoundAt) throw new Error(`this change was already undone (${cp.rewoundAt})`);
   const changed = new Set(modifiedSince(root, cp));
   const restored: string[] = [];
   const skipped: string[] = [];

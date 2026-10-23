@@ -152,13 +152,13 @@ export class UsageMeter {
   /** Spinner text while an operation runs: requests in flight, tokens so far, fullest live context. */
   activityText(mark?: UsageMark): string {
     const parts: string[] = [];
-    if (this.active) parts.push(`${this.active} LLM isteği sürüyor`);
+    if (this.active) parts.push(`${this.active} LLM request${this.active === 1 ? '' : 's'} running`);
     if (mark) {
       const d = this.since(mark);
-      if (d.tokensIn + d.tokensOut) parts.push(`${fmtTok(d.tokensIn)}↑ ${fmtTok(d.tokensOut)}↓ token`);
+      if (d.tokensIn + d.tokensOut) parts.push(`${fmtTok(d.tokensIn)}↑ ${fmtTok(d.tokensOut)}↓ tokens`);
     }
     const live = this.liveFill();
-    if (live) parts.push(`bağlam ${fillText(live)}`);
+    if (live) parts.push(`context ${fillText(live)}`);
     return parts.join(' · ');
   }
 
@@ -166,17 +166,17 @@ export class UsageMeter {
   summary(mark: UsageMark): string {
     const d = this.since(mark);
     if (!d.requests && !d.errors) return '';
-    const parts = [`${d.requests} istek`, `${fmtTok(d.tokensIn)} giriş / ${fmtTok(d.tokensOut)} çıkış token`];
-    if (d.peak) parts.push(`en dolu bağlam ${fillText(d.peak)} (${d.peak.model})`);
-    if (d.errors) parts.push(`${d.errors} hata`);
+    const parts = [`${d.requests} request${d.requests === 1 ? '' : 's'}`, `${fmtTok(d.tokensIn)} in / ${fmtTok(d.tokensOut)} out tokens`];
+    if (d.peak) parts.push(`peak context ${fillText(d.peak)} (${d.peak.model})`);
+    if (d.errors) parts.push(`${d.errors} error${d.errors === 1 ? '' : 's'}`);
     return parts.join(' · ');
   }
 
   /** Short status-line part: session tokens and the context fill of the last answer. */
   footerText(): string {
     if (!this.requests) return '';
-    const parts = [`${fmtTok(this.tokensIn + this.tokensOut)} token`];
-    if (this.last) parts.push(`bağlam ${Math.round(this.last.fill * 100)}%`);
+    const parts = [`${fmtTok(this.tokensIn + this.tokensOut)} tokens`];
+    if (this.last) parts.push(`context ${Math.round(this.last.fill * 100)}%`);
     return parts.join(' · ');
   }
 
@@ -184,11 +184,11 @@ export class UsageMeter {
   table(): string[] {
     const rows = Object.entries(this.byModel).sort((a, b) => b[1].tokensIn + b[1].tokensOut - (a[1].tokensIn + a[1].tokensOut));
     return [
-      '| Model | İstek | Giriş | Çıkış | Ort. yanıt | En dolu bağlam | Hata | Kesilme |',
+      '| Model | Requests | In | Out | Avg. response | Peak context | Errors | Truncated |',
       '|---|---:|---:|---:|---:|---:|---:|---:|',
       ...rows.map(
         ([k, m]) =>
-          `| ${k} | ${m.requests} | ${fmtTok(m.tokensIn)} | ${fmtTok(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' sn' : '-'} | ${m.window ? `${Math.round(m.peakFill * 100)}% / ${fmtTok(m.window)}` : '-'} | ${m.errors} | ${m.truncated} |`,
+          `| ${k} | ${m.requests} | ${fmtTok(m.tokensIn)} | ${fmtTok(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.window ? `${Math.round(m.peakFill * 100)}% / ${fmtTok(m.window)}` : '-'} | ${m.errors} | ${m.truncated} |`,
       ),
     ];
   }

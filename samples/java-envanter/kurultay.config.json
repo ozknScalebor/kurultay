@@ -1,5 +1,5 @@
 {
-  "$comment": "Proje yapılandırması: endpoint'ler kullanıcının ~/.kurultay/config.json dosyasından gelir; burada yalnızca derleme/test komutları var.",
+  "$comment": "Project configuration: the endpoint, API key and models come from the user's ~/.kurultay/config.json; only the build/test commands are here.",
   "verify": {
     "build": "javac -d tools tools/Build.java && java -cp tools Build compile",
     "test": "javac -d tools tools/Build.java && java -cp tools Build test",

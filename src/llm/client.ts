@@ -7,6 +7,11 @@ import { LlmError, type ChatRequest, type ChatResult, type ToolCall } from './ty
  * Dependency-free client for OpenAI-compatible /chat/completions endpoints
  * (vLLM, llama.cpp server, Ollama, LM Studio, TGI, LiteLLM, SGLang ...).
  */
+/** Client for one model: its own apiKey (config.models["model@endpoint"].apiKey) wins over the endpoint's. */
+export function clientFor(ep: EndpointConfig, override?: { apiKey?: string }): OpenAICompatClient {
+  return new OpenAICompatClient(override?.apiKey ? { ...ep, apiKey: override.apiKey } : ep);
+}
+
 export class OpenAICompatClient {
   constructor(readonly endpoint: EndpointConfig) {}
 
@@ -45,7 +50,7 @@ export class OpenAICompatClient {
       if (!res.ok) throw classifyHttp(res.status, await safeText(res), `${model}@${this.endpoint.name}/embeddings`);
       const body = (await res.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
       const data = [...(body.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-      if (data.length !== input.length || data.some((d) => !Array.isArray(d.embedding))) throw new LlmError(`beklenmeyen embeddings yanıtı (${data.length}/${input.length})`, 'server', undefined, model);
+      if (data.length !== input.length || data.some((d) => !Array.isArray(d.embedding))) throw new LlmError(`unexpected embeddings response (${data.length}/${input.length})`, 'server', undefined, model);
       return data.map((d) => d.embedding!);
     } catch (e) {
       throw toLlmError(e, `${model}@${this.endpoint.name}/embeddings`);
@@ -98,7 +103,7 @@ export class OpenAICompatClient {
       return fromNonStream(json, started, modelKey, req.onToken);
     } catch (e) {
       if (req.signal?.aborted) throw new LlmError('aborted', 'aborted', undefined, modelKey);
-      if (t.fired) throw new LlmError(`zaman aşımı (${modelKey}): ${t.fired}`, 'timeout', undefined, modelKey);
+      if (t.fired) throw new LlmError(`timeout (${modelKey}): ${t.fired}`, 'timeout', undefined, modelKey);
       throw toLlmError(e, modelKey);
     } finally {
       t.dispose();
@@ -130,8 +135,8 @@ export class Watchdog {
       if (parent.aborted) this.ctrl.abort(parent.reason);
       else parent.addEventListener('abort', this.onAbort, { once: true });
     }
-    this.timers.total = setTimeout(() => this.fire(`toplam süre ${secs(o.totalMs)} aşıldı`), o.totalMs);
-    if (o.firstTokenMs && o.firstTokenMs > 0) this.timers.first = setTimeout(() => this.fire(`${secs(o.firstTokenMs!)} içinde ilk token gelmedi`), o.firstTokenMs);
+    this.timers.total = setTimeout(() => this.fire(`total time of ${secs(o.totalMs)} exceeded`), o.totalMs);
+    if (o.firstTokenMs && o.firstTokenMs > 0) this.timers.first = setTimeout(() => this.fire(`no first token within ${secs(o.firstTokenMs!)}`), o.firstTokenMs);
   }
 
   get signal(): AbortSignal {
@@ -147,7 +152,7 @@ export class Watchdog {
     }
     if (this.o.idleMs && this.o.idleMs > 0) {
       clearTimeout(this.timers.idle);
-      this.timers.idle = setTimeout(() => this.fire(`akış ${secs(this.o.idleMs!)} boyunca sessiz kaldı`), this.o.idleMs);
+      this.timers.idle = setTimeout(() => this.fire(`stream silent for ${secs(this.o.idleMs!)}`), this.o.idleMs);
     }
   }
 
@@ -166,7 +171,7 @@ export class Watchdog {
 }
 
 function secs(ms: number): string {
-  return ms >= 1000 ? `${Math.round(ms / 1000)} sn` : `${ms} ms`;
+  return ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`;
 }
 
 interface OpenAIResponse {
@@ -221,11 +226,11 @@ export function toLlmError(e: unknown, model: string): LlmError {
   if (e instanceof LlmError) return e;
   const err = e as Error & { cause?: { code?: string } };
   const m = err?.message ?? String(e);
-  if (/timeout/i.test(m) || err?.name === 'TimeoutError') return new LlmError(`zaman aşımı (${model}): ${m}`, 'timeout', undefined, model);
+  if (/timeout/i.test(m) || err?.name === 'TimeoutError') return new LlmError(`timeout (${model}): ${m}`, 'timeout', undefined, model);
   if (err?.name === 'AbortError' && /timeout/i.test(String((err as { cause?: unknown }).cause ?? ''))) {
-    return new LlmError(`zaman aşımı (${model})`, 'timeout', undefined, model);
+    return new LlmError(`timeout (${model})`, 'timeout', undefined, model);
   }
-  return new LlmError(`bağlantı hatası (${model}): ${m}${err?.cause?.code ? ' [' + err.cause.code + ']' : ''}`, 'network', undefined, model);
+  return new LlmError(`connection error (${model}): ${m}${err?.cause?.code ? ' [' + err.cause.code + ']' : ''}`, 'network', undefined, model);
 }
 
 function fromNonStream(json: OpenAIResponse, started: number, model: string, onToken?: (s: string) => void): ChatResult {
@@ -294,7 +299,7 @@ export async function readStream(
     } catch {
       return;
     }
-    if (chunk.error) throw new LlmError(`stream hatası (${model}): ${chunk.error.message ?? 'unknown'}`, 'server', undefined, model);
+    if (chunk.error) throw new LlmError(`stream error (${model}): ${chunk.error.message ?? 'unknown'}`, 'server', undefined, model);
     if (chunk.usage) {
       usage.promptTokens = chunk.usage.prompt_tokens ?? usage.promptTokens;
       usage.completionTokens = chunk.usage.completion_tokens ?? usage.completionTokens;

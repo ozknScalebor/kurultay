@@ -35,7 +35,7 @@ describe('request watchdog', () => {
     const t0 = Date.now();
     const e = await fail(client(s.url).chat('hang', { ...PING, firstTokenTimeoutMs: 150, timeoutMs: 60_000 }));
     assert.equal(e.kind, 'timeout');
-    assert.match(e.message, /ilk token gelmedi/);
+    assert.match(e.message, /no first token/);
     assert.ok(Date.now() - t0 < 2000);
   });
 
@@ -44,7 +44,7 @@ describe('request watchdog', () => {
     const tokens: string[] = [];
     const e = await fail(client(s.url).chat('stall', { ...PING, firstTokenTimeoutMs: 1000, idleTimeoutMs: 150, onToken: (t) => tokens.push(t) }));
     assert.equal(e.kind, 'timeout');
-    assert.match(e.message, /sessiz kaldı/);
+    assert.match(e.message, /stream silent/);
     assert.deepEqual(tokens, ['Hel', 'lo'], 'the stream had started');
   });
 
@@ -55,7 +55,7 @@ describe('request watchdog', () => {
       { id: 'blocking', quality: 'good', tools: true, ctx: 8192, noStream: true, latencyMs: 120 },
     ]);
     const total = await fail(client(s.url).chat('slowstream', { ...PING, timeoutMs: 200 }));
-    assert.match(total.message, /toplam süre 200 ms aşıldı/);
+    assert.match(total.message, /total time of 200 ms exceeded/);
     const ok = await client(s.url).chat('fine', { ...PING, firstTokenTimeoutMs: 2000, idleTimeoutMs: 2000 });
     assert.equal(ok.content, 'PONG');
     // first-token/idle clocks do not apply to non-streaming requests (the whole answer arrives at once)
@@ -133,7 +133,7 @@ describe('router: models that stop answering', () => {
 
   it('validates the llm section', () => {
     assert.throws(() => validateConfig(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }], llm: { idleTimeoutMs: -1 } })), ConfigError);
-    assert.throws(() => validateConfig(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }], llm: { timeoutMs: 10 } })), /en az 1000/);
+    assert.throws(() => validateConfig(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }], llm: { timeoutMs: 10 } })), /at least 1000/);
     assert.throws(() => validateConfig(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }], llm: { timeoutRetries: 'x' } })), /llm\.timeoutRetries/);
     validateConfig(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }] }));
   });
@@ -168,7 +168,7 @@ describe('independent review', () => {
     assert.equal(asked, 0);
     assert.equal(v.independent, false);
     assert.equal(v.winner?.id, 'T1');
-    assert.ok(bus.ofType('log.warn').some((e) => /bağımsız gözden geçiren yok/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /no independent reviewer/.test(e.message ?? '')));
   });
 
   it('ignores votes a reviewer gives to its own candidate', async () => {

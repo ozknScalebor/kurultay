@@ -1,5 +1,5 @@
 {
-  "$comment": "Kurultay örnek yapılandırması – kapalı ağdaki tipik bir kurulum: 2 GPU sunucusunda vLLM, bir iş istasyonunda llama.cpp ve Ollama. Proje köküne kurultay.config.json olarak kopyalayın.",
+  "$comment": "Full Kurultay example – a typical setup on a closed network: vLLM on two GPU servers, llama.cpp and Ollama on a workstation. Copy it to the project root as kurultay.config.json. For a single server the short form in kurultay.config.simple.json is enough.",
   "endpoints": [
     {
       "name": "gpu1-vllm",
@@ -30,12 +30,15 @@
       "apiKey": "ollama",
       "models": [
         "qwen2.5-coder:14b",
-        "deepseek-coder-v2:16b"
+        {
+          "id": "deepseek-coder-v2:16b",
+          "apiKey": "${DEEPSEEK_KEY}"
+        }
       ]
     }
   ],
   "models": {
-    "qwen2.5-coder:14b": {
+    "qwen2.5-coder:14b@ollama": {
       "contextWindow": 32768,
       "extraBody": {
         "options": {
@@ -82,7 +85,7 @@
       "generated/**"
     ],
     "maxFileBytes": 524288,
-    "summaryLanguage": "tr",
+    "summaryLanguage": "en",
     "repoMapTokens": 2048
   },
   "tools": {
@@ -158,11 +161,11 @@
   },
   "skills": {
     "paths": [
-      "~/ortak-skilller"
+      "~/shared-skills"
     ],
     "disabled": [],
     "includeUser": true,
     "maxPreload": 3
   },
-  "language": "tr"
+  "language": "en"
 }

@@ -82,7 +82,7 @@ describe('plan approval', () => {
       },
     });
     assert.deepEqual(seen.map((x) => [x.round, x.subtasks]), [[1, 1], [2, 2]]);
-    assert.match(seen[1].text, /T2\. create b \(önce: T1\)[\s\S]*Kabul kriterleri:\n {2}- B equals 2/);
+    assert.match(seen[1].text, /T2\. create b \(after: T1\)[\s\S]*Acceptance criteria:\n {2}- B equals 2/);
     assert.match(planPrompts[planPrompts.length - 1], /USER FEEDBACK ON THE PREVIOUS PLAN[\s\S]*b modülünü de ekle[\s\S]*PREVIOUS PLAN[\s\S]*T1 create a/);
     assert.equal(report.status, 'completed');
     assert.ok(existsSync(join(root, 'src/b.js')));
@@ -95,8 +95,8 @@ describe('plan approval', () => {
     assert.equal(report.status, 'cancelled');
     assert.deepEqual(agentCalls, []);
     assert.ok(!existsSync(join(root, 'src')));
-    assert.match(readFileSync(report.reportPath, 'utf8'), /İptal:\*\* plan onaylanmadı/);
-    assert.ok(bus.ofType('log.info').some((e) => /plan reddedildi/.test(e.message ?? '')));
+    assert.match(readFileSync(report.reportPath, 'utf8'), /Cancelled:\*\* the plan was not approved/);
+    assert.ok(bus.ofType('log.info').some((e) => /plan rejected/.test(e.message ?? '')));
     assert.deepEqual(Orchestrator.resumable(root), [], 'a cancelled run is not resumable');
   });
 });
@@ -107,11 +107,11 @@ describe('budgets and resume', () => {
     const { run, resume, root, bus } = await setup({ agentCalls, agent: (id, step) => writer(id, step, true) }, { orchestrator: { maxTokens: 1_000_000 } });
     const first = await run('Create modules a and b', { mode: 'split' });
     assert.equal(first.status, 'incomplete');
-    assert.match(first.stopReason!, /token bütçesi doldu \(\d+ \/ 1000000\)/);
+    assert.match(first.stopReason!, /token budget used up \(\d+ \/ 1000000\)/);
     assert.ok(!existsSync(join(root, 'src/a.js')), 'nothing merged when stopped');
-    assert.match(readFileSync(first.reportPath, 'utf8'), /Durduruldu:\*\* token bütçesi[\s\S]*kurultay run --resume/);
+    assert.match(readFileSync(first.reportPath, 'utf8'), /Stopped:\*\* token budget[\s\S]*kurultay run --resume/);
     assert.ok(first.usage!.tokensOut >= 5_000_000);
-    assert.ok(bus.ofType('log.warn').some((e) => /çalışma durduruluyor/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /stopping the run/.test(e.message ?? '')));
     const list = Orchestrator.resumable(root);
     assert.equal(list.length, 1);
     assert.equal(list[0].id, first.sessionId);
@@ -129,26 +129,26 @@ describe('budgets and resume', () => {
     assert.ok(second.usage!.requests > first.usage!.requests, 'usage accumulates across resumes');
     assert.equal(second.stopReason, undefined);
     assert.deepEqual(Orchestrator.resumable(root), []);
-    await assert.rejects(resume(first.sessionId), /zaten tamamlanmış/);
-    await assert.rejects(resume(), /yarım kalmış görev yok/);
-    await assert.rejects(resume('nope'), /Oturum bulunamadı/);
+    await assert.rejects(resume(first.sessionId), /already finished/);
+    await assert.rejects(resume(), /No unfinished task/);
+    await assert.rejects(resume('nope'), /Session not found/);
     const md = readFileSync(second.reportPath, 'utf8');
-    assert.match(md, /## Model kullanımı[\s\S]*\| m1@e \| \d+ \|/);
-    assert.match(md, /Tüketim:\*\* \d+ istek .* \(sürdürülen oturum dahil\)/);
+    assert.match(md, /## Model usage[\s\S]*\| m1@e \| \d+ \|/);
+    assert.match(md, /Usage:\*\* \d+ requests .* \(including the resumed session\)/);
   });
 
   it('a user interrupt (Ctrl+C) leaves the run resumable', async () => {
     const ctrl = new AbortController();
     const { run, resume, root } = await setup({
       agent: (id, step) => {
-        if (id === 'T2' && step === 0) ctrl.abort(new Error('kullanıcı iptal etti'));
+        if (id === 'T2' && step === 0) ctrl.abort(new Error('cancelled by the user'));
         return writer(id, step);
       },
     });
-    await assert.rejects(run('Create modules a and b', { mode: 'split', signal: ctrl.signal }), /iptal/);
+    await assert.rejects(run('Create modules a and b', { mode: 'split', signal: ctrl.signal }), /cancelled/);
     const list = Orchestrator.resumable(root);
     assert.equal(list.length, 1);
-    assert.match(list[0].stopReason ?? '', /iptal/);
+    assert.match(list[0].stopReason ?? '', /cancelled/);
     const r = await resume(list[0].id);
     assert.equal(r.status, 'completed');
     assert.ok(existsSync(join(root, 'src/b.js')));
@@ -158,12 +158,12 @@ describe('budgets and resume', () => {
     const slow = await setup({ agent: (id, step) => writer(id, step) }, {}, { latencyMs: 400 });
     const r = await slow.run('Create modules a and b', { mode: 'split', budget: { minutes: 0.01 } });
     assert.equal(r.status, 'incomplete');
-    assert.match(r.stopReason!, /süre bütçesi doldu/);
+    assert.match(r.stopReason!, /time budget used up/);
 
     const tiny = await setup({});
     const p = await tiny.run('Create modules a and b', { budget: { tokens: 1 } });
     assert.equal(p.status, 'incomplete');
-    assert.match(p.stopReason!, /token bütçesi/);
+    assert.match(p.stopReason!, /token budget/);
     assert.ok(!existsSync(join(tiny.root, 'src')));
     const left = Orchestrator.resumable(tiny.root);
     assert.equal(left[0]?.left, p.plan.subtasks.length, 'the plan is kept; no subtask ran');
@@ -171,7 +171,7 @@ describe('budgets and resume', () => {
 
   it('renders the per-model usage table', () => {
     const t = renderUsageTable({ requests: 3, tokensIn: 25_000, tokensOut: 2_000_000, seconds: 5, byModel: { 'a@e': { requests: 2, tokensIn: 25_000, tokensOut: 2_000_000, ms: 3000, errors: 1, truncated: 1 }, 'b@e': { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 2, truncated: 0 } } });
-    assert.equal(t[2], '| a@e | 2 | 25K | 2.0M | 1.5 sn | 1 | 1 |');
+    assert.equal(t[2], '| a@e | 2 | 25K | 2.0M | 1.5 s | 1 | 1 |');
     assert.equal(t[3], '| b@e | 0 | 0 | 0 | - | 2 | 0 |');
   });
 });

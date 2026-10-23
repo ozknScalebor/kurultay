@@ -129,7 +129,7 @@ describe('analyze – batching, failures, incrementality', () => {
     const first = await new ProjectAnalyzer(idx, router, cfg, bus).run({});
     assert.ok(first.failures >= 1);
     assert.ok(existsSync(first.architecturePath), 'architecture still produced');
-    assert.ok(bus.ofType('log.warn').some((e) => /özet partisi başarısız/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /summary batch failed/.test(e.message ?? '')));
     const missing = idx.needsSummary().length;
     assert.ok(missing > 0);
     failSummaries = false;
@@ -208,7 +208,47 @@ describe('UI', () => {
       (process.stderr as unknown as { write: typeof orig }).write = orig;
     }
     const out = lines.join('');
-    for (const want of ['Kurultay toplandı', '1. one', 'read_file', 'bitti', 'deneme 2', 'LLM hatası [server]', 'kaldı', 'eksik: m1', 'Projeye uygulandı']) assert.ok(out.includes(want), want);
+    for (const want of ['Kurultay – 3 models', '1. one', 'read_file', 'done', 'attempt 2', 'LLM error [server]', 'failed', 'missing:', '- m1', 'Applied to the project']) assert.ok(out.includes(want), want);
     assert.ok(!out.includes('after-detach'));
+  });
+});
+
+describe('saved capability profile', () => {
+  it('is measured once, reused, extended for new models and re-measured on request; per-model keys are sent', async () => {
+    const s = await mock([
+      { id: 'p1', quality: 'good', tools: true, ctx: 16_384 },
+      { id: 'p2', quality: 'good', tools: true, ctx: 16_384 },
+    ]);
+    const home = tmpProject({});
+    const prev = process.env.KURULTAY_HOME;
+    process.env.KURULTAY_HOME = home;
+    try {
+      const { loadProfile, profilePath, runProbe } = await import('../../src/probe/profile.js');
+      const steps: string[] = [];
+      const cfg1 = config({ baseUrl: s.url, apiKey: 'main-key', models: ['p1'] });
+      const first = await runProbe(cfg1, undefined, { quick: true, onStep: (key, step) => steps.push(`${key}:${step}`) });
+      assert.deepEqual(first!.measured.models.map((m) => m.key), ['p1@main']);
+      assert.ok(steps.some((x) => x.startsWith('p1@main:')), 'progress reported per step');
+      assert.ok(existsSync(profilePath()));
+      assert.equal(await runProbe(cfg1, undefined, { quick: true }), undefined, 'nothing new to measure');
+      // a model added later (with its own key) is probed on its own
+      const before = s.log.length;
+      const cfg2 = config({ baseUrl: s.url, apiKey: 'main-key', models: ['p1', { id: 'p2', apiKey: 'own-key' }] });
+      const second = await runProbe(cfg2, undefined, { quick: true });
+      assert.deepEqual(second!.measured.models.map((m) => m.key), ['p2@main']);
+      assert.deepEqual(second!.profile.models.map((m) => m.key).sort(), ['p1@main', 'p2@main']);
+      const auth = new Set(s.log.slice(before).filter((l) => l.model === 'p2').map((l) => l.auth));
+      assert.deepEqual([...auth], ['Bearer own-key'], 'the model-specific key overrides the main key');
+      assert.ok(s.log.some((l) => l.model === 'p1' && l.auth === 'Bearer main-key'));
+      // explicit re-measure of one model, by name
+      const again = await runProbe(cfg2, undefined, { quick: true, models: ['p1'] });
+      assert.deepEqual(again!.measured.models.map((m) => m.key), ['p1@main']);
+      assert.equal(loadProfile()!.models.length, 2);
+      const all = await runProbe(cfg2, undefined, { quick: true, scope: 'all' });
+      assert.equal(all!.measured.models.length, 2);
+    } finally {
+      if (prev === undefined) delete process.env.KURULTAY_HOME;
+      else process.env.KURULTAY_HOME = prev;
+    }
   });
 });

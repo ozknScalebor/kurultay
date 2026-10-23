@@ -10,7 +10,7 @@ export function truncateMiddle(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const head = Math.floor(maxChars * 0.6);
   const tail = maxChars - head - 40;
-  return `${text.slice(0, head)}\n…[${text.length - head - Math.max(tail, 0)} karakter kırpıldı]…\n${text.slice(text.length - Math.max(tail, 0))}`;
+  return `${text.slice(0, head)}\n…[${text.length - head - Math.max(tail, 0)} characters cut]…\n${text.slice(text.length - Math.max(tail, 0))}`;
 }
 
 export function truncateTokens(text: string, maxTokens: number): string {
@@ -98,7 +98,7 @@ export function extractJson<T = unknown>(text: string): T {
       }
     }
   }
-  throw new Error('LLM çıktısında geçerli JSON bulunamadı');
+  throw new Error('no valid JSON in the LLM output');
 }
 
 export function tryExtractJson<T = unknown>(text: string): T | undefined {
@@ -136,4 +136,10 @@ export function fnv1a(s: string): string {
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** "1 file", "3 files", "2 dependencies" – counts in user-facing text. */
+export function plural(n: number, noun: string): string {
+  if (n === 1) return `${n} ${noun}`;
+  return `${n} ${/[^aeiou]y$/.test(noun) ? noun.slice(0, -1) + 'ies' : noun + 's'}`;
 }

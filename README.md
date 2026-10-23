@@ -140,40 +140,58 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
+ v0.4.0 · all your local LLMs in one council · offline
 
-LLM ayarları  2 endpoint (2 erişilebilir) · 4 model · 14 paralel slot · yetenek profili: ölçülmüş
+LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
-  gpu1            http://10.0.0.11:8000/v1    2 model    ● 18 ms
-  ollama          http://127.0.0.1:11434/v1   2 model    ● 6 ms
-  Model
-  ad                          bağlam  araç    tok/s  paralel  en iyi roller      durum
-  gpt-oss-120b@gpu1           128K    native  61     8        planner, judge     hazır
-  qwen3-coder-30b@gpu1        256K    native  95     4        coder, reviewer    hazır
+  main            http://10.0.0.11:8000/v1    4 models   ● 18 ms
+  Models
+  name                        context  tools   tok/s  parallel  best roles         state
+  gpt-oss-120b@main           128K     native  61     8         planner, judge     ready
+  qwen3-coder-30b@main        256K     native  95     4         coder, reviewer    ready
   ...
-  zaman aşımı: ilk token 3 dk · sessizlik 90 sn · toplam 10 dk · takılan model karantinası 2 dk
+  timeouts: first token 3 min · silence 90 s · total 10 min · pause after a hang 2 min
 
-Çalışma alanı seçin (zorunlu — projenin kök klasörü)
-  1) ~/projeler/uart-driver   şu anki klasör
-  2) ~/projeler/gateway       son kullanım 2026-10-21
-Çalışma alanı [numara veya yol] ❯ 1
-  ✓ indeks: 412 dosya, 3.180 tanım, 1.204 bağımlılık
-  ✓ mimari analiz güncel
-uart-driver ❯ /
-› /help        komutları ve kısayolları göster
-  /models      LLM paneli: endpoint sağlığı, modeller, yetenekler, kapasite
-  ...
+Select a workspace (required – the root folder of the project)
+  1) ~/projects/uart-driver   current folder
+  2) ~/projects/gateway       last used 2026-10-21
+Workspace [number or path] ❯ 1
+  ✓ index: 412 files, 3,180 definitions, 1,204 dependencies
+  ✓ capability profile saved (/probe to re-measure)
+  ✓ architecture analysis up to date
+uart-driver ❯ Add DMA support to the UART driver
+→ task: planned and spread over the models (/ask to only ask)
+
+Kurultay – 4 models · session 2026-10-23T09-12-40
+Planning…
+
+Plan (split) – 2 subtasks
+  1. DMA channel setup in uart_dma.c
+  2. Tests for the DMA path
+
+▸ T1  DMA channel setup in uart_dma.c  [qwen3-coder-30b@main, devstral@main]
+    ✓ T1-1 done – 9 steps, 2 files (qwen3-coder-30b@main)
+    → chosen: T1-1 (qwen3-coder-30b@main)
+...
+Verification: passed
+Requirement check: complete
+3 files, +120/-4 lines. Apply to the project? [y/N] y
+Applied to the project: 3 files written
 ```
 
-- **On start** it shows the live state of the endpoints, the models, their measured capabilities, parallel capacity and timeout settings. Without any configuration it asks for the first endpoint and writes it to `~/.kurultay/config.json`.
-- **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically; without a capability profile a quick probe runs, and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/probe`, `/analyze` do it by hand).
+- **On start** it shows the live state of the endpoints, the models, their measured capabilities, parallel capacity and timeout settings. Without any configuration it asks once for the endpoint URL, the API key and the model names, and writes them to `~/.kurultay/config.json` (see [Configuration](#configuration)).
+- **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/analyze` do it by hand).
+- **The capability probe runs once.** Its result is saved in `~/.kurultay/capabilities.json` and used by every project; later starts do not probe again. Only a model added to the configuration later is probed (on its own). `/probe` re-measures every model, `/probe <model>` one of them, `/probe --deep` measures more (bigger context, more parallel requests).
 - **Typing `/` opens the command menu**; it filters as you type, ↑/↓ selects, Tab/Enter runs. Command arguments (`/mode r` → `race`), `@file` and `$skill` complete too.
-- **Plain text**: a question (`… nerede?`, `nasıl çalışır`, `açıkla …`) is answered by the models as a council and follow-up questions know the previous answers; a task is planned and distributed to all models, and you are asked before it is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
+- **Plain text**: a question (`where is …?`, `how does … work`, `explain …`; Turkish questions are recognised too) is answered by the models as a council and follow-up questions know the previous answers; a task is planned and distributed to all models, and you are asked before it is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
 - A running job stops with **Ctrl+C** (half-done changes are rolled back). Whatever you typed meanwhile goes to the next prompt.
 - **UI**: answers and reports are rendered as Markdown (headings, lists, tables, highlighted code blocks). Below the prompt is a status line: git branch, mode, ready models, **tokens spent in this session and the context fill of the last answer**, session.
-- **Token and context tracking**: during long jobs the spinner shows elapsed time, LLM requests in flight, input/output tokens spent on this job and **the fullest context right now** (e.g. `bağlam 62% (80K/128K)`). When the job ends a one-line summary is printed (`⟡ 18 istek · 16K giriş / 829 çıkış token · en dolu bağlam 11% (1.8K/16K) (model)`). `/stats` (or `/context`, `/tokens`) shows the session totals, the last answer's context as a bar, and a per-model table of requests / tokens / mean latency / **peak context fill** / errors; `/stats reset` clears the counters.
-- **Plan mode** (`/plan on`): the plan is shown before any code is written; Enter approves, `h` cancels, anything else you type makes the planners revise the plan with your feedback.
+- **Token and context tracking**: during long jobs the spinner shows elapsed time, LLM requests in flight, input/output tokens spent on this job and **the fullest context right now** (e.g. `context 62% (80K/128K)`). When the job ends a one-line summary is printed (`⟡ 18 requests · 16K in / 829 out tokens · peak context 11% (1.8K/16K) (model)`). `/stats` (or `/context`, `/tokens`) shows the session totals, the last answer's context as a bar, and a per-model table of requests / tokens / mean latency / **peak context fill** / errors; `/stats reset` clears the counters.
+- **Plan mode** (`/plan on`): the plan is shown before any code is written; Enter or `y` approves, `n` cancels, anything else you type makes the planners revise the plan with your feedback.
 - **Budget and resume**: when `orchestrator.maxTokens` / `maxMinutes` runs out, the job stops without touching the project. An interrupted task (budget, Ctrl+C, crash) continues from the subtask where it stopped with `/continue-run`; finished subtasks are not run again.
-- Main commands: `/models`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
+- **Output** is one idea per line, grouped by phase (plan → subtasks → verification → apply). Tool calls, shell commands and single LLM requests only appear with `/verbose on`.
+- **Old Windows consoles** (cmd.exe / PowerShell in conhost) cannot draw some symbols; Kurultay detects them and prints plain ASCII instead (`+` for ✓, `>` for →, …). Windows Terminal, VS Code and Git Bash get the Unicode version. Force it with `--ascii` or `KURULTAY_ASCII=1` (`=0` forces Unicode).
+- Main commands: `/models`, `/model add|remove`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
 
 #### Sessions
 
@@ -197,8 +215,8 @@ LLM settings and capability profiles are kept per user (`~/.kurultay/`; change w
 ```bash
 cd /my/project
 kurultay init        # kurultay.config.json + .kurultay/rules, skills, review_rules.md templates
-# edit the endpoint addresses and keys in kurultay.config.json
-kurultay probe       # model capability report → .kurultay/CAPABILITIES.md
+# edit baseUrl, apiKey and the model names in kurultay.config.json
+kurultay probe       # once: capability profile → ~/.kurultay/capabilities.json (+ .kurultay/CAPABILITIES.md)
 kurultay analyze     # index + summaries with all models → .kurultay/ARCHITECTURE.md
 kurultay run "Add DMA support to the UART driver; existing tests must pass" --ui
 ```
@@ -209,10 +227,10 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 | Command | Description |
 |---|---|
-| `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`) |
+| `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`, `--ascii`) |
 | `kurultay rewind [session]` | Undo the changes a task applied to the project (default: last task; `--yes`, `--force` for files changed since) |
 | `kurultay init` | Creates configuration and rule templates; guesses build/test commands (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
-| `kurultay probe [--deep] [--quick]` | Capability analysis. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the benchmark |
+| `kurultay probe [--model a,b] [--deep] [--quick]` | Measures the models again and saves the profile (all configured models, or only `--model`). Standard: 2 coding + 2 editing tasks, context up to 32K, 1→2→4 parallel requests. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the coding benchmark |
 | `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
 | `kurultay skills` | Lists the skills found and validates them against the specification. `skills new <name> --description "..."` creates a skill folder |
@@ -229,7 +247,25 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 ## Configuration
 
-Full example: [`examples/kurultay.config.example.json`](examples/kurultay.config.example.json)
+One server, one key, a list of model names – that is all most setups need (`~/.kurultay/config.json` for every project, or `kurultay.config.json` in a project):
+
+```jsonc
+{
+  "baseUrl": "http://10.0.0.11:8000/v1",
+  "apiKey": "${KURULTAY_API_KEY}",
+  "models": [
+    "qwen3-coder-30b-a3b",
+    "gpt-oss-120b",
+    "devstral-small",
+    { "id": "glm-4.5-air", "apiKey": "another-key" }   // only this model uses its own key
+  ],
+  "verify": { "build": "cmake --build build -j", "test": "ctest --test-dir build" }
+}
+```
+
+Every model uses the main `apiKey` unless it has its own. In the console `/model add <name> [apiKey]` and `/model remove <name>` edit the list. Short example: [`examples/kurultay.config.simple.json`](examples/kurultay.config.simple.json).
+
+Several servers use the `endpoints` list instead (it can also be added next to `baseUrl`). Full example: [`examples/kurultay.config.full.json`](examples/kurultay.config.full.json)
 
 ```jsonc
 {
@@ -322,7 +358,7 @@ Which idea came from which open-source agent, with notes from the code-level stu
 ## Generated files (`.kurultay/`)
 
 ```
-capabilities.json, CAPABILITIES.md   model capability profile
+CAPABILITIES.md                      readable copy of the capability profile (the profile itself: ~/.kurultay/capabilities.json)
 index/index.json                     symbols, graph, PageRank, summaries (incremental)
 index/vectors.json                   embedding vectors per code chunk (when an embedding model exists)
 ARCHITECTURE.md, INDEX.md            architecture summary and file index

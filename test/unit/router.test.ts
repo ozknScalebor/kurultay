@@ -80,7 +80,7 @@ describe('Router – resilience', () => {
     const res = await r.chat(PING, { role: 'coder', retryBaseMs: 5 });
     assert.equal(res.model, 'ok@e');
     assert.ok(r.get('dead@e')!.health.circuitOpenUntil > Date.now(), 'circuit must be open');
-    assert.ok(bus.ofType('log.warn').some((e) => /devre kesici/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /circuit breaker/.test(e.message ?? '')));
     const before = s.log.filter((l) => l.model === 'dead').length;
     await r.chat(PING, { role: 'coder' });
     assert.equal(s.log.filter((l) => l.model === 'dead').length, before, 'open circuit is skipped');
@@ -127,7 +127,7 @@ describe('Router – resilience', () => {
     const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), [caps('boot', 'e')], bus);
     const res = await r.chat(PING, { attemptsPerModel: 1, recoveryWaitMs: 10_000, recoveryIntervalMs: 20 });
     assert.equal(res.content, 'PONG');
-    assert.ok(bus.ofType('log.warn').some((e) => /erişilemez/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /unreachable/.test(e.message ?? '')));
   });
 
   it('stops waiting at the recovery deadline', async () => {
@@ -148,7 +148,7 @@ describe('Router – resilience', () => {
     const res = await r.chat({ ...PING, timeoutMs: 150 }, { prefer: ['hang@e'], attemptsPerModel: 1 });
     assert.equal(res.model, 'ok@e');
     assert.ok(Date.now() - t0 < 2500);
-    assert.match(r.get('hang@e')!.health.lastError ?? '', /zaman aşımı|timeout/i);
+    assert.match(r.get('hang@e')!.health.lastError ?? '', /timeout/i);
   });
 
   it('honours abort signals', async () => {
@@ -161,9 +161,9 @@ describe('Router – resilience', () => {
 
   it('throws clear errors when nothing can serve the request', async () => {
     const empty = routerFor(config({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }] }), []);
-    await assert.rejects(empty.chat(PING), /Kayıtlı model yok/);
+    await assert.rejects(empty.chat(PING), /No registered model/);
     const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }] }), [caps('m', 'e')]);
-    await assert.rejects(r.chat(PING, { only: ['ghost@x'] }), /kısıtlara uyan model yok/);
+    await assert.rejects(r.chat(PING, { only: ['ghost@x'] }), /No model matches the requested constraints/);
   });
 
   it('never exceeds the per-endpoint concurrency limit', async () => {

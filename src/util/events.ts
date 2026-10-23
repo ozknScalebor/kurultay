@@ -38,6 +38,11 @@ export class EventBus extends EventEmitter {
     return ev;
   }
 
+  /** detail that is only shown with --verbose */
+  debug(source: string, message: string, data?: Record<string, unknown>): void {
+    this.emitEvent('log.debug', { source, message, data });
+  }
+
   info(source: string, message: string, data?: Record<string, unknown>): void {
     this.emitEvent('log.info', { source, message, data });
   }

@@ -40,7 +40,7 @@ export function renderInline(text: string, o: MdOptions): string {
   });
   s = s
     .replace(/<\/?(?:details|summary|br|sub|sup|kbd)\s*\/?>/gi, '')
-    .replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt: string, url: string) => `[${alt || 'görsel'}: ${url}]`)
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt: string, url: string) => `[${alt || 'image'}: ${url}]`)
     .replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, t: string, url: string) => (t === url ? paint(o, url, 'under', 'blue') : `${paint(o, t, 'under')} ${paint(o, `(${url})`, 'gray')}`))
     .replace(/\*\*\*([^*]+)\*\*\*/g, (_m, t: string) => paint(o, t, 'bold', 'italic'))
     .replace(/(\*\*|__)(?=\S)([^*]*?\S)\1/g, (_m, _d, t: string) => paint(o, t, 'bold'))
@@ -172,7 +172,7 @@ export function renderMarkdown(md: string, opts: Partial<MdOptions> = {}): strin
       const lang = fence[3] ?? '';
       const body: string[] = [];
       for (i++; i < lines.length && !lines[i].trimStart().startsWith(close); i++) body.push(lines[i]);
-      if (lang === 'mermaid') out.push(paint(o, '  [mermaid diyagramı]', 'gray'));
+      if (lang === 'mermaid') out.push(paint(o, '  [mermaid diagram]', 'gray'));
       out.push(paint(o, `  ┌${lang ? ` ${lang} ` : ''}${'─'.repeat(Math.max(0, Math.min(o.width - 6, 40) - displayWidth(lang) - (lang ? 2 : 0)))}`, 'gray'));
       for (const b of body) out.push(`${paint(o, '  │ ', 'gray')}${highlight(fitWidth(b.replace(/\t/g, '  '), o.width - 4), lang, o)}`);
       out.push(paint(o, '  └', 'gray'));

@@ -71,17 +71,17 @@ describe('compiler check after edits', () => {
     assert.equal(javaSourceRoot('/p/src/main/java/com/acme/Foo.java', 'package com.acme;\nclass Foo {}'), '/p/src/main/java');
     assert.equal(javaSourceRoot('/p/src/Foo.java', 'class Foo {}'), '/p/src');
     assert.equal(renderSyntaxResult('a.c', { checked: false, errors: ['x'] }), '');
-    assert.match(renderSyntaxResult('a.c', { checked: true, tool: 'gcc', errors: ['boom'] }), /⚠ gcc a\.c için derleme hatası/);
+    assert.match(renderSyntaxResult('a.c', { checked: true, tool: 'gcc', errors: ['boom'] }), /⚠ gcc found compile errors in a\.c/);
   });
 
   it('C: reports a syntax error introduced by an edit, ignores missing headers', { skip: !gcc }, async () => {
     const { ctx } = setup({ 'src/a.c': '#include "missing_vendor.h"\n#include <vendor/sub/api.h>\nvendor_t g;\nint f(void) {\n  return 1;\n}\n', 'include/x.h': 'int g(void);\n' });
     await executeTool('read_file', { path: 'src/a.c' }, ctx);
     const bad = await executeTool('edit_file', { path: 'src/a.c', old_text: '  return 1;', new_text: '  return 1 +;' }, ctx);
-    assert.match(bad.output, /derleme hatası buldu[\s\S]*src\/a\.c:5/);
+    assert.match(bad.output, /found compile errors in[\s\S]*src\/a\.c:5/);
     assert.doesNotMatch(bad.output, /missing_vendor|vendor_t/, 'stubbed headers: undeclared names are not reported');
     const good = await executeTool('edit_file', { path: 'src/a.c', old_text: '  return 1 +;', new_text: '  return 2;' }, ctx);
-    assert.doesNotMatch(good.output, /derleme hatası/);
+    assert.doesNotMatch(good.output, /compile errors/);
   });
 
   it('C++: uses compile_commands.json flags and checks headers through a TU', { skip: !gxx }, async () => {

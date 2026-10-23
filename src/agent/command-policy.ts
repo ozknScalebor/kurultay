@@ -71,15 +71,15 @@ export function commandSegments(cmd: string): string[] {
 
 export function checkCommand(cmd: string, tools: Pick<ToolsConfig, 'denyPatterns' | 'commandPolicy' | 'allowPatterns'>): PolicyResult {
   for (const pat of tools.denyPatterns) {
-    if (new RegExp(pat, 'i').test(cmd)) return { ok: false, reason: `güvenlik kuralı (${pat})` };
+    if (new RegExp(pat, 'i').test(cmd)) return { ok: false, reason: `safety rule (${pat})` };
   }
   if ((tools.commandPolicy ?? 'deny') !== 'allow') return { ok: true };
-  if (/\$\(|`|<\(|>\(/.test(cmd)) return { ok: false, reason: 'izin listesi modunda komut ikamesi ($(…), `…`) kullanılamaz' };
-  if (/(^|[^<>&\d])>{1,2}\s*\/(?!dev\/null|tmp\/)/.test(cmd)) return { ok: false, reason: 'izin listesi modunda proje dışına yönlendirme yapılamaz' };
+  if (/\$\(|`|<\(|>\(/.test(cmd)) return { ok: false, reason: 'command substitution ($(…), `…`) is not allowed in allow-list mode' };
+  if (/(^|[^<>&\d])>{1,2}\s*\/(?!dev\/null|tmp\/)/.test(cmd)) return { ok: false, reason: 'redirecting outside the project is not allowed in allow-list mode' };
   const allow = [...DEFAULT_ALLOW, ...(tools.allowPatterns ?? [])].map((p) => new RegExp(p));
   for (const seg of commandSegments(cmd)) {
     const bare = seg.replace(/^(sudo|exec|time|nice|timeout\s+\S+)\s+/, (m) => (m.startsWith('sudo') ? m : ''));
-    if (!allow.some((re) => re.test(bare))) return { ok: false, reason: `izin listesinde değil: "${bare.slice(0, 80)}" (tools.allowPatterns ile eklenebilir)` };
+    if (!allow.some((re) => re.test(bare))) return { ok: false, reason: `not in the allow list: "${bare.slice(0, 80)}" (add it with tools.allowPatterns)` };
   }
   return { ok: true };
 }
@@ -129,7 +129,7 @@ export function osSandboxFor(tools: Pick<ToolsConfig, 'osSandbox'>): { use: bool
   const mode = tools.osSandbox ?? 'off';
   if (mode === 'off') return { use: false };
   if (bwrapAvailable()) return { use: true };
-  return mode === 'bwrap' ? { use: false, error: 'tools.osSandbox="bwrap" ama bubblewrap çalıştırılamıyor (kurulu değil veya kullanıcı ad alanları kapalı)' } : { use: false };
+  return mode === 'bwrap' ? { use: false, error: 'tools.osSandbox="bwrap" but bubblewrap cannot run (not installed or user namespaces disabled)' } : { use: false };
 }
 
 /** Test hook. */

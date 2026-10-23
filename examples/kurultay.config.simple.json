@@ -1,0 +1,19 @@
+{
+  "$comment": "Short form: one endpoint, one API key, model names one per line. A model with its own key: {\"id\": ..., \"apiKey\": ...}; all others use the main apiKey. An empty or missing list uses every model the endpoint reports. Save as ~/.kurultay/config.json (all projects) or kurultay.config.json in a project.",
+  "baseUrl": "http://10.10.0.11:8000/v1",
+  "apiKey": "${KURULTAY_API_KEY}",
+  "models": [
+    "qwen3-coder-30b-a3b",
+    "gpt-oss-120b",
+    "devstral-small",
+    {
+      "id": "glm-4.5-air",
+      "apiKey": "another-key"
+    }
+  ],
+  "verify": {
+    "build": "",
+    "test": "",
+    "lint": ""
+  }
+}

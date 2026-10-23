@@ -42,11 +42,11 @@ export interface ToolContext {
 function guardUnread(path: string, ctx: ToolContext, verb: string): ToolOutcome | undefined {
   if (!ctx.config.tools.requireReadBeforeEdit || !ctx.readFiles) return undefined;
   if (ctx.staleFiles?.has(path)) {
-    return { output: `${path} için son düzenleme eşleşmedi; ${verb} önce dosyayı read_file ile yeniden okuyun.`, isError: true };
+    return { output: `The last edit of ${path} did not match; read the file again with read_file before ${verb} it.`, isError: true };
   }
   if (ctx.readFiles.has(path) || ctx.writtenFiles?.has(path)) return undefined;
   if (ctx.overlay.read(path) === undefined) return undefined;
-  return { output: `${path} dosyasını ${verb} önce read_file ile okumalısınız (gerçek içeriği görmeden yapılan düzenlemeler genellikle başarısız olur).`, isError: true };
+  return { output: `Read ${path} with read_file before ${verb} it (edits made without seeing the real content usually fail).`, isError: true };
 }
 
 /**
@@ -59,7 +59,7 @@ function resolveExisting(ctx: ToolContext, path: string): { path: string; note: 
   const suffix = files.filter((f) => f.endsWith('/' + path));
   const base = path.split('/').pop()!;
   const cands = suffix.length ? suffix : files.filter((f) => f.split('/').pop() === base);
-  if (cands.length === 1) return { path: cands[0], note: `(not: "${path}" bulunamadı, "${cands[0]}" kullanıldı)\n` };
+  if (cands.length === 1) return { path: cands[0], note: `(note: "${path}" not found, used "${cands[0]}")\n` };
   return { path, note: '' };
 }
 
@@ -79,7 +79,7 @@ interface ToolDef {
 }
 
 const str = (v: unknown, name: string): string => {
-  if (typeof v !== 'string') throw new Error(`"${name}" parametresi metin olmalı`);
+  if (typeof v !== 'string') throw new Error(`parameter "${name}" must be a string`);
   return v;
 };
 const optNum = (v: unknown): number | undefined => (v === undefined || v === null || v === '' ? undefined : Number(v));
@@ -134,7 +134,7 @@ export function runShell(command: string, cwd: string, timeoutMs: number, signal
     });
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ code: -1, output: `komut başlatılamadı: ${e.message}`, timedOut: false });
+      resolve({ code: -1, output: `could not start the command: ${e.message}`, timedOut: false });
     });
   });
 }
@@ -160,7 +160,7 @@ const TOOLS: Record<string, ToolDef> = {
       const content = ctx.overlay.read(path);
       if (content === undefined) {
         const near = ctx.index?.files.map((f) => f.path).filter((f) => f.includes(path.split('/').pop()!.replace(/\.[^.]+$/, ''))).slice(0, 5) ?? [];
-        return { output: `Dosya yok: ${path}${near.length ? `. Benzer dosyalar: ${near.join(', ')}` : ''}`, isError: true };
+        return { output: `No such file: ${path}${near.length ? `. Similar files: ${near.join(', ')}` : ''}`, isError: true };
       }
       ctx.readFiles?.add(path);
       ctx.staleFiles?.delete(path);
@@ -168,8 +168,8 @@ const TOOLS: Record<string, ToolDef> = {
       const start = optNum(a.start_line) ?? 1;
       const end = optNum(a.end_line) ?? Math.min(total, start + 399);
       const body = numbered(content, start, end);
-      const more = end < total ? `\n… (${total} satırın ${start}-${end} arası gösterildi; devamı için start_line=${end + 1})` : '';
-      return { output: `${r.note}${path} (${total} satır)\n${body}${more}` };
+      const more = end < total ? `\n… (showing lines ${start}-${end} of ${total}; continue with start_line=${end + 1})` : '';
+      return { output: `${r.note}${path} (${total} lines)\n${body}${more}` };
     },
   },
   list_dir: {
@@ -185,7 +185,7 @@ const TOOLS: Record<string, ToolDef> = {
     async run(a, ctx) {
       const raw = typeof a.path === 'string' && a.path.trim() && a.path.trim() !== '.' ? safeRelPath(ctx.root, a.path) : '';
       const items = ctx.overlay.list(raw).filter((e) => !/^(\.git|\.kurultay|node_modules)$/.test(e.name));
-      if (!items.length) return { output: `Boş ya da bulunamadı: ${raw || '.'}` };
+      if (!items.length) return { output: `Empty or not found: ${raw || '.'}` };
       return { output: items.slice(0, 300).map((e) => (e.dir ? `${e.name}/` : e.name)).join('\n') };
     },
   },
@@ -200,9 +200,9 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      if (!ctx.index) return { output: 'İndeks yok; grep kullanın.', isError: true };
+      if (!ctx.index) return { output: 'No index; use grep.', isError: true };
       const hits = await ctx.index.hybridSearch(str(a.query, 'query'), 8, typeof a.path_filter === 'string' ? a.path_filter : undefined, ctx.signal);
-      if (!hits.length) return { output: 'Sonuç yok.' };
+      if (!hits.length) return { output: 'No results.' };
       return {
         output: hits
           .map((h) => {
@@ -214,7 +214,7 @@ const TOOLS: Record<string, ToolDef> = {
             });
             const from = Math.max(0, best - 3);
             const snippet = lines.slice(from, from + 12).map((l, i) => `${h.startLine + from + i}│ ${l}`).join('\n');
-            return `## ${h.path}:${h.startLine}-${h.endLine} (skor ${h.score.toFixed(2)})\n${snippet}`;
+            return `## ${h.path}:${h.startLine}-${h.endLine} (score ${h.score.toFixed(2)})\n${snippet}`;
           })
           .join('\n\n'),
       };
@@ -235,7 +235,7 @@ const TOOLS: Record<string, ToolDef> = {
       try {
         re = new RegExp(str(a.pattern, 'pattern'), a.ignore_case ? 'i' : '');
       } catch (e) {
-        return { output: `Geçersiz regex: ${(e as Error).message}`, isError: true };
+        return { output: `Invalid regex: ${(e as Error).message}`, isError: true };
       }
       const filter = typeof a.path_filter === 'string' && a.path_filter ? new RegExp(a.path_filter.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')) : undefined;
       const paths = new Set<string>(ctx.index?.files.map((f) => f.path) ?? []);
@@ -249,7 +249,7 @@ const TOOLS: Record<string, ToolDef> = {
         for (let i = 0; i < lines.length && out.length < 120; i++) if (re.test(lines[i])) out.push(`${p}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
         if (out.length >= 120) break;
       }
-      return { output: out.length ? out.join('\n') + (out.length >= 120 ? '\n… (ilk 120 sonuç)' : '') : 'Eşleşme yok.' };
+      return { output: out.length ? out.join('\n') + (out.length >= 120 ? '\n… (first 120 matches)' : '') : 'No matches.' };
     },
   },
   find_symbol: {
@@ -263,14 +263,14 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      if (!ctx.index) return { output: 'İndeks yok.', isError: true };
+      if (!ctx.index) return { output: 'No index.', isError: true };
       const hits = ctx.index.findSymbol(str(a.name, 'name'));
-      if (!hits.length) return { output: 'Tanım bulunamadı.' };
+      if (!hits.length) return { output: 'No definition found.' };
       return {
         output: hits
           .map((h) => {
             const users = ctx.index!.dependents(h.path).slice(0, 6).map((d) => d.path);
-            return `${h.path}:${h.def.line} [${h.def.kind}] ${h.def.signature}${users.length ? `\n   kullananlar: ${users.join(', ')}` : ''}`;
+            return `${h.path}:${h.def.line} [${h.def.kind}] ${h.def.signature}${users.length ? `\n   used by: ${users.join(', ')}` : ''}`;
           })
           .join('\n'),
       };
@@ -291,7 +291,7 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      if (!ctx.index) return { output: 'İndeks yok.', isError: true };
+      if (!ctx.index) return { output: 'No index.', isError: true };
       const files = Array.isArray(a.focus_files) ? (a.focus_files as string[]) : [];
       const ids = Array.isArray(a.focus_identifiers) ? (a.focus_identifiers as string[]) : [];
       return { output: ctx.index.repoMap(optNum(a.max_tokens) ?? 1500, { files, identifiers: ids }) };
@@ -311,13 +311,13 @@ const TOOLS: Record<string, ToolDef> = {
       const path = safeRelPath(ctx.root, str(a.path, 'path'));
       const content = str(a.content, 'content');
       const before = ctx.overlay.read(path);
-      const blocked = guardUnread(path, ctx, 'üzerine yazmadan');
+      const blocked = guardUnread(path, ctx, 'overwriting');
       if (blocked) return blocked;
       ctx.overlay.write(path, content);
       ctx.writtenFiles?.add(path);
       ctx.bus?.emitEvent('tool.write', { source: ctx.workerId, data: { path } });
       const warn = [postEditCheck(path, before, content), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp, { javaRelease: ctx.config.tools.javaRelease }))].filter(Boolean).join('\n');
-      return { output: `${before !== undefined ? 'Güncellendi' : 'Oluşturuldu'}: ${path} (${content.split('\n').length} satır)${warn ? '\n' + warn : ''}` };
+      return { output: `${before !== undefined ? 'Updated' : 'Created'}: ${path} (${content.split('\n').length} lines)${warn ? '\n' + warn : ''}` };
     },
   },
   edit_file: {
@@ -340,11 +340,11 @@ const TOOLS: Record<string, ToolDef> = {
       const cur = ctx.overlay.read(path);
       const oldText = str(a.old_text, 'old_text');
       const newText = str(a.new_text, 'new_text');
-      if (cur === undefined && oldText.trim()) return { output: `Dosya yok: ${path}. Yeni dosya için write_file kullanın.`, isError: true };
-      if (oldText === newText) return { output: 'old_text ve new_text aynı; değişiklik yok.', isError: true };
+      if (cur === undefined && oldText.trim()) return { output: `No such file: ${path}. Use write_file for a new file.`, isError: true };
+      if (oldText === newText) return { output: 'old_text and new_text are the same; nothing to change.', isError: true };
       // old_text must match the real content exactly, which already proves the model knows the file
       // (Aider SEARCH/REPLACE); only a file whose previous edit missed must be re-read first.
-      const blocked = ctx.staleFiles?.has(path) ? guardUnread(path, ctx, 'düzenlemeden') : undefined;
+      const blocked = ctx.staleFiles?.has(path) ? guardUnread(path, ctx, 'editing') : undefined;
       if (blocked) return blocked;
       try {
         const next = applyReplacement(cur ?? '', oldText, newText, { replaceAll: !!a.replace_all, path });
@@ -352,12 +352,12 @@ const TOOLS: Record<string, ToolDef> = {
         ctx.writtenFiles?.add(path);
         ctx.bus?.emitEvent('tool.edit', { source: ctx.workerId, data: { path } });
         const warn = [postEditCheck(path, cur, next), renderSyntaxResult(path, await syntaxCheck(path, ctx.overlay, ctx.materializer, ctx.config.tools.syntaxCheck ?? 'auto', ctx.signal, ctx.config.lsp, { javaRelease: ctx.config.tools.javaRelease }))].filter(Boolean).join('\n');
-        return { output: `${r.note}Düzenlendi: ${path}${warn ? '\n' + warn : ''}` };
+        return { output: `${r.note}Edited: ${path}${warn ? '\n' + warn : ''}` };
       } catch (e) {
         if (e instanceof EditError) {
           // OMO edit-error-recovery: force a re-read before the next attempt
           if (ctx.readFiles && ctx.config.tools.requireReadBeforeEdit) ctx.staleFiles?.add(path);
-          return { output: `${e.message}\nÖnce dosyayı read_file ile yeniden okuyun; varsayımınız dosyanın gerçek içeriğiyle uyuşmuyor.`, isError: true };
+          return { output: `${e.message}\nRead the file again with read_file first; your assumption does not match its real content.`, isError: true };
         }
         throw e;
       }
@@ -371,12 +371,12 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a, ctx) {
       const path = safeRelPath(ctx.root, str(a.path, 'path'));
-      if (ctx.overlay.read(path) === undefined) return { output: `Dosya yok: ${path}`, isError: true };
-      const blocked = guardUnread(path, ctx, 'silmeden');
+      if (ctx.overlay.read(path) === undefined) return { output: `No such file: ${path}`, isError: true };
+      const blocked = guardUnread(path, ctx, 'deleting');
       if (blocked) return blocked;
       ctx.overlay.delete(path);
       ctx.writtenFiles?.add(path);
-      return { output: `Silindi: ${path}` };
+      return { output: `Deleted: ${path}` };
     },
   },
   run_command: {
@@ -392,11 +392,11 @@ const TOOLS: Record<string, ToolDef> = {
     async run(a, ctx) {
       const cmd = str(a.command, 'command');
       const tools = ctx.config.tools;
-      if (!tools.allowCommands) return { output: 'Komut çalıştırma yapılandırmada kapalı.', isError: true };
+      if (!tools.allowCommands) return { output: 'Running commands is disabled in the configuration.', isError: true };
       const policy = checkCommand(cmd, tools);
       if (!policy.ok) {
         ctx.bus?.emitEvent('tool.command.denied', { source: ctx.workerId, message: cmd, data: { reason: policy.reason } });
-        return { output: `Komut reddedildi: ${policy.reason}.`, isError: true };
+        return { output: `Command rejected: ${policy.reason}.`, isError: true };
       }
       const os = osSandboxFor(tools);
       if (os.error) return { output: os.error, isError: true };
@@ -407,7 +407,7 @@ const TOOLS: Record<string, ToolDef> = {
         bwrap: os.use ? { network: tools.osSandboxNetwork ?? false, writable: tools.osSandboxWritable } : undefined,
       };
       const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal, shellOpts), ctx.signal);
-      const status = r.timedOut ? 'ZAMAN AŞIMI' : `çıkış kodu ${r.code}`;
+      const status = r.timedOut ? 'TIMED OUT' : `exit code ${r.code}`;
       return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000)}`, isError: r.code !== 0 };
     },
   },
@@ -423,12 +423,12 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a, ctx) {
       const reg = ctx.skills;
-      if (!reg || reg.size === 0) return { output: 'Bu projede skill yok.', isError: true };
+      if (!reg || reg.size === 0) return { output: 'This project has no skills.', isError: true };
       const s = reg.get(str(a.name, 'name'));
       const available = reg.visible().map((x) => x.name).join(', ') || '-';
-      if (!s) return { output: `Skill bulunamadı: ${a.name}. Mevcut skill'ler: ${available}`, isError: true };
-      if (s.hidden && !ctx.explicitSkills?.has(s.name)) return { output: `"${s.name}" yalnızca kullanıcı açıkça seçtiğinde kullanılabilir.`, isError: true };
-      if (ctx.loadedSkills?.has(s.name)) return { output: `"${s.name}" zaten yüklü; talimatlarını izlemeye devam edin.` };
+      if (!s) return { output: `Skill not found: ${a.name}. Available skills: ${available}`, isError: true };
+      if (s.hidden && !ctx.explicitSkills?.has(s.name)) return { output: `"${s.name}" can only be used when the user selects it.`, isError: true };
+      if (ctx.loadedSkills?.has(s.name)) return { output: `"${s.name}" is already loaded; keep following its instructions.` };
       ctx.loadedSkills?.add(s.name);
       ctx.bus?.emitEvent('skill.load', { source: ctx.workerId, data: { name: s.name, how: 'tool' } });
       return { output: reg.render(s, typeof a.args === 'string' ? a.args : undefined) };
@@ -446,7 +446,7 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a, ctx) {
       const s = ctx.skills?.get(str(a.name, 'name'));
-      if (!s) return { output: `Skill bulunamadı: ${a.name}`, isError: true };
+      if (!s) return { output: `Skill not found: ${a.name}`, isError: true };
       return { output: `${s.name}/${a.path}\n${ctx.skills!.readFile(s, str(a.path, 'path'))}` };
     },
   },
@@ -462,7 +462,7 @@ const TOOLS: Record<string, ToolDef> = {
     },
     async run(a) {
       const status = a.status === 'blocked' ? 'blocked' : 'done';
-      return { output: 'tamam', finished: { summary: typeof a.summary === 'string' ? a.summary : '', status } };
+      return { output: 'ok', finished: { summary: typeof a.summary === 'string' ? a.summary : '', status } };
     },
   },
 };
@@ -482,15 +482,15 @@ export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; exter
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome> {
   const def = TOOLS[name];
   if (!def && ctx.external?.has(name)) {
-    if (ctx.allowed && !ctx.external.isReadOnly(name)) return { output: `Bu çalışan için izin verilmeyen araç: ${name}`, isError: true };
+    if (ctx.allowed && !ctx.external.isReadOnly(name)) return { output: `Tool not allowed for this worker: ${name}`, isError: true };
     return ctx.external.call(name, args, ctx.signal);
   }
-  if (!def) return { output: `Bilinmeyen araç: ${name}. Kullanılabilir: ${[...(ctx.allowed ?? new Set(ALL_TOOLS))].join(', ')}`, isError: true };
-  if (ctx.allowed && !ctx.allowed.has(name)) return { output: `Bu çalışan için izin verilmeyen araç: ${name}`, isError: true };
+  if (!def) return { output: `Unknown tool: ${name}. Available: ${[...(ctx.allowed ?? new Set(ALL_TOOLS))].join(', ')}`, isError: true };
+  if (ctx.allowed && !ctx.allowed.has(name)) return { output: `Tool not allowed for this worker: ${name}`, isError: true };
   try {
     return await def.run(args, ctx);
   } catch (e) {
-    return { output: `Araç hatası (${name}): ${(e as Error).message}`, isError: true };
+    return { output: `Tool error (${name}): ${(e as Error).message}`, isError: true };
   }
 }
 

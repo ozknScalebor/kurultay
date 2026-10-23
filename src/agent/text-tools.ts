@@ -87,7 +87,7 @@ export function parseTextToolCalls(text: string): ParsedCall[] {
 }
 
 export function textToolInstructions(catalogue: string): string {
-  return `## Araç kullanımı
+  return `## Tool use
 You can call tools by writing one or more blocks EXACTLY like this (JSON inside the tags):
 <tool_call>
 {"name": "read_file", "arguments": {"path": "src/main.c"}}

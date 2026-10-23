@@ -49,7 +49,7 @@ function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'auth
   if (!raw || !Array.isArray(raw.subtasks) || raw.subtasks.length === 0) return undefined;
   const subtasks: SubTask[] = raw.subtasks.slice(0, 8).map((s, i) => ({
     id: (s.id && String(s.id)) || `T${i + 1}`,
-    title: s.title || `Alt görev ${i + 1}`,
+    title: s.title || `Subtask ${i + 1}`,
     description: s.description || s.title || task,
     files: Array.isArray(s.files) ? s.files.filter((f) => typeof f === 'string') : [],
     dependsOn: (s.depends_on ?? s.dependsOn ?? []).map(String),
@@ -99,7 +99,7 @@ export async function makePlan(
   const skills = opts.skillCatalogue ? `\n\n${opts.skillCatalogue}` : '';
   const prompt = `${PLAN_INSTRUCTIONS}\n\n${truncateTokens(context, opts.contextTokens)}${skills}\n\n# TASK\n${task}${opts.extra ? '\n\n' + opts.extra : ''}`;
   const planners = router.pick('planner', Math.max(1, opts.drafts));
-  opts.bus?.info('planner', `plan taslakları: ${planners.map((p) => p.caps.key).join(', ')}`);
+  opts.bus?.info('planner', `plan drafts: ${planners.map((p) => p.caps.key).join(', ')}`);
   const results = await settle(
     planners.map((p) =>
       router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, jsonMode: true, jsonSchema: PLAN_SCHEMA, maxTokens: 3000, purpose: 'plan.draft', signal: opts.signal }, { prefer: [p.caps.key], role: 'planner' }),
@@ -108,7 +108,7 @@ export async function makePlan(
   const drafts: Array<{ model: string; plan: Omit<Plan, 'authors'>; raw: string }> = [];
   results.forEach((r, i) => {
     if (!r.ok) {
-      opts.bus?.warn('planner', `plan taslağı başarısız: ${errorMessage(r.error)}`);
+      opts.bus?.warn('planner', `plan draft failed: ${errorMessage(r.error)}`);
       router.recordOutcome(planners[i].caps.key, 'planner', false);
       return;
     }
@@ -117,8 +117,8 @@ export async function makePlan(
     if (plan) drafts.push({ model: r.value.model, plan, raw: r.value.content });
   });
   if (!drafts.length) {
-    opts.bus?.warn('planner', 'geçerli plan üretilemedi; görev tek alt görev olarak çalıştırılacak');
-    return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title: 'Görev', description: task, files: [], dependsOn: [], critical: true }], authors: [] };
+    opts.bus?.warn('planner', 'no valid plan; running the task as one subtask');
+    return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title: 'Task', description: task, files: [], dependsOn: [], critical: true }], authors: [] };
   }
   if (drafts.length === 1) return { ...drafts[0].plan, authors: [drafts[0].model] };
 
@@ -150,9 +150,9 @@ ${labelled}`,
     );
     const merged = normalizePlan(tryExtractJson<RawPlan>(judge.content), task);
     router.recordOutcome(judge.model, 'judge', !!merged);
-    if (merged) return { ...merged, authors: [...drafts.map((d) => d.model), `${judge.model} (birleştiren)`] };
+    if (merged) return { ...merged, authors: [...drafts.map((d) => d.model), `${judge.model} (merged)`] };
   } catch (e) {
-    opts.bus?.warn('planner', `plan birleştirme başarısız: ${errorMessage(e)}`);
+    opts.bus?.warn('planner', `merging the plans failed: ${errorMessage(e)}`);
   }
   return { ...drafts[0].plan, authors: [drafts[0].model] };
 }

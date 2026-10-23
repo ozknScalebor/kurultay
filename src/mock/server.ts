@@ -149,15 +149,15 @@ function respond(model: MockModel, body: { messages: Msg[]; tools?: unknown[]; r
   }
   if (/Summarize each source file below/.test(u)) {
     const files = [...u.matchAll(/### FILE: (\S+)/g)].map((m) => m[1]);
-    return { content: JSON.stringify({ files: files.map((p) => ({ path: p, summary: `${p} dosyası ${model.id} tarafından özetlendi: yardımcı işlevler içerir.`, tags: ['util'] })) }) };
+    return { content: JSON.stringify({ files: files.map((p) => ({ path: p, summary: `${p} summarised by ${model.id}: contains helper functions.`, tags: ['util'] })) }) };
   }
-  if (/You are documenting module/.test(u)) return { content: `## Amaç\nModül ${model.id} tarafından belgelendi.\n## Sorumluluklar\n- yardımcı işlevler\n## Ana bileşenler\n- clamp\n## Bağımlılıklar ve etkileşimler\n- yok\n## Akış\n- doğrudan çağrı` };
+  if (/You are documenting module/.test(u)) return { content: `## Purpose\nModule documented by ${model.id}.\n## Responsibilities\n- helper functions\n## Main components\n- clamp\n## Dependencies and interactions\n- none\n## Flow\n- direct call` };
   if (/Write the architecture document/.test(u)) {
-    return { content: `## Genel Bakış\nKüçük bir JS yardımcı kütüphanesi (${model.id}).\n## Katmanlar ve Modüller\n- src: işlevler\n## Ana Akışlar\n1. test.js clamp'i çağırır\n## Eşzamanlılık ve Kaynaklar\nYok.\n## Dış Arayüzler\nYok.\n## Derleme, Test ve Çalıştırma\nnode test.js\n## Değişiklik Yaparken Dikkat Edilecekler\nclamp sınırları.` };
+    return { content: `## Overview\nA small JS helper library (${model.id}).\n## Layers and Modules\n- src: functions\n## Main Flows\n1. test.js calls clamp\n## Concurrency and Resources\nNone.\n## External Interfaces\nNone.\n## Build, Test and Run\nnode test.js\n## Things to Watch When Changing\nclamp bounds.` };
   }
   if (/You are the planner of a team/.test(u)) {
     if (/Several planners proposed plans/.test(u)) {
-      return { content: JSON.stringify({ understanding: 'clamp(value,min,max) eksik/yanlış; düzeltilmeli', acceptance_criteria: ['clamp değeri [min,max] aralığına sıkıştırır', 'node test.js geçer'], subtasks: [{ id: 'T1', title: 'clamp işlevini uygula', description: 'src/mathutil.js içinde clamp(value,min,max) işlevini doğru uygula', files: ['src/mathutil.js'], depends_on: [], critical: true }] }) };
+      return { content: JSON.stringify({ understanding: 'clamp(value,min,max) is missing/wrong and must be fixed', acceptance_criteria: ['clamp keeps the value within [min,max]', 'node test.js passes'], subtasks: [{ id: 'T1', title: 'Implement clamp', description: 'implement clamp(value,min,max) correctly in src/mathutil.js', files: ['src/mathutil.js'], depends_on: [], critical: true }] }) };
     }
     return { content: '```json\n' + JSON.stringify({ understanding: `plan by ${model.id}`, acceptance_criteria: ['clamp works', 'tests pass'], subtasks: [{ id: 'T1', title: 'Implement clamp', description: 'Implement clamp(value,min,max) in src/mathutil.js', files: ['src/mathutil.js'], depends_on: [], critical: true }] }) + '\n```' };
   }
@@ -169,20 +169,20 @@ function respond(model: MockModel, body: { messages: Msg[]; tools?: unknown[]; r
   if (/Condense this agent work log/.test(u) || /compacting the work log/.test(sys)) return { content: '## Goal\nclamp\n## Progress\n### Done\n- read file\n## Next Steps\n- finish' };
   if (/An AI coding agent replied with plain text/.test(u)) return { content: '{"calls":[]}' };
   if (/You are onboarding onto a software project/.test(u)) {
-    return { content: `## Teknoloji Yığını\nNode.js (ESM)\n## Komutlar\n- test: node test.js\n## Kod Kuralları\n- export function\n## Görev Tamamlama Kontrol Listesi\n- node test.js geçmeli\n## Değişmezler ve Tuzaklar\n- clamp sınırları (${model.id})` };
+    return { content: `## Technology Stack\nNode.js (ESM)\n## Commands\n- test: node test.js\n## Code Conventions\n- export function\n## Task Completion Checklist\n- node test.js must pass\n## Invariants and Pitfalls\n- clamp bounds (${model.id})` };
   }
   if (/most important end-to-end flows/.test(u)) {
     const files = [...u.matchAll(/^([\w./-]+\.(?:js|c|h|py|java|ts|cpp))(?: — |$)/gm)].map((m) => m[1]);
-    return { content: JSON.stringify({ flows: [{ title: 'Ana akış', description: 'test çağrısı', files: files.slice(0, 2), importance: 'high' }, { title: 'Hayali akış', description: 'yok', files: ['does/not/exist.c'] }] }) };
+    return { content: JSON.stringify({ flows: [{ title: 'Main flow', description: 'test call', files: files.slice(0, 2), importance: 'high' }, { title: 'Imaginary flow', description: 'none', files: ['does/not/exist.c'] }] }) };
   }
   if (/Write a technical documentation page/.test(u)) {
-    const title = u.match(/about the flow "([^"]+)"/)?.[1] ?? 'Akış';
-    return { content: `<details><summary>Kaynak dosyalar</summary>\n\n- src/mathutil.js\n</details>\n\n# ${title}\n\n## Adım Adım\n1. clamp çağrılır (\`src/mathutil.js:2\`)\n\n\`\`\`mermaid\nsequenceDiagram\n  test->>clamp: çağır\n\`\`\`\n\n## Hata ve Uç Durumlar\n- yok\n## Değiştirirken Dikkat\n- sınırlar (${model.id})` };
+    const title = u.match(/about the flow "([^"]+)"/)?.[1] ?? 'Flow';
+    return { content: `<details><summary>Source files</summary>\n\n- src/mathutil.js\n</details>\n\n# ${title}\n\n## Step by Step\n1. clamp is called (\`src/mathutil.js:2\`)\n\n\`\`\`mermaid\nsequenceDiagram\n  test->>clamp: call\n\`\`\`\n\n## Errors and Edge Cases\n- none\n## When Changing\n- bounds (${model.id})` };
   }
-  if (/You chair a council of experts/.test(u)) return { content: `Nihai cevap (${model.id}): clamp src/mathutil.js içinde tanımlıdır.` };
-  if (/# QUESTION/.test(u)) return { content: `Cevap (${model.id}): clamp işlevi src/mathutil.js dosyasındadır.` };
+  if (/You chair a council of experts/.test(u)) return { content: `Final answer (${model.id}): clamp is defined in src/mathutil.js.` };
+  if (/# QUESTION/.test(u)) return { content: `Answer (${model.id}): the clamp function is in src/mathutil.js.` };
   void text;
-  return { content: `mock(${model.id}) yanıtı` };
+  return { content: `mock(${model.id}) reply` };
 }
 
 /**
@@ -224,7 +224,7 @@ export interface MockServerHandle {
   url: string;
   requests: () => number;
   /** every chat request body received, in order (for assertions) */
-  log: Array<{ model: string; body: Record<string, unknown> }>;
+  log: Array<{ model: string; body: Record<string, unknown>; auth?: string }>;
   /** batch sizes of POST /embeddings calls */
   embedCalls: number[];
   close: () => Promise<void>;
@@ -271,7 +271,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
       const c = m.content as unknown;
       return Array.isArray(c) ? { ...m, content: c.map((p: { text?: string }) => (typeof p?.text === 'string' ? p.text : '')).join('') } : m;
     });
-    log.push({ model: body.model, body: body as unknown as Record<string, unknown> });
+    log.push({ model: body.model, body: body as unknown as Record<string, unknown>, auth: req.headers.authorization });
     const model = models.find((m) => m.id === body.model);
     if (!model) {
       res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `model ${body.model} not found` } }));
@@ -378,6 +378,6 @@ export const DEFAULT_MOCK_MODELS: MockModel[] = [
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const port = Number(process.argv[2] ?? 9100);
   void startMockServer(DEFAULT_MOCK_MODELS, port).then(({ url }) => {
-    process.stdout.write(`Mock LLM sunucusu: ${url}  (modeller: ${DEFAULT_MOCK_MODELS.map((m) => m.id).join(', ')})\n`);
+    process.stdout.write(`Mock LLM server: ${url}  (models: ${DEFAULT_MOCK_MODELS.map((m) => m.id).join(', ')})\n`);
   });
 }
