@@ -1,8 +1,8 @@
 {
   "$comment": "Proje yapılandırması: endpoint'ler kullanıcının ~/.kurultay/config.json dosyasından gelir; burada yalnızca derleme/test komutları var.",
   "verify": {
-    "build": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j4",
-    "test": "ctest --test-dir build --output-on-failure",
+    "build": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --config Debug -j4",
+    "test": "ctest --test-dir build -C Debug --output-on-failure",
     "lint": ""
   }
 }

@@ -65,8 +65,8 @@ export function detectVerifyCommands(root: string): VerifyConfig {
   const has = (f: string) => existsSync(join(root, f));
   const v: VerifyConfig = { build: '', test: '', lint: '' };
   if (has('CMakeLists.txt')) {
-    v.build = 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j';
-    v.test = 'ctest --test-dir build --output-on-failure';
+    v.build = 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --config Debug -j';
+    v.test = 'ctest --test-dir build -C Debug --output-on-failure';
   } else if (has('meson.build')) {
     v.build = 'meson setup build --reconfigure >/dev/null 2>&1 || meson setup build; meson compile -C build';
     v.test = 'meson test -C build';
