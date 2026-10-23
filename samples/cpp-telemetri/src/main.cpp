@@ -1,4 +1,4 @@
-// Demo: birkaç sıcaklık paketi üretir, çözer, kaydeder ve özet basar.
+// Demo: builds a few temperature packets, parses and records them, prints a summary.
 #include <iomanip>
 #include <iostream>
 

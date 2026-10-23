@@ -12,7 +12,7 @@ TEST(gizli_crc_check_value) {
 }
 
 TEST(gizli_frame_from_a_real_device) {
-    // sensör 0x0007, sıcaklık 21.50 °C — sahadaki cihazın gönderdiği bayt dizisi
+    // sensor 0x0007, temperature 21.50 °C — the bytes sent by a device in the field
     const std::vector<std::uint8_t> frame{0xAA, 0x05, 0x07, 0x00, 0x01, 0x66, 0x08, 0x71, 0x3D};
     std::string err;
     const auto p = parse_packet(frame, &err);

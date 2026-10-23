@@ -4,7 +4,7 @@
 
 namespace telemetri {
 
-/// Son `window` örneğin aritmetik ortalaması. Pencere dolmadan önce o ana kadarki örneklerin ortalaması döner.
+/// Arithmetic mean of the last `window` samples. Before the window is full, the mean of the samples so far.
 class MovingAverage {
 public:
     explicit MovingAverage(std::size_t window);
@@ -18,7 +18,7 @@ private:
     double sum_ = 0.0;
 };
 
-/// Birinci dereceden alçak geçiren filtre: y = y + alpha * (x - y); ilk örnek doğrudan alınır.
+/// First-order low-pass filter: y = y + alpha * (x - y); the first sample is taken as is.
 class LowPass {
 public:
     explicit LowPass(double alpha);

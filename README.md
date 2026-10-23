@@ -1,137 +1,139 @@
 # Kurultay
 
-**Kapalı ağda çalışan, elinizdeki tüm yerel LLM'leri aynı anda kullanan kodlama ajanı.**
+**A coding agent for air-gapped networks that uses all of your local LLMs at the same time.**
 
-Kurultay, verdiğiniz OpenAI-uyumlu endpoint'leri ve API anahtarlarını kullanarak:
+Given your OpenAI-compatible endpoints and API keys, Kurultay:
 
-1. **Her modelin yeteneklerini ölçer.** Bağlam penceresi, tool calling, JSON, hız, eşzamanlılık kapasitesi, kodlama ve düzenleme başarısı ölçülür; her modele rol puanı verilir.
-2. **Projeyi indeksler.** Semboller, bağımlılık grafiği, PageRank ve BM25 araması çıkarılır. Ardından **tüm modellere paralel dağıtılan** map-reduce özetleme ile `ARCHITECTURE.md`, modül dokümanları, uçtan uca **akış dokümanları** (DeepWiki tarzı, kaynak satır referanslı, Mermaid diyagramlı) ve ajanların her görevde okuduğu `PROJECT_NOTES.md` üretilir.
-3. **Verilen işi yapar.** Plan modellerden oluşan bir konseyde hazırlanır. Alt görevler modellere **eşzamanlı** dağıtılır. Kritik işlerde birden çok model yarışır. Her aday build/test ile doğrulanır. Adaylar **anonim konsey incelemesi** ile sıralanır. Son olarak gereksinim kontrolü yapılır; eksik varsa döngü devam eder.
+1. **Measures every model.** Context window, tool calling, JSON, speed, concurrency capacity, coding and editing accuracy are measured, and each model gets a score per role.
+2. **Indexes the project.** It extracts symbols, the dependency graph, PageRank and a BM25 search index. Then a map-reduce summarisation **spread over all models in parallel** produces `ARCHITECTURE.md`, module documents, end-to-end **flow documents** (DeepWiki style, with source line references and Mermaid diagrams) and `PROJECT_NOTES.md`, which the agents read on every task.
+3. **Does the work.** A council of models drafts the plan. Subtasks are distributed to the models **concurrently**; on critical work several models race. Every candidate is verified with build/test, candidates are ranked by an **anonymous council review**, and finally a requirement check runs; if something is missing, the loop continues.
 
-Çalışma zamanında **hiçbir npm bağımlılığı yoktur**. Gereken tek şey Node.js ≥ 20. Native derleme, Python, Docker, CDN veya telemetri gerekmez.
+There are **no npm runtime dependencies**. All it needs is Node.js ≥ 20: no native builds, Python, Docker, CDN or telemetry.
 
-> Adı: *Kurultay*, Türk-Moğol geleneğinde kararların birlikte alındığı meclis. Buradaki meclis üyeleri sizin LLM'leriniz.
+> The name: a *kurultay* is the assembly where decisions were taken together in the Turkic-Mongol tradition. Here, the members of the assembly are your LLMs.
+
+The console UI and generated reports are in Turkish.
 
 ---
 
-## Neden?
+## Why?
 
-Bu projeden önce 15 açık kaynak ajan incelendi. Hiçbiri aynı işi tüm yerel modellere eşzamanlı dağıtıp sonuçları test ve çapraz review ile birleştirmiyordu. Hepsi ya rol bazlı çalışıyordu (her ajana tek model) ya da birbirinden habersiz paralel instance'lar açıyordu. Kurultay bu boşluğu doldurur ve incelenen projelerin en iyi fikirlerini bir araya getirir:
+Fifteen open-source agents were studied before this project. None of them distributed the same work to all local models concurrently and merged the results with tests and cross-review. They either worked by role (one model per agent) or started parallel instances that knew nothing about each other. Kurultay fills that gap and combines the best ideas of the projects it studied:
 
-| Fikir | Kaynak proje | Kurultay'da |
+| Idea | Source project | In Kurultay |
 |---|---|---|
-| Tree-sitter + PageRank repo haritası | Aider | `src/index/*` – bağımlılıksız sembol çıkarıcı, referans grafiği, kişiselleştirilmiş PageRank |
-| Architect / Editor ayrımı | Aider | Planlayıcı ve kodlayıcı rolleri, rol puanına göre model seçimi |
-| Rol bazlı model yönlendirme + fallback zinciri | omp, oh-my-openagent | `Router` – rol puanı × yük × güvenilirlik; otomatik yedek model |
-| Hash/anchor tabanlı dayanıklı düzenleme | omp | `edits.ts` – birebir → boşluk toleranslı → girinti toleranslı eşleşme, "en yakın eşleşme" ipucu |
-| Minimal, genişletilebilir çekirdek | Pi (pi-mono) | Küçük modüller; kütüphane olarak da kullanılabilir (`import { Orchestrator } from 'kurultay'`) |
-| Sisyphus orkestrasyonu / TODO takibi | oh-my-openagent | Plan DAG'i, bağımlılık sırasıyla paralel yürütme, iterasyon döngüsü |
-| Git worktree ile paralel ajan izolasyonu | Kilo Code, Cline | **Copy-on-write overlay**: worktree'den hafif, repo kopyası gerektirmez, 3-yollu birleştirme yapar |
-| LSP/sembol düzeyinde gezinme | Serena, Crush | `find_symbol`, `repo_map`, bağımlı dosya listesi araçları |
-| Hiyerarşik wiki / mimari dokümanı | DeepWiki-Open | Dosya → modül → mimari özetleri, deterministik Mermaid modül grafiği |
-| LLM Konseyi (anonim karşılıklı değerlendirme + başkan) | karpathy/llm-council | Plan, mimari dokümanı, kod incelemesi ve `ask` komutunda konsey |
-| Prompt tabanlı tool calling yedeği | OpenHands, Goose (toolshim) | Native tool desteklemeyen modeller `<tool_call>`, Qwen3-Coder XML veya SEARCH/REPLACE ile çalışır |
-| Bağlam yoğunlaştırıcı (condenser), event-sourcing | OpenHands | Uzun oturumlarda geçmiş özetlenir; tüm olaylar `events.jsonl` dosyasına yazılır |
-| Diğer ajanların kural dosyalarını okuma | omp | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` |
-| Plan → Act akışı, headless mod | Cline, Qwen Code | `run` komutu tek seferde plan + uygulama yapar; CI'da etkileşimsiz çalışır |
+| Tree-sitter + PageRank repo map | Aider | `src/index/*` – dependency-free symbol extractor, reference graph, personalised PageRank |
+| Architect / editor split | Aider | Planner and coder roles, model choice by role score |
+| Role-based model routing + fallback chain | omp, oh-my-openagent | `Router` – role score × load × reliability; automatic fallback model |
+| Robust hash/anchor based editing | omp | `edits.ts` – exact → whitespace-tolerant → indentation-tolerant matching, "closest match" hint |
+| Minimal, extensible core | Pi (pi-mono) | Small modules; also usable as a library (`import { Orchestrator } from 'kurultay'`) |
+| Sisyphus orchestration / TODO tracking | oh-my-openagent | Plan DAG, parallel execution in dependency order, iteration loop |
+| Parallel agent isolation with git worktrees | Kilo Code, Cline | **Copy-on-write overlays**: lighter than worktrees, no repository copy, 3-way merge |
+| LSP / symbol-level navigation | Serena, Crush | `find_symbol`, `repo_map`, dependent-file tools; optional LSP diagnostics |
+| Hierarchical wiki / architecture document | DeepWiki-Open | File → module → architecture summaries, deterministic Mermaid module graph |
+| LLM council (anonymous peer ranking + chair) | karpathy/llm-council | Council for the plan, the architecture document, code review and `ask` |
+| Prompt-based tool calling fallback | OpenHands, Goose (toolshim) | Models without native tools work with `<tool_call>`, Qwen3-Coder XML or SEARCH/REPLACE |
+| Context condenser, event sourcing | OpenHands | History is summarised in long sessions; every event goes to `events.jsonl` |
+| Reading other agents' rule files | omp | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` |
+| Plan → act flow, headless mode | Cline, Qwen Code | `run` plans and applies in one go; runs non-interactively in CI |
 
-Lisans gerekçesiyle **hiçbir projeden kod kopyalanmadı**; fikirler sıfırdan, MIT lisansıyla yeniden yazıldı. FSL lisanslı Crush yalnızca fikir kaynağı olarak incelendi.
+For licensing reasons **no code was copied from any project**; the ideas were rewritten from scratch under the MIT licence. The FSL-licensed Crush was studied as a source of ideas only.
 
 ---
 
-## Mimari
+## Architecture
 
 ```mermaid
 flowchart TB
-  CLI["CLI / web panosu"] --> ORCH
-  subgraph ORCH[Orkestratör]
-    P["Planlayıcı konseyi<br/>(N taslak + hakem)"] --> DAG["Alt görev DAG'i"]
-    DAG --> W1["Çalışan 1<br/>overlay"]
-    DAG --> W2["Çalışan 2<br/>overlay"]
-    DAG --> W3["Çalışan N<br/>overlay"]
-    W1 & W2 & W3 --> V["Doğrulama<br/>build/test/lint"]
-    V --> C["Anonim konsey incelemesi<br/>+ Borda + test kanıtı"]
-    C --> FIX["Düzeltme turu"] --> INT["Entegrasyon overlay'i"]
-    INT --> REQ["Gereksinim hakemleri"]
-    REQ -- eksik --> DAG
-    REQ -- tamam --> MERGE["Projeye 3-yollu birleştirme"]
+  CLI["CLI / web dashboard"] --> ORCH
+  subgraph ORCH[Orchestrator]
+    P["Planner council<br/>(N drafts + judge)"] --> DAG["Subtask DAG"]
+    DAG --> W1["Worker 1<br/>overlay"]
+    DAG --> W2["Worker 2<br/>overlay"]
+    DAG --> W3["Worker N<br/>overlay"]
+    W1 & W2 & W3 --> V["Verification<br/>build/test/lint"]
+    V --> C["Anonymous council review<br/>+ Borda + test evidence"]
+    C --> FIX["Fix round"] --> INT["Integration overlay"]
+    INT --> REQ["Requirement judges"]
+    REQ -- missing --> DAG
+    REQ -- done --> MERGE["3-way merge into the project"]
   end
   ORCH --> R
   subgraph R[Router]
-    S["Endpoint başına semafor"] --- CB["Retry / backoff / devre kesici"] --- FB["Rol + yük bazlı seçim, fallback"]
+    S["Semaphore per endpoint"] --- CB["Retry / backoff / circuit breaker"] --- FB["Role + load based choice, fallback"]
   end
   R --> E1["vLLM"] & E2["llama.cpp"] & E3["Ollama"] & E4["LM Studio / TGI / LiteLLM"]
-  IDX["İndeks: semboller, grafik, PageRank, BM25"] --> ORCH
-  AN["Analizör: paralel map-reduce özet"] --> IDX
+  IDX["Index: symbols, graph, PageRank, BM25, embeddings"] --> ORCH
+  AN["Analyzer: parallel map-reduce summaries"] --> IDX
 ```
 
-### Tüm modeller nasıl eşzamanlı kullanılıyor?
+### How are all models used at the same time?
 
-| Aşama | Eşzamanlılık |
+| Stage | Concurrency |
 |---|---|
-| `probe` | Tüm endpoint'ler paralel incelenir. Her endpoint'te 1→2→4→8 istekle verim rampası yapılır ve en iyi paralellik seviyesi kaydedilir. |
-| `analyze` | Dosya partileri **tüm modellerin toplam slot sayısı** kadar paralel özetlenir; hızlı model daha çok iş alır (yük duyarlı router). Mimari dokümanı için N model bağımsız taslak yazar, hakem model birleştirir. |
-| Planlama | En iyi 3 planlayıcı paralel taslak üretir, hakem birleştirir. |
-| Yürütme | **split**: bağımsız alt görevler farklı modellerde aynı anda çalışır. **race**: aynı alt görevi N model yarışarak çözer. **council**: race + her durumda tam konsey incelemesi. **auto**: tek alt görevde race, çok alt görevde split (kritik olanlar 2 modelle). |
-| İnceleme | Tüm gözden geçirenler paralel çalışır; adaylar A/B/C olarak anonimleştirilir ve sıraları karıştırılır. Kodu yazan model kendi kodunu incelemez (tek adayda hiç, konseyde kendi adayına oy veremez); düzeltmeler yazar olmayan bir modelce yeniden incelenir. |
-| Gereksinim kontrolü | 2 hakem paralel karar verir; ikisinin de "tamam" demesi gerekir. |
+| `probe` | All endpoints are probed in parallel. Each endpoint gets a throughput ramp with 1→2→4→8 requests and the best concurrency level is recorded. |
+| `analyze` | File batches are summarised with as many parallel requests as **all models' slots combined**; faster models take more work (load-aware router). For the architecture document N models write independent drafts and a judge merges them. |
+| Planning | The best 3 planners draft in parallel, a judge merges. |
+| Execution | **split**: independent subtasks run on different models at the same time. **race**: N models race on the same subtask. **council**: race + a full council review every time. **auto**: race for a single subtask, split for several (critical ones with 2 models). |
+| Review | All reviewers run in parallel; candidates are anonymised as A/B/C and shuffled. A model never reviews its own code (not at all with one candidate; in a council it cannot vote for its own candidate); fixes are re-reviewed by a model that did not write them. |
+| Requirement check | 2 judges decide in parallel; both must say "done". |
 
-### Dayanıklılık
+### Resilience
 
-- **Model yanıt vermezse** (takılma, zaman aşımı): her istek üç saatle izlenir — ilk token süresi (varsayılan 180 sn + uzun istemler için ek pay), akış sessizlik süresi (90 sn) ve toplam süre (10 dk). Süre dolan model aynı istekte tekrar denenmez, **karantinaya alınır** (2 dk, tekrarlarda 16 dk'ya kadar uzar) ve hiçbir çalışan ona istek göndermez.
-- **Çalışan kalıcı olarak model değiştirir**: görevi yürüten model düşerse görev, bağlamı sığan en iyi yedek modelle kaldığı yerden sürer; düşen model o görevde bir daha kullanılmaz. Yedek model native araç çağrısı desteklemiyorsa konuşma geçmişi metin protokolüne çevrilir. Değişimler raporda listelenir.
-- **Bağlantı koparsa** üstel backoff ile tekrar denenir. Tüm modeller düşerse 10 dakikaya kadar bekleyip yeniden denenir (devre kesiciler sıfırlanır).
-- **Bağlam taşarsa** prompt'u sığdıran modellere yönlendirilir. Uzun çalışmalarda condenser önce eski araç çıktılarını kırpar, sonra geçmişi yapılandırılmış bir devir notuna (hedef / yapılanlar / kararlar / dosyalar / sıradaki adımlar) dönüştürür; not her yoğunlaştırmada artımlı güncellenir.
-- **Sunucu `429`/`503` + `Retry-After` dönerse** istenen süre kadar beklenir.
-- **Döngü koruması**: aynı çağrı aynı sonuçla 3. kez yapıldığında uyarı verilir, 5. kezde çalışan durdurulur. A-B-A-B gidip gelmeler, uzun salt-okuma keşifleri ve üst üste başarısız çağrılar da yakalanır.
-- **Güvenli düzenleme**: var olan bir dosyanın üzerine yazmadan veya silmeden önce okunmuş olması gerekir. Eşleşmeyen bir düzenlemeden sonra dosya yeniden okunmadan tekrar düzenlenemez. Düzenleme sonrası parantez dengesi ve JSON geçerliliği kontrol edilir. CRLF satır sonları korunur; akıllı tırnak ve uzun tire gibi Unicode farkları eşleşmeyi bozmaz; yanlış yazılmış ama tek eşleşmesi olan dosya yolları düzeltilir.
-- **Araç çağrısını düzyazıyla anlatan modeller** için (ör. "şimdi read_file ile açacağım") hızlı bir model metni gerçek araç çağrısına çevirir (toolshim).
-- **Native tool calling desteklemeyen** veya `tools` alanını reddeden sunucularda otomatik olarak prompt tabanlı araç çağrısına geçilir.
-- **Çökme güvenliği**: Build/test sırasında aday değişiklikler geçici olarak diske yazılır. Bu işlem bir journal ile korunur; yarıda kesilirse bir sonraki çalıştırmada orijinal dosyalar geri yüklenir. Bu süre boyunca diğer çalışanlar her zaman orijinal (pristine) içeriği görür.
-- **Sizin değişiklikleriniz korunur**: Ajan çalışırken bir dosyayı siz de düzenlediyseniz sonuç 3-yollu birleştirilir. Çakışma olursa git tarzı işaretler eklenir ve raporda listelenir.
-- **Kesilen cevaplar** (`finish_reason=length`): JSON/araç çağrısı yarım kaldıysa daha yüksek `max_tokens` ile bir kez yeniden istenir; düz metin cevaplarda model kaldığı yerden devam ettirilir (en çok 2 tur). Düşünen (reasoning) modellere varsayılan olarak daha geniş çıktı bütçesi verilir.
-- **Model başına bağlam bütçesi**: her istem, onu okuyacak modelin bağlam penceresine göre hazırlanır; filodaki küçük bir model 128K modellerin bağlamını daraltmaz.
+- **When a model stops answering** (hang, timeout): every request is watched by three clocks — time to first token (180 s by default + extra time for long prompts), stream silence (90 s) and total time (10 min). A model that times out is not retried for that request; it is **quarantined** (2 min, growing up to 16 min on repeats) and no worker sends it requests.
+- **Workers fail over permanently**: if the model running a task drops out, the task continues where it stopped on the best fallback model whose context fits; the failed model is not used again for that task. If the fallback has no native tool calling, the conversation history is converted to the text protocol. Switches are listed in the report.
+- **When the connection drops** requests are retried with exponential backoff. If every model is down, Kurultay waits up to 10 minutes and tries again (circuit breakers are reset).
+- **When the context overflows** the request is routed to models whose window fits the prompt. In long runs the condenser first trims old tool output, then turns the history into a structured hand-over note (goal / done / decisions / files / next steps), updated incrementally on every condensation.
+- **When the server answers `429`/`503` + `Retry-After`** Kurultay waits as long as asked.
+- **Loop protection**: the same call with the same result warns on the 3rd time and stops the worker on the 5th. A-B-A-B ping-pong, long read-only exploration and consecutive failing calls are caught too.
+- **Safe editing**: an existing file must be read before it is overwritten or deleted. After an edit that did not match, the file must be re-read before the next edit. Bracket balance and JSON validity are checked after edits. CRLF line endings are preserved; Unicode differences such as smart quotes and dashes do not break matching; mistyped paths with a single match are corrected.
+- **Models that describe tool calls in prose** (e.g. "now I'll open it with read_file") are handled by a fast model that turns the text into real tool calls (toolshim).
+- **Servers without native tool calling**, or that reject the `tools` field, are switched to prompt-based tool calling automatically.
+- **Crash safety**: candidate changes are written to disk only inside the worker's sandbox copy; in-place mode is protected by a journal and the original files are restored on the next run if it was interrupted. Other workers always see the pristine content.
+- **Your changes are kept**: if you edited a file while the agent was working, the result is merged 3-way. Conflicts get git-style markers and are listed in the report.
+- **Truncated answers** (`finish_reason=length`): when JSON or a tool call was cut off it is requested once more with a larger `max_tokens`; plain-text answers are continued where they stopped (at most 2 rounds). Reasoning models get a larger output budget by default.
+- **Context budget per model**: every prompt is built for the context window of the model that will read it; a small model in the fleet does not shrink the context of the 128K models.
 
-### Kalite: kanıt, ölçüm ve öğrenme
+### Quality: evidence, measurement and learning
 
-| Özellik | Ne yapar |
+| Feature | What it does |
 |---|---|
-| **Yalıtılmış paralel derleme** | Her çalışanın build/test komutları `.kurultay/sandboxes/sb-N` altındaki kendi kopyasında çalışır (copy-on-write klon, `node_modules` bağlantı); gerçek proje yalnızca son birleştirmede değişir. `tools.isolation: "inplace"` eski davranışa döner |
-| **Düzenleme sonrası derleyici kontrolü** | C/C++: `compile_commands.json` bayraklarıyla `-fsyntax-only` (başlıklar onları içeren bir çeviri birimi üzerinden; eksik başlıklar boş taslakla değiştirilir). Java: `javac -sourcepath` (`tools.javaRelease: 8` ile Java 8 API sınırı). Yapılandırılmışsa önce **LSP** tanılamaları (clangd, jdtls…). Yalnızca düzenlenen dosyadaki gerçek hatalar modele geri verilir |
-| **Önce test** | Çalışan istemi hata düzeltmelerinde önce hatayı yeniden üreten bir test yazmayı, her değişiklikte test bırakmayı ve mevcut testleri zayıflatmamayı ister (`orchestrator.testFirst: false` kapatır) |
-| **Zorlanmış JSON** | Plan, inceleme, hakem ve özet istekleri `response_format: json_schema` ile gider (vLLM/llama.cpp/SGLang kısıtlı çözümleme). Desteklemeyen sunucu otomatik olarak `json_object`e düşürülür |
-| **Sonuçlardan öğrenen model seçimi** | Her rol için başarı/başarısızlık (`~/.kurultay/model-stats.json`) probe puanıyla harmanlanır; sürekli başarısız olan model o rolde geri plana düşer |
-| **Anlamsal arama** | Endpoint'te bir embedding modeli (bge, e5, nomic-embed, Qwen3-Embedding…) varsa kod parçaları vektörlenir (artımlı) ve arama BM25 + kosinüs benzerliğini **RRF** ile birleştirir: "sıcaklık eşiği nerede kontrol ediliyor?" sorusu `MAX_TEMPERATURE` kodunu bulur |
-| **Değerlendirme düzeneği** | `kurultay eval <görev-seti>` her görevi temiz bir kopyada çalıştırır, ajan bitince gizli testleri ekler; başarı, istek, token ve süreyi mod bazında `EVAL.md`/`results.json` olarak raporlar. `--validate` görevlerin temelde kaldığını, referans çözümle geçtiğini doğrular |
-| **Gözlemlenebilirlik** | `REPORT.md` model başına istek / giriş-çıkış token / ortalama yanıt / hata / kesilme tablosu içerir; `kurultay stats` ve konsolda `/stats` |
+| **Isolated parallel builds** | Each worker's build/test commands run in its own copy under `.kurultay/sandboxes/sb-N` (copy-on-write clone, `node_modules` linked); the real project only changes at the final merge. `tools.isolation: "inplace"` restores the old behaviour |
+| **Compiler check after every edit** | C/C++: `-fsyntax-only` with the flags from `compile_commands.json` (headers through a translation unit that includes them; missing headers are replaced by empty stubs). Java: `javac -sourcepath` (`tools.javaRelease: 8` enforces the Java 8 API). When configured, **LSP** diagnostics come first (clangd, jdtls…). Only real errors in the edited file are fed back to the model |
+| **Test first** | The worker prompt asks to reproduce bugs with a failing test first, to leave tests behind for every change and never to weaken existing tests (`orchestrator.testFirst: false` turns it off) |
+| **Constrained JSON** | Plan, review, judge and summary requests use `response_format: json_schema` (constrained decoding in vLLM/llama.cpp/SGLang). Servers without support fall back to `json_object` automatically |
+| **Model choice that learns from outcomes** | Success/failure per role (`~/.kurultay/model-stats.json`) is blended with the probe score; a model that keeps failing moves down for that role |
+| **Semantic search** | If an endpoint serves an embedding model (bge, e5, nomic-embed, Qwen3-Embedding…) code chunks are embedded incrementally and search fuses BM25 and cosine similarity with **RRF**: "where is the temperature limit checked?" finds the `MAX_TEMPERATURE` code |
+| **Evaluation harness** | `kurultay eval <suite>` runs every task in a fresh copy and adds hidden tests once the agent is done; success, requests, tokens and time per mode go to `EVAL.md` / `results.json`. `--validate` checks that each task fails on the base project and passes with the reference solution |
+| **Observability** | `REPORT.md` has a per-model table of requests / input-output tokens / mean latency / errors / truncations; `kurultay stats` and `/stats` in the console |
 
 ---
 
-## Kurulum (kapalı ağ)
+## Installation (air-gapped)
 
-İnternet erişimi olan bir makinede:
+On a machine with internet access:
 
 ```bash
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
-npm ci            # yalnızca derleme araçları (typescript)
-npm test          # ≈290 test – sahte LLM sunucularıyla birim, entegrasyon ve CLI
+npm ci            # build tools only (typescript, eslint)
+npm test          # ≈290 tests – unit, integration and CLI against mock LLM servers
 npm run pack:offline
 ```
 
-`release/` klasörü oluşur:
+This creates a `release/` folder:
 
-- `kurultay-<sürüm>.tgz`: Hedef makinede `npm install -g ./kurultay-<sürüm>.tgz` ile kurulur. Çalışma zamanı bağımlılığı olmadığı için internet gerektirmez.
-- `kurultay-<sürüm>-portable-<os>-<arch>/`: **Node.js kurulu olmayan** makineler için. İçinde Node çalıştırıcısı vardır; `./kurultay` (Windows'ta `kurultay.cmd`) ile çalışır. Hedef makineyle aynı işletim sistemi ve mimaride paketleyin.
+- `kurultay-<version>.tgz`: install on the target with `npm install -g ./kurultay-<version>.tgz`. No internet needed, there are no runtime dependencies.
+- `kurultay-<version>-portable-<os>-<arch>/`: for machines **without Node.js**. It contains a Node runtime; run `./kurultay` (`kurultay.cmd` on Windows). Build it on the same OS and architecture as the target.
 
-Bu klasörü USB ile kapalı ağa taşımanız yeterli.
+Prebuilt packages for Linux x64, Windows x64 and macOS arm64 are attached to every [GitHub release](https://github.com/ozknScalebor/kurultay/releases). Copy the folder to the closed network on a USB stick and you are done.
 
-## Hızlı başlangıç
+## Quick start
 
-### Etkileşimli konsol (önerilen)
+### Interactive console (recommended)
 
 ```bash
-kurultay            # veya: kurultay console --workspace /projem
+kurultay            # or: kurultay console --workspace /my/project
 ```
 
 ```
@@ -162,72 +164,72 @@ uart-driver ❯ /
   ...
 ```
 
-- **Açılışta** endpoint'lerin canlı durumu, modeller, ölçülmüş yetenekleri, paralel kapasite ve zaman aşımı ayarları gösterilir. Hiç yapılandırma yoksa ilk endpoint sorulur ve `~/.kurultay/config.json` dosyasına yazılır.
-- **Çalışma alanı seçimi zorunludur.** Son kullanılanlar numarayla seçilir, yol Tab ile tamamlanır. Seçince indeks otomatik güncellenir; yetenek profili yoksa hızlı yetenek analizi, değişen dosya varsa artımlı mimari analiz kendiliğinden çalışır (Ctrl+C ile atlanır; `/index`, `/probe`, `/analyze` ile elle de yapılır).
-- **`/` yazınca komut menüsü açılır**; yazdıkça süzülür, ↑/↓ ile seçilir, Tab/Enter ile çalışır. Komut argümanları (`/mode r` → `race`), `@dosya` ve `$skill` de tamamlanır.
-- **Düz metin**: soru ise (`… nerede?`, `nasıl çalışır`, `açıkla …`) modeller konsey olarak cevaplar ve sonraki sorular önceki cevapları bilir; iş ise planlanıp tüm modellere dağıtılır, sonunda projeye uygulamak için onay istenir. `/ask`, `/run` veya `/intent` ile sabitlenebilir. `!komut` kabuk komutu çalıştırır.
-- Çalışan bir iş **Ctrl+C** ile durdurulur (yarım değişiklikler geri alınır). O sırada yazılanlar bir sonraki isteme aktarılır.
-- **Arayüz**: cevaplar ve raporlar Markdown olarak işlenir (başlık, liste, tablo, renklendirilmiş kod bloğu). İstemin altında durum satırı vardır: git dalı, mod, hazır model sayısı, **oturumda harcanan token ve son cevabın bağlam doluluğu**, oturum.
-- **Token ve bağlam takibi**: uzun işlerde dönen göstergede geçen süre, süren LLM isteği sayısı, o işte harcanan giriş/çıkış token'ı ve **o an en dolu bağlam** (ör. `bağlam 62% (80K/128K)`) canlı görünür. İş bitince tek satırlık özet basılır (`⟡ 18 istek · 16K giriş / 829 çıkış token · en dolu bağlam 11% (1.8K/16K) (model)`). `/stats` (veya `/context`, `/tokens`) oturum toplamını, son cevabın bağlamını çubukla ve model başına istek / token / ortalama yanıt / **en dolu bağlam** / hata tablosunu gösterir; `/stats reset` sayaçları sıfırlar.
-- **Plan modu** (`/plan on`): kod yazılmadan önce plan gösterilir; Enter onaylar, `h` iptal eder, başka bir şey yazarsanız planlayıcılar planı geri bildiriminize göre yeniden hazırlar.
-- **Bütçe ve sürdürme**: `orchestrator.maxTokens` / `maxMinutes` dolunca iş projeye dokunmadan durur. Yarıda kalan (bütçe, Ctrl+C, çökme) bir görev `/continue-run` ile kaldığı alt görevden sürer; bitmiş alt görevler tekrar çalışmaz.
-- Temel komutlar: `/models`, `/llm` (zaman aşımı ayarları, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
+- **On start** it shows the live state of the endpoints, the models, their measured capabilities, parallel capacity and timeout settings. Without any configuration it asks for the first endpoint and writes it to `~/.kurultay/config.json`.
+- **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically; without a capability profile a quick probe runs, and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/probe`, `/analyze` do it by hand).
+- **Typing `/` opens the command menu**; it filters as you type, ↑/↓ selects, Tab/Enter runs. Command arguments (`/mode r` → `race`), `@file` and `$skill` complete too.
+- **Plain text**: a question (`… nerede?`, `nasıl çalışır`, `açıkla …`) is answered by the models as a council and follow-up questions know the previous answers; a task is planned and distributed to all models, and you are asked before it is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
+- A running job stops with **Ctrl+C** (half-done changes are rolled back). Whatever you typed meanwhile goes to the next prompt.
+- **UI**: answers and reports are rendered as Markdown (headings, lists, tables, highlighted code blocks). Below the prompt is a status line: git branch, mode, ready models, **tokens spent in this session and the context fill of the last answer**, session.
+- **Token and context tracking**: during long jobs the spinner shows elapsed time, LLM requests in flight, input/output tokens spent on this job and **the fullest context right now** (e.g. `bağlam 62% (80K/128K)`). When the job ends a one-line summary is printed (`⟡ 18 istek · 16K giriş / 829 çıkış token · en dolu bağlam 11% (1.8K/16K) (model)`). `/stats` (or `/context`, `/tokens`) shows the session totals, the last answer's context as a bar, and a per-model table of requests / tokens / mean latency / **peak context fill** / errors; `/stats reset` clears the counters.
+- **Plan mode** (`/plan on`): the plan is shown before any code is written; Enter approves, `h` cancels, anything else you type makes the planners revise the plan with your feedback.
+- **Budget and resume**: when `orchestrator.maxTokens` / `maxMinutes` runs out, the job stops without touching the project. An interrupted task (budget, Ctrl+C, crash) continues from the subtask where it stopped with `/continue-run`; finished subtasks are not run again.
+- Main commands: `/models`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
 
-#### Oturumlar
+#### Sessions
 
-| Komut | Ne yapar |
+| Command | What it does |
 |---|---|
-| (otomatik) | Her soru ve görev turu `.kurultay/conversations/` altına kaydedilir |
-| `/sessions` | Kayıtlı oturumlar (dallar ve hangisinden ayrıldıkları ile) |
-| `/resume [n]`, `kurultay --continue`, `kurultay --resume <id>` | Oturuma devam: soru geçmişi, mod, skill ve diğer ayarlar geri gelir, son turların özeti gösterilir |
-| `/history` | Bu oturumun turları; projeye değişiklik uygulayanlar işaretli |
-| `/rewind [tur]` | O turun öncesine döner: o ve sonraki görevlerin projeye uyguladığı değişiklikler geri alınır, turlar konuşmadan çıkarılır. Sonradan elle değiştirilmiş dosyalar için uyarı ve onay. Komut satırından: `kurultay rewind [oturum]` |
-| `/branch [başlık]` | Konuşmayı buradan dallandırır; önceki dal `/resume` ile geri gelir |
-| `/worktree new <ad>` | Projenin git worktree'sini `.kurultay/worktrees/<ad>` altında `kurultay/<ad>` dalında açar ve oraya geçer. İndeks, analiz ve yetenek profili kopyalanır, yeniden hesaplanmaz. `kurultay --worktree <ad>` ile de başlatılır |
-| `/worktree diff · merge · commit · exit · remove · list` | Farkı gör, ana dala birleştir (onaylı, çakışmada geri alınır), ana depoya dön, sil |
+| (automatic) | Every question and task turn is saved under `.kurultay/conversations/` |
+| `/sessions` | Saved sessions (with branches and where they came from) |
+| `/resume [n]`, `kurultay --continue`, `kurultay --resume <id>` | Continue a session: question history, mode, skills and other settings come back, with a recap of the last turns |
+| `/history` | Turns of this session; those that changed the project are marked |
+| `/rewind [turn]` | Go back to before that turn: changes that this and later tasks applied to the project are undone and the turns are removed from the conversation. Files edited by hand since then get a warning and a confirmation. From the command line: `kurultay rewind [session]` |
+| `/branch [title]` | Branch the conversation here; the previous branch comes back with `/resume` |
+| `/worktree new <name>` | Opens a git worktree of the project under `.kurultay/worktrees/<name>` on branch `kurultay/<name>` and switches to it. Index, analysis and capability profile are copied, not recomputed. Also `kurultay --worktree <name>` |
+| `/worktree diff · merge · commit · exit · remove · list` | See the diff, merge into the main branch (with confirmation, rolled back on conflicts), return to the main repository, delete |
 
-Her uygulamadan önce değişen dosyaların önceki hâli oturum klasörüne (`checkpoint.json`) yazılır; geri alma bu kontrol noktasını kullanır. `.kurultay/` klasörü git'e hiç işlenmez (`.git/info/exclude`).
+Before every apply, the previous content of the changed files is written to the session folder (`checkpoint.json`); rewinding uses that checkpoint. The `.kurultay/` folder is never committed (`.git/info/exclude`).
 
-LLM ayarları ve yetenek profilleri kullanıcı başına tutulur (`~/.kurultay/`; `KURULTAY_HOME` ile değiştirilebilir), böylece her proje için yeniden ölçüm gerekmez. Projede `kurultay.config.json` varsa o kullanılır; **endpoint içermiyorsa** kullanıcı yapılandırmasını genişletir (proje yalnızca build/test komutlarını ve kurallarını taşır).
+LLM settings and capability profiles are kept per user (`~/.kurultay/`; change with `KURULTAY_HOME`), so projects do not need to be re-measured. A project's `kurultay.config.json` is used when present; **if it has no endpoints** it extends the user configuration (the project only carries its build/test commands and rules).
 
-### Komut satırı
+### Command line
 
 ```bash
-cd /projem
-kurultay init        # kurultay.config.json + .kurultay/rules, skills, review_rules.md şablonları
-# kurultay.config.json içindeki endpoint adreslerini ve anahtarları düzenleyin
-kurultay probe       # model yetenek raporu → .kurultay/CAPABILITIES.md
-kurultay analyze     # indeks + tüm modellerle özet → .kurultay/ARCHITECTURE.md
-kurultay run "UART sürücüsüne DMA desteği ekle; mevcut testler geçmeli" --ui
+cd /my/project
+kurultay init        # kurultay.config.json + .kurultay/rules, skills, review_rules.md templates
+# edit the endpoint addresses and keys in kurultay.config.json
+kurultay probe       # model capability report → .kurultay/CAPABILITIES.md
+kurultay analyze     # index + summaries with all models → .kurultay/ARCHITECTURE.md
+kurultay run "Add DMA support to the UART driver; existing tests must pass" --ui
 ```
 
-GPU'nuz yoksa veya önce denemek istiyorsanız sahte LLM sunucusunu kullanabilirsiniz: `kurultay mock --port 9100`. Endpoint olarak `http://127.0.0.1:9100/v1` verin.
+No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --port 9100` and give `http://127.0.0.1:9100/v1` as the endpoint.
 
-## Komutlar
+## Commands
 
-| Komut | Açıklama |
+| Command | Description |
 |---|---|
-| `kurultay` / `kurultay console` | Etkileşimli konsol (`--workspace <klasör>`, `--no-probe`, `--no-analyze`) |
-| `kurultay rewind [oturum]` | Bir görevin projeye uyguladığı değişiklikleri geri alır (varsayılan son görev; `--yes`, sonradan değişen dosyalar için `--force`) |
-| `kurultay init` | Yapılandırma ve kural şablonlarını oluşturur; build/test komutlarını tahmin eder (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
-| `kurultay probe [--deep] [--quick]` | Yetenek analizi. `--deep` 256K bağlama ve 16 eşzamanlı isteğe kadar ölçer; `--quick` benchmark'ı atlar |
-| `kurultay index [--embed]` | Statik indeks (LLM gerekmez); `--embed` anlamsal arama vektörlerini de üretir |
-| `kurultay analyze [--force] [--drafts N] [--flows N]` | Paralel özetleme, mimari dokümanı, `PROJECT_NOTES.md` ve en önemli N akışın dokümanı (`--flows 0` kapatır). Artımlıdır: yalnızca değişen dosyalar yeniden özetlenir |
-| `kurultay skills` | Bulunan skill'leri listeler ve spesifikasyona göre doğrular. `skills new <ad> --description "..."` yeni skill klasörü oluşturur |
-| `kurultay run "<görev>"` | `--mode auto\|single\|split\|race\|council`, `--req gereksinim.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui`, `--approve-plan`, `--max-tokens N`, `--max-minutes N` |
-| `kurultay run --resume [oturum]` | Yarıda kalan / bütçesi dolan görevi kaldığı alt görevden sürdürür |
-| `kurultay eval <görev-seti>` | Gizli testlerle kalite ölçümü: `--modes single,race,council`, `--tasks a,b`, `--repeat N`, `--out <klasör>`, `--keep`, `--validate` |
-| `kurultay stats [--runs N]` | Son görevlerin model başına istek/token/süre tablosu ve öğrenilen başarı oranları |
-| `kurultay ask "<soru>"` | Proje hakkında soru; modeller ayrı ayrı cevaplar, başkan model birleştirir |
-| `kurultay map [--tokens N] [--focus a,b]` | Repo haritası (Aider tarzı) |
-| `kurultay search "<sorgu>"` | Kod araması (BM25; vektörler varsa BM25 + embedding, RRF) |
-| `kurultay status` | Modeller, indeks ve son oturumlar |
+| `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`) |
+| `kurultay rewind [session]` | Undo the changes a task applied to the project (default: last task; `--yes`, `--force` for files changed since) |
+| `kurultay init` | Creates configuration and rule templates; guesses build/test commands (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
+| `kurultay probe [--deep] [--quick]` | Capability analysis. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the benchmark |
+| `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
+| `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
+| `kurultay skills` | Lists the skills found and validates them against the specification. `skills new <name> --description "..."` creates a skill folder |
+| `kurultay run "<task>"` | `--mode auto\|single\|split\|race\|council`, `--req requirements.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui`, `--approve-plan`, `--max-tokens N`, `--max-minutes N` |
+| `kurultay run --resume [session]` | Continues an interrupted / out-of-budget task from the subtask where it stopped |
+| `kurultay eval <suite>` | Quality measurement with hidden tests: `--modes single,race,council`, `--tasks a,b`, `--repeat N`, `--out <dir>`, `--keep`, `--validate` |
+| `kurultay stats [--runs N]` | Per-model requests/tokens/time of the last tasks and the learned success rates |
+| `kurultay ask "<question>"` | A question about the project; models answer separately, a chair model merges |
+| `kurultay map [--tokens N] [--focus a,b]` | Repo map (Aider style) |
+| `kurultay search "<query>"` | Code search (BM25; BM25 + embeddings with RRF once vectors exist) |
+| `kurultay status` | Models, index and recent sessions |
 
-`--ui` seçeneği `http://127.0.0.1:7420` adresinde, harici kaynak kullanmayan **canlı bir pano** açar. Panoda her modelin yükü ve her çalışanın adımları yan yana izlenir.
+`--ui` opens a **live dashboard** at `http://127.0.0.1:7420` that loads nothing from outside; it shows the load of every model and the steps of every worker side by side.
 
-## Yapılandırma
+## Configuration
 
-Tam örnek: [`examples/kurultay.config.example.json`](examples/kurultay.config.example.json)
+Full example: [`examples/kurultay.config.example.json`](examples/kurultay.config.example.json)
 
 ```jsonc
 {
@@ -235,173 +237,175 @@ Tam örnek: [`examples/kurultay.config.example.json`](examples/kurultay.config.e
     { "name": "gpu1", "baseUrl": "http://10.0.0.11:8000/v1", "apiKey": "${GPU1_API_KEY}" },
     { "name": "ollama", "baseUrl": "http://127.0.0.1:11434/v1", "apiKey": "ollama", "models": ["qwen2.5-coder:14b"] }
   ],
-  "models": { "gpt-oss-120b@gpu1": { "roles": ["planner", "judge"] } },   // isteğe bağlı rol sabitleme
+  "models": { "gpt-oss-120b@gpu1": { "roles": ["planner", "judge"] } },   // optional role pinning
   "verify": { "build": "cmake --build build -j", "test": "ctest --test-dir build" },
   "orchestrator": { "defaultMode": "auto", "raceWidth": 3, "councilSize": 3, "maxIterations": 4, "confirmMerge": true }
 }
 ```
 
-- `models` boş bırakılırsa liste `GET /models` ile keşfedilir. Embedding ve reranker modelleri otomatik olarak elenir.
-- `maxConcurrency: 0` ise endpoint'in paralellik limitini probe belirler.
-- `apiKey` alanında `${ORTAM_DEGISKENI:-varsayılan}` sözdizimi kullanılabilir.
-- Zaman aşımları `llm` bölümünde ayarlanır; aynı alanlar (`timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs`) endpoint veya model bazında da verilebilir:
+- When `models` is empty the list is discovered with `GET /models`. Embedding and reranker models are filtered out automatically.
+- With `maxConcurrency: 0` the probe decides the endpoint's concurrency limit.
+- `apiKey` accepts `${ENV_VAR:-default}`.
+- Timeouts live in the `llm` section; the same fields (`timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs`) can also be set per endpoint or model:
 
 ```jsonc
 "llm": {
-  "firstTokenTimeoutMs": 180000,  // ilk token için süre (0 = kapalı)
-  "prefillMsPerToken": 2,         // uzun istemlerde istem token'ı başına ek süre
-  "idleTimeoutMs": 90000,         // akış bu kadar sessiz kalırsa kes
-  "timeoutMs": 600000,            // tek istek için üst sınır
-  "timeoutRetries": 0,            // takılan modelde kaç kez daha denensin
-  "timeoutCooldownMs": 120000,    // takılan modelin karantina süresi (0 = kapalı)
-  "stickyFailover": true          // çalışan düşen modele geri dönmesin
+  "firstTokenTimeoutMs": 180000,  // time allowed until the first token (0 = off)
+  "prefillMsPerToken": 2,         // extra time per prompt token for long prompts
+  "idleTimeoutMs": 90000,         // cut the stream after this much silence
+  "timeoutMs": 600000,            // upper limit for one request
+  "timeoutRetries": 0,            // how many more tries on a model that hung
+  "timeoutCooldownMs": 120000,    // quarantine of a model that hung (0 = off)
+  "stickyFailover": true          // a worker never goes back to a model that failed
 }
 ```
 
-Diğer bölümler:
+Other sections:
 
 ```jsonc
 "orchestrator": { "approvePlan": false, "maxTokens": 0, "maxMinutes": 0, "testFirst": true },
 "tools": {
-  "isolation": "sandbox",               // "inplace": komutlar gerçek ağaçta, sırayla
+  "isolation": "sandbox",               // "inplace": commands run in the real tree, one at a time
   "sandbox": { "size": 4 },
-  "syntaxCheck": "auto",                // "off" veya {".py": "python -m py_compile {file}"}
-  "javaRelease": 8,                      // Java 8 projelerinde javac --release 8
-  "commandPolicy": "deny",              // "allow": yalnızca izin listesindeki komutlar (allowPatterns ile genişler)
-  "scrubEnv": true,                      // *KEY*, *TOKEN*, *SECRET*, *PASSWORD* değişkenleri model komutlarına geçmez
-  "osSandbox": "off"                     // "auto"/"bwrap": Linux'ta bubblewrap — salt okunur sistem, ağ yok
+  "syntaxCheck": "auto",                // "off" or {".py": "python -m py_compile {file}"}
+  "javaRelease": 8,                      // javac --release 8 for Java 8 projects
+  "commandPolicy": "deny",              // "allow": only allow-listed commands (extend with allowPatterns)
+  "scrubEnv": true,                      // *KEY*, *TOKEN*, *SECRET*, *PASSWORD* variables are not passed to model commands
+  "osSandbox": "off"                     // "auto"/"bwrap": bubblewrap on Linux — read-only system, no network
 },
-"embeddings": { "mode": "auto" },       // veya { "endpoint": "gpu1", "model": "bge-m3" }
+"embeddings": { "mode": "auto" },       // or { "endpoint": "gpu1", "model": "bge-m3" }
 "mcp": { "servers": { "jira": { "command": "node", "args": ["jira-mcp.js"], "readOnlyTools": ["search"] } } },
 "lsp": { "servers": { "clangd": { "command": "clangd", "extensions": [".c", ".cpp", ".h", ".hpp"] } } }
 ```
 
-- **MCP**: stdio MCP sunucularının araçları çalışanlara `mcp__<sunucu>__<araç>` adıyla sunulur; salt okunur olanlar (`readOnlyHint` veya `readOnlyTools`) inceleyicilere de açılır. Konsolda `/mcp`.
-- **LSP**: yapılandırılan dil sunucusu proje başına bir kez başlatılır ve her düzenlemeden sonra tanılamaları alınır; başlatılamazsa derleyici kontrolüne düşülür.
+- **MCP**: tools of stdio MCP servers are offered to the workers as `mcp__<server>__<tool>`; read-only ones (`readOnlyHint` or `readOnlyTools`) are also available to reviewers. `/mcp` in the console.
+- **LSP**: the configured language server starts once per project and its diagnostics are collected after every edit; if it cannot start, the compiler check takes over.
 
-## Kurallar ve skill'ler
+## Rules and skills
 
-| Dosya | Kullanım |
+| File | Use |
 |---|---|
-| `.kurultay/rules/*.md` | Her çalışana verilen kurallar. Frontmatter'da `applies_to: "*.java"` (veya `globs: ["*.c", "*.h"]`) varsa yalnızca ilgili dosyalarda uygulanır |
-| `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` | Diğer ajanların kural dosyaları dönüştürmeden okunur. Alt klasördeki `AGENTS.md`/`CLAUDE.md` yalnızca o klasördeki dosyalara uygulanır |
-| `review_rules.md` veya `.kurultay/review_rules.md` | Konsey incelemesinde zorunlu kurallar |
-| `.kurultay/PROJECT_NOTES.md` | `analyze` üretir, elle düzenlenebilir: komutlar, kod kuralları, tamamlama listesi, tuzaklar. Her görevin bağlamına eklenir |
+| `.kurultay/rules/*.md` | Rules given to every worker. With `applies_to: "*.java"` (or `globs: ["*.c", "*.h"]`) in the front matter they only apply to matching files |
+| `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` | Other agents' rule files are read as they are. An `AGENTS.md`/`CLAUDE.md` in a subfolder only applies to files in that folder |
+| `review_rules.md` or `.kurultay/review_rules.md` | Mandatory rules in council reviews |
+| `.kurultay/PROJECT_NOTES.md` | Generated by `analyze`, editable by hand: commands, code conventions, completion checklist, pitfalls. Added to the context of every task |
 
-### Skill'ler ([Agent Skills](https://agentskills.io) uyumlu)
+### Skills ([Agent Skills](https://agentskills.io) compatible)
 
-Skill, bir işin nasıl yapılacağını anlatan klasördür: `SKILL.md` (frontmatter'da `name` + `description`) ve isteğe bağlı `references/`, `scripts/`, `assets/`.
+A skill is a folder that describes how to do a piece of work: `SKILL.md` (with `name` + `description` in the front matter) and optional `references/`, `scripts/`, `assets/`.
 
 ```
-.kurultay/skills/yeni-surucu-ekleme/
+.kurultay/skills/add-new-driver/
 ├── SKILL.md
-└── references/arayuz-kurallari.md
+└── references/interface-rules.md
 ```
 
 ```markdown
 ---
-name: yeni-surucu-ekleme
-description: Yeni bir donanım sürücüsü ekleme adımları. Sürücü/driver işlerinde kullan.
-keywords: [sürücü, driver]        # görevde geçerse baştan yüklenir
-paths: ["src/drivers/**"]         # yalnızca bu dosyalarla çalışırken önerilir
-# always: true                    # her çalışana baştan yükle
-# disable-model-invocation: true  # yalnızca --skill veya $ad ile
+name: add-new-driver
+description: Steps for adding a new hardware driver. Use it for driver work.
+keywords: [driver, sürücü]        # preloaded when the task mentions them
+paths: ["src/drivers/**"]         # suggested only while working on these files
+# always: true                    # preload for every worker
+# disable-model-invocation: true  # only via --skill or $name
 ---
 1. ...
 ```
 
-- **Nereden okunur**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, kullanıcı dizininde `~/.agents/skills` ve `~/.claude/skills`, ayrıca `skills.paths`. Başka ajanlar için yazılmış skill'ler olduğu gibi çalışır. Tek dosyalık eski `.md` skill'ler de desteklenir.
-- **Kademeli yükleme**: Modele başta yalnızca ad + açıklama listesi verilir; model gerekince `skill` aracıyla gövdeyi, `skill_file` ile ek dosyaları açar. Bağlam küçük yerel modeller için boşa harcanmaz.
-- **Seçim önceliği**: `--skill a,b` ve görev metnindeki `$ad` > `always` > `keywords` > planlayıcının alt göreve atadığı skill'ler. Sözcüksel olarak ilgili olanlar "önerilen" diye işaretlenir. `paths` tanımlı skill'ler çalışan o dosyalara dokunduğunda duyurulur.
-- **Rapor**: hangi çalışanın hangi skill'i neden kullandığı `REPORT.md` içinde listelenir. `kurultay skills` ad/açıklama kurallarını doğrular.
+- **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, `~/.agents/skills` and `~/.claude/skills` in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
+- **Progressive loading**: models first get only a list of names + descriptions; when needed a model opens the body with the `skill` tool and extra files with `skill_file`. Context is not wasted on small local models.
+- **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills the planner assigned to the subtask. Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.
+- **Report**: which worker used which skill and why is listed in `REPORT.md`. `kurultay skills` validates the name/description rules.
 
-Hangi fikrin hangi açık kaynak ajandan alındığı, kod düzeyinde incelemenin notlarıyla birlikte [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) dosyasındadır.
+Which idea came from which open-source agent, with notes from the code-level study, is in [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) (Turkish).
 
-## Üretilen dosyalar (`.kurultay/`)
+## Generated files (`.kurultay/`)
 
 ```
-capabilities.json, CAPABILITIES.md   model yetenek profili
-index/index.json                     semboller, grafik, PageRank, özetler (artımlı)
-ARCHITECTURE.md, INDEX.md            mimari özet ve dosya indeksi
-modules/*.md                         modül dokümanları
-flows/NN-*.md                        uçtan uca akış dokümanları (adımlar, kaynak satırları, Mermaid)
-PROJECT_NOTES.md                     ajanların her görevde okuduğu proje notları
-skills/<ad>/SKILL.md                 proje skill'leri
+capabilities.json, CAPABILITIES.md   model capability profile
+index/index.json                     symbols, graph, PageRank, summaries (incremental)
+index/vectors.json                   embedding vectors per code chunk (when an embedding model exists)
+ARCHITECTURE.md, INDEX.md            architecture summary and file index
+modules/*.md                         module documents
+flows/NN-*.md                        end-to-end flow documents (steps, source lines, Mermaid)
+PROJECT_NOTES.md                     project notes the agents read on every task
+skills/<name>/SKILL.md               project skills
+sandboxes/sb-N/                      per-worker build/test copies
 sessions/<id>/                       plan.json, events.jsonl, session.json, changes.diff, REPORT.md
 ```
 
-## Güvenlik
+## Security
 
-- Ajanlar yalnızca proje kökü içinde dosya okuyup yazabilir. `.git` ve `.kurultay` korunur.
-- Komutlar `tools.denyPatterns` ile filtrelenir. Varsayılan olarak `rm -rf /`, `mkfs`, `dd`, `git push`, `curl | sh` gibi komutlar reddedilir. `tools.commandPolicy: "allow"` ile yalnızca izin listesindeki komutlar çalışır (her `&&`, `|`, `;` parçası ayrı denetlenir; `$(…)` ve proje dışına yönlendirme reddedilir). `tools.allowCommands: false` komut çalıştırmayı tamamen kapatır.
-- Model komutlarına API anahtarı, token ve parola içeren ortam değişkenleri geçirilmez (`tools.scrubEnv`, istisnalar `tools.envPassthrough`).
-- Linux'ta `tools.osSandbox: "auto"` ile komutlar bubblewrap içinde çalışır: sistem salt okunur, yalnızca çalışanın sandbox kopyası ve `/tmp` yazılabilir, ağ kapalı.
-- Komutlar çalışan başına sandbox kopyalarında çalışır; gerçek projeye yalnızca onaylanan birleştirme yazar.
-- `confirmMerge: true` ayarıyla değişiklikler projeye uygulanmadan önce onay istenir. `--dry-run` ile sonuç yalnızca `changes.diff` olarak bırakılır.
+- Agents can only read and write files inside the project root. `.git` and `.kurultay` are protected.
+- Commands are filtered by `tools.denyPatterns`. By default commands such as `rm -rf /`, `mkfs`, `dd`, `git push` and `curl | sh` are refused. With `tools.commandPolicy: "allow"` only allow-listed commands run (every `&&`, `|`, `;` segment is checked separately; `$(…)` and redirection outside the project are refused). `tools.allowCommands: false` disables commands entirely.
+- Environment variables holding API keys, tokens and passwords are not passed to model commands (`tools.scrubEnv`, exceptions in `tools.envPassthrough`).
+- On Linux, `tools.osSandbox: "auto"` runs commands inside bubblewrap: read-only system, only the worker's sandbox copy and `/tmp` writable, no network.
+- Commands run in per-worker sandbox copies; only the approved merge writes to the real project.
+- With `confirmMerge: true` you are asked before changes are applied to the project. With `--dry-run` the result is left as `changes.diff` only.
 
-## Kütüphane olarak kullanım
+## Using it as a library
 
 ```ts
 import { createApp, loadOrBuildIndex, Orchestrator } from 'kurultay';
-const app = await createApp({ root: '/projem' });
+const app = await createApp({ root: '/my/project' });
 const { index } = loadOrBuildIndex(app);
 const report = await new Orchestrator(app.root, app.config, app.router, app.materializer, index, app.bus)
-  .run('Görev metni', { mode: 'race' });
+  .run('Task text', { mode: 'race' });
 ```
 
-## Örnek projeler ve görev setleri
+## Sample projects and task suites
 
-[`samples/`](samples/) altında Kurultay'ı kendi modellerinizle denemek için iki orta büyüklükte, bilerek hatalı proje var:
-**Java 8 envanter/sipariş** (bağımlılıksız `Build.java`, JDK yeterli) ve **C++17 telemetri** (CMake + CTest, ASan/UBSan).
-Her birinde 8 hata + 2 özellik görevi ([java](samples/java-envanter/GOREVLER.md), [c++](samples/cpp-telemetri/GOREVLER.md)), gizli kabul testleri ve referans çözümleri vardır:
+[`samples/`](samples/) contains two medium-sized, deliberately buggy projects for trying Kurultay with your own models:
+a **Java 8 inventory/order** system (dependency-free `Build.java`, a JDK is enough) and a **C++17 telemetry** library (CMake + CTest, ASan/UBSan).
+Each has 8 bug and 2 feature tasks ([java](samples/java-envanter/GOREVLER.md), [c++](samples/cpp-telemetri/GOREVLER.md), written in Turkish as user reports), hidden acceptance tests and reference solutions:
 
 ```bash
 kurultay eval samples/evals/java-envanter --modes single,race,council
 kurultay eval samples/evals/cpp-telemetri --validate
 ```
 
-## Sınırlamalar ve yol haritası
+## Limitations and roadmap
 
-- Sembol çıkarıcı native derleme gerektirmemek için regex/sezgisel tabanlıdır (C, C++, Java, Kotlin, C#, Python, JS/TS, Go, Rust). Daha hassas tanılama için LSP sunucusu bağlanabilir; isteğe bağlı `web-tree-sitter` (WASM) yol haritasında.
-- **IDE eklentisi yok** (VS Code/JetBrains). Kurultay terminal konsolu, CLI, web panosu ve kütüphane olarak çalışır; IDE entegrasyonu bilinçli olarak kapsam dışında bırakıldı.
-- MCP istemcisi yalnızca stdio taşıyıcısını ve araçları (`tools/*`) destekler; kaynaklar (resources), istemler (prompts) ve HTTP taşıyıcısı yok.
-- İşletim sistemi düzeyinde komut yalıtımı (bubblewrap) yalnızca Linux'ta; Windows/macOS'ta sandbox kopyaları + komut politikası kullanılır.
-- Yerel modellerle kalite, modellerin kendisiyle sınırlıdır. Kurultay'ın race + test + konsey yaklaşımı tek bir zayıf modelin hatalarını eler, ancak hiçbir model çözemiyorsa sonuç `incomplete` olur ve rapor eksikleri listeler. Hangi modun sizin modellerinizle daha iyi çalıştığını `kurultay eval` ile ölçün.
+- The symbol extractor is regex/heuristic based so that no native build is needed (C, C++, Java, Kotlin, C#, Python, JS/TS, Go, Rust). An LSP server can be connected for precise diagnostics; optional `web-tree-sitter` (WASM) is on the roadmap.
+- **No IDE plug-in** (VS Code/JetBrains). Kurultay works as a terminal console, CLI, web dashboard and library; IDE integration was deliberately left out of scope.
+- The MCP client supports only the stdio transport and tools (`tools/*`); no resources, prompts or HTTP transport.
+- OS-level command isolation (bubblewrap) is Linux-only; on Windows/macOS sandbox copies + the command policy are used.
+- With local models, quality is bounded by the models themselves. Kurultay's race + test + council approach filters out the mistakes of a single weak model, but if no model can solve the task the result is `incomplete` and the report lists what is missing. Measure which mode works best with your models with `kurultay eval`.
 
-## Geliştirme ve testler
+## Development and tests
 
 ```bash
 npm ci
-npm test                  # birim + entegrasyon + CLI (≈290 test)
-npm run lint              # ESLint (yüzen promise, kullanılmayan kod, güvensiz kalıplar)
-npm run test:unit         # yalnızca birim testleri
-npm run test:integration  # sahte çoklu-model LLM sunucularıyla entegrasyon
-npm run test:cli          # gerçek CLI'ı alt süreç olarak uçtan uca çalıştırır
-npm run test:package      # offline paketleme + internetsiz kurulum + taşınabilir başlatıcı
-npm run test:coverage     # kapsam eşikleri: satır ≥ %96, dal ≥ %88, fonksiyon ≥ %94
+npm test                  # unit + integration + CLI (≈290 tests)
+npm run lint              # ESLint (floating promises, unused code, unsafe patterns)
+npm run test:unit         # unit tests only
+npm run test:integration  # integration against mock multi-model LLM servers
+npm run test:cli          # runs the real CLI end to end as a child process
+npm run test:package      # offline packaging + install without internet + portable launcher
+npm run test:coverage     # coverage thresholds: lines ≥ 96%, branches ≥ 88%, functions ≥ 94%
 ```
 
-| Katman | Ne test ediliyor |
+| Layer | What is tested |
 |---|---|
-| `test/unit` | Sandbox havuzu (bariyerle paralellik kanıtı), derleyici kontrolü (gcc/clang/javac, compile_commands, Windows yolları), komut politikası ve ortam temizleme, öğrenen model istatistikleri ve json_schema düşüşü; kontrol noktaları, konuşma kaydı, Markdown işleyici, durum satırı ve etkinlik göstergesi, git yardımcıları; konsol altyapısı (tuş ayrıştırma, bracketed paste, satır editörü, geçmiş, öneri menüsü, satır kaydırma, ekran), router (seçim, retry, devre kesici, ilk token / sessizlik zaman aşımı ve karantina, auth/bağlam hataları, kurtarma beklemesi, zaman aşımı, iptal, eşzamanlılık limiti), OpenAI istemcisi (SSE, reasoning, tool-call delta, hata sınıflandırma, başlıklar), araçlar ve güvenlik (yol kaçışı, yasaklı komutlar, salt-okunur), overlay/3-yollu birleştirme/çökme kurtarma, düzenleme ayrıştırıcıları, 9 dilde sembol çıkarma, import çözümü, tarayıcı, indeks, konsey (anonimlik, bağımsız inceleyici, kendi adayına oy verememe, test kanıtı önceliği, P0–P3 öncelik, metin sıralama yedeği), planlayıcı, doğrulama, yapılandırma, skill keşfi/doğrulama/seçimi, frontmatter, döngü koruması, sözdizimi kontrolü, okumadan-yazma koruması, CRLF/Unicode düzenleme, Retry-After, klasör kapsamlı kurallar |
-| `test/integration` | Değerlendirme düzeneği, plan onayı / bütçe / sürdürme, MCP ve LSP (sahte sunucularla), anlamsal arama (sahte embedding), bağlam bütçesi ve kesilme kurtarma; etkileşimli konsol (oturum kaydı, devam, dallanma, geri sarma, git worktree; LLM paneli, zorunlu çalışma alanı, otomatik indeks/yetenek/analiz, soru-iş ayrımı, onay, ayar ve endpoint düzenleme, tamamlama, Ctrl+C ile iptal), ajan döngüsü (native/metin/Qwen-XML araçları, tools reddi, toolshim, takılan modelden kalıcı failover ve geçmiş dönüşümü, boşta kalma, adım sınırı, döngü/hata durdurma, skill önyükleme ve araçla yükleme, condenser ve yedeği, model düşmesi), orkestratör (split+bağımlılık, iterasyon, build-düzeltme, düzeltmenin bağımsız yeniden incelemesi, çakışma, onay, kurallar, çökme kurtarma, iptal), probe (merdiven, gömme filtresi, erişilemezlik), analiz (partiler, hata toleransı, artımlılık), pano ve terminal |
-| `test/cli` | konsol (boru üzerinden), `init`, `probe`, `index`, `analyze` (akış dokümanları, proje notları), `skills`, `run` (`--skill`, `--req`), `ask`, `map`, `search`, `status`; çıkış kodları ve hata mesajları |
-| `test/package` | `npm pack` içeriği, registry olmadan kurulum, gömülü Node ile taşınabilir paket |
+| `test/unit` | Sandbox pool (parallelism proven with a barrier), compiler check (gcc/clang/javac, compile_commands, Windows paths), command policy and environment scrubbing, learned model statistics and the json_schema fallback, console usage meter; checkpoints, conversation storage, Markdown renderer, status line and activity indicator, git helpers; console plumbing (key parsing, bracketed paste, line editor, history, suggestion menu, line wrapping, screen), router (selection, retry, circuit breaker, first-token / silence timeouts and quarantine, auth/context errors, recovery wait, timeouts, cancellation, concurrency limit), OpenAI client (SSE, reasoning, tool-call deltas, error classification, headers), tools and security (path escapes, denied commands, read-only), overlay / 3-way merge / crash recovery, edit parsers, symbol extraction for 9 languages, import resolution, scanner, index, council (anonymity, independent reviewer, no self-votes, test evidence first, P0–P3 priority, text ranking fallback), planner, verification, configuration, skill discovery/validation/selection, front matter, loop guard, syntax check, read-before-write guard, CRLF/Unicode editing, Retry-After, folder-scoped rules |
+| `test/integration` | Evaluation harness, plan approval / budget / resume, MCP and LSP (with fake servers), semantic search (fake embeddings), context budget and truncation recovery; interactive console (session storage, resume, branching, rewind, git worktree; LLM panel, mandatory workspace, automatic index/probe/analysis, question vs. task, confirmation, settings and endpoint editing, completion, Ctrl+C, token/context display), agent loop (native/text/Qwen-XML tools, rejected tools, toolshim, permanent failover from a hung model with history conversion, idling, step limit, loop/error stop, skill preloading and tool loading, condenser and its fallback, model dropouts), orchestrator (split + dependencies, iterations, build fixing, independent re-review of fixes, conflicts, confirmation, rules, crash recovery, cancellation), probe (ladder, embedding filter, unreachable endpoints), analysis (batches, fault tolerance, incrementality), dashboard and terminal |
+| `test/cli` | console (over a pipe), `init`, `probe`, `index`, `analyze` (flow documents, project notes), `skills`, `run` (`--skill`, `--req`, `--approve-plan`, `--max-tokens`, `--resume`), `ask`, `map`, `search`, `status`, `stats`; exit codes and error messages |
+| `test/package` | `npm pack` contents, installation without a registry, portable bundle with an embedded Node |
 
 ### CI pipeline (`.github/workflows/ci.yml`)
 
 ```
-statik kontroller (tip, ESLint, paket içeriği) ─┬─ birim       (Linux/Windows/macOS × Node 20/22)
-                                                ├─ entegrasyon (Linux/Windows × Node 20/22)
-                                                ├─ CLI         (Linux/Windows/macOS)
-                                                └─ örnek projeler (JDK 8 + GCC: 20 görev --validate)
-                                                       └─┬─ kapsam eşiği
-                                                         └─ offline paket (Linux/Windows/macOS → artefakt)
-                                                               └─ sürüm yayını (GitHub Release)
+static checks (types, ESLint, package contents) ─┬─ unit         (Linux/Windows/macOS × Node 20/22)
+                                                 ├─ integration  (Linux/Windows × Node 20/22)
+                                                 ├─ CLI          (Linux/Windows/macOS)
+                                                 └─ sample projects (JDK 8 + GCC: 20 tasks --validate)
+                                                        └─┬─ coverage gate
+                                                          └─ offline packages (Linux/Windows/macOS → artifacts)
+                                                                └─ release (GitHub Release)
 ```
 
-**Sürüm çıkarmak:** `v0.2.0` gibi bir etiket gönderin ya da `package.json` sürümünü artırıp commit mesajına `[release]` yazarak `main`e gönderin. Tüm testler geçtikten sonra Linux/Windows/macOS offline paketleri GitHub Release'e eklenir.
+**Cutting a release:** push a tag such as `v0.3.1`, or bump the version in `package.json` and push to `main` with `[release]` in the commit message. Once all tests pass, the Linux/Windows/macOS offline packages are attached to the GitHub Release.
 
-Başarısız testler GitHub üzerinde hata notu (annotation) olarak, sonuç ve kapsam tabloları iş özeti (job summary) olarak görünür. `v0.2.0` gibi bir etiket gönderildiğinde her platformun offline paketi otomatik olarak Release'e eklenir.
+Failing tests show up on GitHub as error annotations; result and coverage tables appear in the job summary.
 
-Lisans: MIT
+Licence: MIT

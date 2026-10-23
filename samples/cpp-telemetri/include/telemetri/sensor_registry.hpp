@@ -15,16 +15,16 @@ struct SensorInfo {
     std::string unit;
 };
 
-/// Sensör kaydı ve sensör başına çalışan istatistik.
+/// Sensor registry with running statistics per sensor.
 class SensorRegistry {
 public:
-    /// Yeni sensör ekler; aynı id zaten kayıtlıysa hiçbir şeyi değiştirmeden false döner.
+    /// Adds a new sensor; returns false without changing anything when the id is already registered.
     bool register_sensor(std::uint16_t id, const std::string& name, const std::string& unit);
     std::optional<SensorInfo> find(std::uint16_t id) const;
-    /// Ölçüm ekler; bilinmeyen sensör için std::out_of_range.
+    /// Adds a reading; std::out_of_range for an unknown sensor.
     void record(std::uint16_t id, double value);
     const RunningStats& stats(std::uint16_t id) const;
-    /// Kayıtlı sensörler, id sırasıyla.
+    /// Registered sensors in id order.
     std::vector<SensorInfo> sensors() const;
 
 private:

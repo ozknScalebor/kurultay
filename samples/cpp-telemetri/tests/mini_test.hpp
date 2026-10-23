@@ -1,5 +1,5 @@
 #pragma once
-// Bağımlılıksız mini test çatısı: TEST(ad) { CHECK(...); } — tüm testler tek çalıştırılabilir dosyada toplanır.
+// Dependency-free mini test framework: TEST(name) { CHECK(...); } — all tests are linked into one executable.
 #include <cmath>
 #include <functional>
 #include <iostream>

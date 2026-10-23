@@ -5,8 +5,8 @@
 
 namespace telemetri {
 
-/// Sabit kapasiteli dairesel tampon. Doluyken push() en eski elemanın üzerine yazar.
-/// at(0) her zaman en eski, at(size()-1) en yeni elemandır.
+/// Fixed-capacity circular buffer. When full, push() overwrites the oldest element.
+/// at(0) is always the oldest element, at(size()-1) the newest.
 template <typename T>
 class RingBuffer {
 public:
@@ -20,7 +20,7 @@ public:
         if (count_ < buf_.size()) ++count_;
     }
 
-    /// En eski elemanı çıkarır.
+    /// Removes and returns the oldest element.
     T pop() {
         if (count_ == 0) throw std::out_of_range("tampon boş");
         T v = buf_[tail_];
