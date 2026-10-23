@@ -18,7 +18,7 @@ const rel = join(root, 'release');
 mkdirSync(rel, { recursive: true });
 
 if (!existsSync(join(root, 'dist', 'src', 'cli.js'))) {
-  console.error('dist bulunamadı – önce "npm run build" çalıştırın.');
+  console.error('dist not found – run "npm run build" first.');
   process.exit(1);
 }
 
@@ -53,5 +53,5 @@ try {
   execFileSync('tar', isWin ? ['-a', '-cf', archive, name] : ['-czf', archive, name], { cwd: rel });
   console.log(`✓ ${join(rel, archive)}`);
 } catch (e) {
-  console.warn(`arşiv oluşturulamadı (tar yok?): ${e.message}`);
+  console.warn(`could not create the archive (no tar?): ${e.message}`);
 }
