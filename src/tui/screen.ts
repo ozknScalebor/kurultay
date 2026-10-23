@@ -1,3 +1,4 @@
+import { forTerminal } from '../ui/symbols.js';
 import type { Readable, Writable } from 'node:stream';
 import { LineEditor, type Completer } from './editor.js';
 import { KeyParser, fitWidth, type Key } from './keys.js';
@@ -64,7 +65,7 @@ export class Screen {
   }
 
   write(s: string): void {
-    this.io.output.write(s);
+    this.io.output.write(forTerminal(s));
   }
 
   /** Print text; a prompt or activity line on screen is redrawn below the text. */
@@ -82,7 +83,7 @@ export class Screen {
   }
 
   /**
-   * Show a spinner line ("⠹ Görev · 12 sn · 3 istek sürüyor") until the returned
+   * Show a spinner line ("⠹ Task · 12s · 3 LLM requests running") until the returned
    * function is called. Log lines printed meanwhile appear above it.
    */
   activity(label: string, info?: () => string): () => void {
@@ -119,7 +120,7 @@ export class Screen {
     if (!a || this.editor) return;
     const secs = Math.floor((Date.now() - a.started) / 1000);
     const extra = a.info?.() ?? '';
-    const line = `${SPINNER[a.frame % SPINNER.length]} ${a.label} · ${secs >= 60 ? `${Math.floor(secs / 60)} dk ${secs % 60} sn` : `${secs} sn`}${extra ? ` · ${extra}` : ''} · Ctrl+C iptal`;
+    const line = `${SPINNER[a.frame % SPINNER.length]} ${a.label} · ${secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`}${extra ? ` · ${extra}` : ''} · Ctrl+C to cancel`;
     this.write(`\x1b[36m${fitWidth(line, this.columns - 1)}\x1b[39m`);
     a.drawn = true;
   }
@@ -159,8 +160,8 @@ export class Screen {
 
   /** Yes/no question (default no). */
   async confirm(question: string): Promise<boolean> {
-    const a = await this.readLine(`${question} [e/H] `);
-    return /^(e|evet|y|yes)$/i.test((a ?? '').trim());
+    const a = await this.readLine(`${question} [y/N] `);
+    return /^(y|yes)$/i.test((a ?? '').trim());
   }
 
   /** Route Ctrl+C to `onInterrupt` until the returned function is called. */
@@ -227,7 +228,7 @@ export class Screen {
       if (now - this.lastInterrupt < 1500) return this.finish(null);
       this.lastInterrupt = now;
       this.clearInput();
-      this.write('\x1b[2m(çıkmak için Ctrl+C\'ye tekrar basın veya /exit yazın)\x1b[22m\r\n');
+      this.write('\x1b[2m(press Ctrl+C again or type /exit to quit)\x1b[22m\r\n');
       this.renderedCursorRow = 0;
       return this.render();
     }

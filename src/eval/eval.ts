@@ -76,16 +76,16 @@ export interface EvalSummary {
 
 export function loadSuite(dir: string): EvalSuite {
   const file = join(dir, 'suite.json');
-  if (!existsSync(file)) throw new Error(`suite.json bulunamadı: ${file}`);
+  if (!existsSync(file)) throw new Error(`suite.json not found: ${file}`);
   const s = JSON.parse(readFileSync(file, 'utf8')) as EvalSuite;
-  if (!s.name || !s.project || !Array.isArray(s.tasks) || !s.tasks.length) throw new Error('suite.json: name, project ve en az bir task gerekli');
-  if (!existsSync(join(dir, s.project))) throw new Error(`proje klasörü yok: ${join(dir, s.project)}`);
+  if (!s.name || !s.project || !Array.isArray(s.tasks) || !s.tasks.length) throw new Error('suite.json: needs name, project and at least one task');
+  if (!existsSync(join(dir, s.project))) throw new Error(`project folder missing: ${join(dir, s.project)}`);
   const ids = new Set<string>();
   for (const t of s.tasks) {
-    if (!t.id || !t.prompt) throw new Error('her task için id ve prompt gerekli');
-    if (ids.has(t.id)) throw new Error(`tekrarlanan task id: ${t.id}`);
+    if (!t.id || !t.prompt) throw new Error('every task needs an id and a prompt');
+    if (ids.has(t.id)) throw new Error(`duplicate task id: ${t.id}`);
     ids.add(t.id);
-    if (!(t.check ?? s.check)) throw new Error(`${t.id}: check komutu yok (task.check veya suite.check)`);
+    if (!(t.check ?? s.check)) throw new Error(`${t.id}: no check command (task.check or suite.check)`);
   }
   return s;
 }
@@ -153,7 +153,7 @@ export async function validateSuite(opts: EvalOptions): Promise<Array<{ task: st
       if (!s.ok) output = s.output;
     }
     out.push({ task: t.id, baselineFails: !b.ok, solutionPasses, output });
-    opts.onProgress?.(`${t.id}: temel ${b.ok ? 'GEÇTİ (görev geçersiz!)' : 'kaldı ✓'}${solutionPasses === undefined ? '' : solutionPasses ? ' · çözüm geçti ✓' : ' · çözüm KALDI'}`);
+    opts.onProgress?.(`${t.id}: baseline ${b.ok ? 'PASSES (invalid task!)' : 'fails ✓'}${solutionPasses === undefined ? '' : solutionPasses ? ' · solution passes ✓' : ' · solution FAILS'}`);
   }
   if (!opts.keepWork) rmSync(root, { recursive: true, force: true });
   return out;
@@ -163,7 +163,7 @@ export async function runEval(opts: EvalOptions): Promise<{ summary: EvalSummary
   const suite = loadSuite(opts.suiteDir);
   const modes = opts.modes?.length ? opts.modes : (['single'] as RunMode[]);
   const tasks = suite.tasks.filter((t) => !opts.tasks?.length || opts.tasks.includes(t.id));
-  if (!tasks.length) throw new Error('seçilen task yok');
+  if (!tasks.length) throw new Error('no task selected');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const outDir = resolve(opts.outDir ?? join(tmpdir(), `kurultay-eval-${suite.name}-${stamp}`));
   mkdirSync(outDir, { recursive: true });
@@ -176,7 +176,7 @@ export async function runEval(opts: EvalOptions): Promise<{ summary: EvalSummary
         const work = join(outDir, 'work', `${task.id}-${mode}-${rep}`);
         attempts.push(await runAttempt(opts, suite, task, mode, rep, work));
         const a = attempts[attempts.length - 1];
-        opts.onProgress?.(`${a.passed ? '✓' : '✗'} ${task.id} [${mode}${(opts.repeat ?? 1) > 1 ? ` #${rep}` : ''}] ${a.status} · ${a.seconds.toFixed(1)} sn · ${a.requests} istek · ${a.tokensIn + a.tokensOut} token${a.error ? ` · ${a.error}` : ''}`);
+        opts.onProgress?.(`${a.passed ? '✓' : '✗'} ${task.id} [${mode}${(opts.repeat ?? 1) > 1 ? ` #${rep}` : ''}] ${a.status} · ${a.seconds.toFixed(1)} s · ${a.requests} req · ${a.tokensIn + a.tokensOut} tokens${a.error ? ` · ${a.error}` : ''}`);
         if (!opts.keepWork) rmSync(work, { recursive: true, force: true });
       }
     }
@@ -226,12 +226,12 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   });
   const t0 = Date.now();
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('zaman aşımı')), timeoutSec * 1000);
+  const timer = setTimeout(() => ctrl.abort(new Error('timed out')), timeoutSec * 1000);
   const onAbort = () => ctrl.abort(opts.signal?.reason);
   opts.signal?.addEventListener('abort', onAbort, { once: true });
   try {
     const app = await createApp({ root: work, config: opts.config, bus, requireModels: true, discoverTimeoutMs: 10_000 });
-    if (!app.router.size) throw new Error('kullanılabilir model yok');
+    if (!app.router.size) throw new Error('no usable model');
     app.config.orchestrator.confirmMerge = false;
     const { index } = loadOrBuildIndex(app);
     const report = await new Orchestrator(work, app.config, app.router, app.materializer, index, bus).run(task.prompt, { mode, signal: ctrl.signal });
@@ -257,29 +257,29 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
 export function renderEval(s: EvalSummary): string {
   const pct = (x: number) => `${Math.round(x * 100)}%`;
   const lines = [
-    `# Kurultay değerlendirmesi: ${s.suite}`,
+    `# Kurultay evaluation: ${s.suite}`,
     '',
     `${s.startedAt} → ${s.finishedAt}`,
     '',
-    '## Mod bazında',
+    '## By mode',
     '',
-    '| Mod | Deneme | Geçen | Başarı | Ort. süre (sn) | Ort. token | Ort. istek |',
+    '| Mode | Attempts | Passed | Pass rate | Avg. time (s) | Avg. tokens | Avg. requests |',
     '|---|---:|---:|---:|---:|---:|---:|',
     ...Object.entries(s.byMode).map(([m, b]) => `| ${m} | ${b.attempts} | ${b.passed} | ${pct(b.passRate)} | ${b.avgSeconds.toFixed(1)} | ${Math.round(b.avgTokens)} | ${b.avgRequests.toFixed(1)} |`),
     '',
-    '## Görevler',
+    '## Tasks',
     '',
-    '| Görev | Mod | Sonuç | Durum | Süre (sn) | Token | İstek | Dosya | Modeller |',
+    '| Task | Mode | Result | Status | Time (s) | Tokens | Requests | Files | Models |',
     '|---|---|---|---|---:|---:|---:|---:|---|',
     ...s.attempts.map(
       (a) =>
-        `| ${a.task}${a.repeat > 1 ? ` #${a.repeat}` : ''} | ${a.mode} | ${a.passed ? '✅' : '❌'}${a.baselineFailed ? '' : ' ⚠ (görev temelde zaten geçiyor)'} | ${a.status}${a.error ? ` (${a.error.replace(/\|/g, '/')})` : ''} | ${a.seconds.toFixed(1)} | ${a.tokensIn + a.tokensOut} | ${a.requests} | ${a.changedFiles} | ${a.models.join(', ')} |`,
+        `| ${a.task}${a.repeat > 1 ? ` #${a.repeat}` : ''} | ${a.mode} | ${a.passed ? '✅' : '❌'}${a.baselineFailed ? '' : ' ⚠ (task already passes on the baseline)'} | ${a.status}${a.error ? ` (${a.error.replace(/\|/g, '/')})` : ''} | ${a.seconds.toFixed(1)} | ${a.tokensIn + a.tokensOut} | ${a.requests} | ${a.changedFiles} | ${a.models.join(', ')} |`,
     ),
     '',
   ];
   const failed = s.attempts.filter((a) => !a.passed);
   if (failed.length) {
-    lines.push('## Başarısız denemelerin test çıktısı (son satırlar)', '');
+    lines.push('## Check output of failed attempts (last lines)', '');
     for (const a of failed) lines.push(`### ${a.task} [${a.mode}]`, '', '```', a.checkOutput.split('\n').slice(-15).join('\n'), '```', '');
   }
   return lines.join('\n');

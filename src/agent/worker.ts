@@ -197,7 +197,7 @@ export class AgentWorker {
     const fresh = sk.registry.visible().filter((s) => s.paths.length && !this.advertised.has(s.name) && !this.toolCtx.loadedSkills?.has(s.name) && SkillRegistry.matchesFiles(s, [path]));
     if (!fresh.length) return '';
     fresh.forEach((s) => this.advertised.add(s.name));
-    return `\n[Kurultay] ${path} ile ilgili skill'ler kullanılabilir: ${fresh.map((s) => `${s.name} — ${s.description}`).join('; ')}. Gerekirse skill aracıyla yükleyin.`;
+    return `\n[Kurultay] Skills for ${path} are available: ${fresh.map((s) => `${s.name} – ${s.description}`).join('; ')}. Load one with the skill tool if needed.`;
   }
 
   /** Pi/Codex style condenser: shrink old tool outputs first, then replace the middle with a structured hand-off summary. */
@@ -211,7 +211,7 @@ export class AgentWorker {
     for (let i = 2; i < this.messages.length - keepTail && size() > budget; i++) {
       const m = this.messages[i];
       if ((m.role === 'tool' || (m.role === 'user' && m.content?.startsWith('<tool_result'))) && (m.content?.length ?? 0) > 400) {
-        m.content = `${m.content!.slice(0, 300)}\n…[eski araç çıktısı kısaltıldı]`;
+        m.content = `${m.content!.slice(0, 300)}\n…[old tool output shortened]`;
       }
     }
     if (size() <= budget || this.messages.length <= keepTail + 3) return;
@@ -246,7 +246,7 @@ export class AgentWorker {
     this.messages = [this.messages[0], this.messages[1], { role: 'user', content: `<progress_notes>\n${notes}\n</progress_notes>\nContinue the task from these notes.` }, ...this.messages.slice(cut)];
     while (this.messages[3]?.role === 'tool') this.messages.splice(3, 1);
     this.interventions.push('condense');
-    this.bus?.info(this.spec.id, 'bağlam yoğunlaştırıldı');
+    this.bus?.info(this.spec.id, 'context compacted');
   }
 
   private async callModel(): Promise<ChatResult> {
@@ -266,7 +266,7 @@ export class AgentWorker {
         return await this.router.chat(req(), { prefer: [this.currentModel], role: 'coder', fallback: true });
       } catch (e) {
         if (!toolsRejected(e)) throw e;
-        this.bus?.warn(this.spec.id, 'native tool calling reddedildi; prompt tabanlı araç çağrısına geçiliyor');
+        this.bus?.warn(this.spec.id, 'native tool calling rejected; switching to prompt-based tool calls');
         this.switchToTextTools();
         return this.router.chat(req(), { prefer: [this.currentModel], role: 'coder', fallback: true });
       }
@@ -280,7 +280,7 @@ export class AgentWorker {
       } catch (e) {
         if (e instanceof LlmError && e.kind === 'aborted') throw e;
         if (toolsRejected(e)) {
-          this.bus?.warn(this.spec.id, 'native tool calling reddedildi; prompt tabanlı araç çağrısına geçiliyor');
+          this.bus?.warn(this.spec.id, 'native tool calling rejected; switching to prompt-based tool calls');
           this.switchToTextTools();
           continue;
         }
@@ -292,7 +292,7 @@ export class AgentWorker {
           continue;
         }
         // nothing healthy left: let the router try everyone (earlier failures first) and wait for recovery
-        this.bus?.warn(this.spec.id, `yedek model kalmadı; daha önce düşen modeller yeniden deneniyor (${[...this.failedModels].join(', ')})`);
+        this.bus?.warn(this.spec.id, `no backup model left; retrying the models that failed earlier (${[...this.failedModels].join(', ')})`);
         const r = await this.router.chat(req(), { prefer: [...this.failedModels], role: 'coder', fallback: true });
         if (r.model !== this.currentModel) this.switchModel(r.model, errorMessage(e));
         this.failedModels.delete(r.model);
@@ -316,7 +316,7 @@ export class AgentWorker {
     this.failovers.push({ from, to, step: this.step, reason: reason.slice(0, 200) });
     this.interventions.push(`failover:${from}->${to}`);
     this.bus?.emitEvent('worker.failover', { source: this.spec.id, message: `${from} → ${to}`, data: { from, to, reason } });
-    this.bus?.warn(this.spec.id, `${from} yanıt vermedi (${reason.slice(0, 120)}); görev ${to} ile devam ediyor, ${from} bu görevde tekrar kullanılmayacak`);
+    this.bus?.warn(this.spec.id, `${from} stopped answering (${reason.slice(0, 120)}); continuing on ${to}, ${from} is not used again for this subtask`);
     // the new model may not support native tool calling: move the transcript to the text protocol first
     if (this.nativeTools && this.router.get(to)?.caps.nativeTools === false) this.switchToTextTools();
   }
@@ -375,13 +375,13 @@ export class AgentWorker {
 
     for (let step = 1; step <= maxSteps; step++) {
       this.step = step;
-      if (this.signal?.aborted) return this.result('failed', 'iptal edildi', step, finalText, 'aborted');
+      if (this.signal?.aborted) return this.result('failed', 'cancelled', step, finalText, 'aborted');
       await this.condense();
       let r: ChatResult;
       try {
         r = await this.callModel();
       } catch (e) {
-        return this.result('failed', `model hatası: ${errorMessage(e)}`, step, finalText, errorMessage(e));
+        return this.result('failed', `model error: ${errorMessage(e)}`, step, finalText, errorMessage(e));
       }
       this.usedModels.add(r.model);
       this.tokens.in += r.usage.promptTokens;
@@ -405,8 +405,8 @@ export class AgentWorker {
 
       if (!calls.length) {
         idle++;
-        this.messages.push({ role: 'assistant', content: r.content || '(boş yanıt)' });
-        if (idle >= 3) return this.result('failed', 'model araç çağrısı yapmadan durdu', step, finalText);
+        this.messages.push({ role: 'assistant', content: r.content || '(empty reply)' });
+        if (idle >= 3) return this.result('failed', 'the model stopped without calling a tool', step, finalText);
         this.messages.push({
           role: 'user',
           content: this.nativeTools
@@ -418,7 +418,7 @@ export class AgentWorker {
       idle = 0;
 
       if (useNative) this.messages.push({ role: 'assistant', content: r.content || null, tool_calls: r.toolCalls });
-      else this.messages.push({ role: 'assistant', content: r.content || `(araç çağrıları: ${calls.map((c) => c.name).join(', ')})` });
+      else this.messages.push({ role: 'assistant', content: r.content || `(tool calls: ${calls.map((c) => c.name).join(', ')})` });
 
       const results: string[] = [];
       for (const c of calls) {
@@ -437,8 +437,8 @@ export class AgentWorker {
         const verdict = this.guard.record(c.name, c.args, out.output, !!out.isError);
         if (verdict.action === 'stop') {
           this.interventions.push(`stop:${verdict.kind}`);
-          this.bus?.warn(this.spec.id, `çalışan durduruldu: ${verdict.message}`);
-          return this.result('failed', `durduruldu: ${verdict.message}`, step, finalText, verdict.kind);
+          this.bus?.warn(this.spec.id, `worker stopped: ${verdict.message}`);
+          return this.result('failed', `stopped: ${verdict.message}`, step, finalText, verdict.kind);
         }
         if (verdict.action === 'warn') {
           this.interventions.push(`warn:${verdict.kind}`);
@@ -450,7 +450,7 @@ export class AgentWorker {
       }
       if (results.length) this.messages.push({ role: 'user', content: results.join('\n') });
     }
-    return this.result('max_steps', `adım sınırına ulaşıldı (${maxSteps})`, maxSteps, finalText);
+    return this.result('max_steps', `step limit reached (${maxSteps})`, maxSteps, finalText);
   }
 
   private result(status: WorkerResult['status'], summary: string, steps: number, finalText: string, error?: string): WorkerResult {

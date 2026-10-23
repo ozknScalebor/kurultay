@@ -139,7 +139,7 @@ describe('embeddings: discovery and hybrid search', () => {
     bad.embedder = { key: 'x@e', embed: async () => Promise.reject(new Error('503')) };
     const failed = await prepareRetrieval(app, bad);
     assert.match(failed.error!, /503/);
-    assert.ok(bus.ofType('log.warn').some((e) => /BM25 ile devam/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /continues with BM25/.test(e.message ?? '')));
     rmSync(root, { recursive: true, force: true });
   });
 });

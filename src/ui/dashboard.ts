@@ -66,10 +66,10 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)
 .ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}.dim{color:var(--dim)}
 #log{max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 </style></head><body>
-<header><h1>KURULTAY</h1><span id="status">bağlanıyor…</span></header>
+<header><h1>KURULTAY</h1><span id="status">connecting…</span></header>
 <main>
-<section><h2>Modeller</h2><div id="models"></div></section>
-<section><h2>Çalışanlar</h2><div id="workers"></div><h2 style="margin-top:14px">Olaylar</h2><div id="log"></div></section>
+<section><h2>Models</h2><div id="models"></div></section>
+<section><h2>Workers</h2><div id="workers"></div><h2 style="margin-top:14px">Events</h2><div id="log"></div></section>
 </main>
 <script>
 const workers = new Map();
@@ -80,18 +80,18 @@ function worker(id){
   return workers.get(id)}
 function line(cls,text){const d=document.createElement('div');d.className=cls;d.textContent=new Date().toTimeString().slice(0,8)+' '+text;$('log').prepend(d);while($('log').childElementCount>400)$('log').lastChild.remove()}
 const es=new EventSource('/events');
-es.onopen=()=>$('status').textContent='canlı';
-es.onerror=()=>$('status').textContent='bağlantı koptu – yeniden deneniyor';
+es.onopen=()=>$('status').textContent='live';
+es.onerror=()=>$('status').textContent='connection lost – retrying';
 es.onmessage=(m)=>{const e=JSON.parse(m.data);const d=e.data||{};
   if(e.type==='worker.start'){const w=worker(e.source);w.querySelector('.st').textContent=d.model}
   else if(e.type==='worker.tool'){const w=worker(e.source).querySelector('.body');const r=document.createElement('div');r.className='dim';r.textContent=d.tool+' '+JSON.stringify(d.args).slice(0,90);w.prepend(r)}
-  else if(e.type==='worker.end'){const s=worker(e.source).querySelector('.st');s.textContent=d.status+' · '+d.files+' dosya';s.className='st '+(d.status==='done'?'ok':'warn')}
+  else if(e.type==='worker.end'){const s=worker(e.source).querySelector('.st');s.textContent=d.status+' · '+d.files+' files';s.className='st '+(d.status==='done'?'ok':'warn')}
   else if(e.type.startsWith('log.')){line(e.type==='log.error'?'err':e.type==='log.warn'?'warn':'', (e.source?e.source+': ':'')+e.message)}
   else if(e.type==='subtask.winner'){line('ok','🏆 '+e.source+' → '+d.worker)}
   else if(e.type==='run.plan'){line('', 'Plan ('+d.mode+'): '+(d.subtasks||[]).join(' | '))}
-  else if(e.type==='run.end'){line('ok','Bitti: '+d.status+' · '+d.files+' dosya');$('status').textContent='tamamlandı: '+d.status}
+  else if(e.type==='run.end'){line('ok','Done: '+d.status+' · '+d.files+' files');$('status').textContent='finished: '+d.status}
   else if(e.type==='llm.error'){line('warn',e.source+' ['+d.kind+'] '+(e.message||'').slice(0,140))}
 };
-async function stats(){try{const s=await (await fetch('/stats')).json();$('models').innerHTML=s.map(m=>{const pct=Math.min(100,100*m.active/Math.max(1,m.limit));return '<div class="model"><div>'+esc(m.key)+(m.circuitOpen?' <span class="err">devre açık</span>':'')+'</div><div class="bar"><i style="width:'+pct+'%"></i></div><div class="meta">aktif '+m.active+'/'+m.limit+' · kuyruk '+m.queued+' · ✓'+m.successes+' ✗'+m.failures+'</div></div>'}).join('')}catch{}}
+async function stats(){try{const s=await (await fetch('/stats')).json();$('models').innerHTML=s.map(m=>{const pct=Math.min(100,100*m.active/Math.max(1,m.limit));return '<div class="model"><div>'+esc(m.key)+(m.circuitOpen?' <span class="err">circuit open</span>':'')+'</div><div class="bar"><i style="width:'+pct+'%"></i></div><div class="meta">active '+m.active+'/'+m.limit+' · queued '+m.queued+' · ✓'+m.successes+' ✗'+m.failures+'</div></div>'}).join('')}catch{}}
 setInterval(stats,1500);stats();
 </script></body></html>`;

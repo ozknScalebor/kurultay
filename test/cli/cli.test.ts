@@ -57,7 +57,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
   it('prints help and version', async () => {
     const help = await cli(['--help'], root);
     assert.equal(help.code, 0);
-    assert.match(help.stdout, /Komutlar:/);
+    assert.match(help.stdout, /Commands:/);
     for (const c of ['init', 'probe', 'index', 'analyze', 'run', 'ask', 'map', 'search', 'status', 'mock']) assert.match(help.stdout, new RegExp(`\\n  ${c}\\b`));
     const v = await cli(['--version'], root);
     assert.equal(v.code, 0);
@@ -71,7 +71,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(r.stderr, /kurultay init/);
     const unknown = await cli(['frobnicate'], root);
     assert.equal(unknown.code, 1);
-    assert.match(unknown.stdout, /Bilinmeyen komut/);
+    assert.match(unknown.stdout, /Unknown command/);
   });
 
   it('init creates config, rule templates and detects test commands; does not overwrite', async () => {
@@ -79,11 +79,14 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.equal(r.code, 0, r.stderr);
     const cfgPath = join(root, 'kurultay.config.json');
     assert.ok(existsSync(cfgPath));
-    for (const p of ['.kurultay/rules/genel.md', '.kurultay/rules/java.md', '.kurultay/skills/yeni-surucu-ekleme/SKILL.md', '.kurultay/skills/yeni-surucu-ekleme/references/arayuz-kurallari.md', '.kurultay/review_rules.md']) assert.ok(existsSync(join(root, p)), p);
+    for (const p of ['.kurultay/rules/general.md', '.kurultay/rules/java.md', '.kurultay/skills/add-new-driver/SKILL.md', '.kurultay/skills/add-new-driver/references/interface-rules.md', '.kurultay/review_rules.md']) assert.ok(existsSync(join(root, p)), p);
     const again = await cli(['init'], root);
-    assert.match(again.stdout, /zaten var/);
+    assert.match(again.stdout, /already exists/);
     // point the config at the mock server
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    delete cfg.baseUrl;
+    delete cfg.apiKey;
+    delete cfg.models;
     cfg.endpoints = [{ name: 'mock', baseUrl: mock.url, apiKey: '${MOCK_KEY:-none}' }];
     cfg.verify = { test: 'node test.js' };
     writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
@@ -92,7 +95,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
   it('index, map and search work without any model', async () => {
     const idx = await cli(['index'], root);
     assert.equal(idx.code, 0, idx.stdout + idx.stderr);
-    assert.match(idx.stdout, /indeks: 3 dosya/);
+    assert.match(idx.stdout, /index: 3 files/);
     const map = await cli(['map', '--tokens', '200'], root);
     assert.match(map.stdout, /src\/mathutil\.js/);
     assert.match(map.stdout, /clamp/);
@@ -111,18 +114,18 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
   it('analyze produces the architecture document', async () => {
     const r = await cli(['analyze', '--drafts', '2'], root);
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /dosya özetlendi/);
+    assert.match(r.stdout, /files summarised/);
     assert.ok(existsSync(join(root, '.kurultay', 'ARCHITECTURE.md')));
     assert.ok(existsSync(join(root, '.kurultay', 'PROJECT_NOTES.md')));
-    assert.match(r.stdout, /1 akış dokümanı/);
-    assert.ok(existsSync(join(root, '.kurultay', 'flows', '01-ana-akis.md')));
-    assert.match(readFileSync(join(root, '.kurultay', 'ARCHITECTURE.md'), 'utf8'), /## Akış Dokümanları/);
+    assert.match(r.stdout, /1 flow document\b/);
+    assert.ok(existsSync(join(root, '.kurultay', 'flows', '01-main-flow.md')));
+    assert.match(readFileSync(join(root, '.kurultay', 'ARCHITECTURE.md'), 'utf8'), /## Flow Documents/);
   });
 
   it('skills lists, validates and scaffolds skills', async () => {
     const list = await cli(['skills'], root);
     assert.equal(list.code, 0, list.stderr);
-    assert.match(list.stdout, /yeni-surucu-ekleme/);
+    assert.match(list.stdout, /add-new-driver/);
     const made = await cli(['skills', 'new', 'log-format', '--description', 'Log satırı biçimi kuralları'], root);
     assert.equal(made.code, 0, made.stderr);
     assert.ok(existsSync(join(root, '.kurultay', 'skills', 'log-format', 'SKILL.md')));
@@ -140,27 +143,27 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
   it('status shows models, index and sessions', async () => {
     const r = await cli(['status'], root);
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /Modeller \(2, probe sonucu\)/);
-    assert.match(r.stdout, /İndeks: 3 dosya/);
+    assert.match(r.stdout, /Models \(2, capability profile\)/);
+    assert.match(r.stdout, /Index: +3 files/);
   });
 
   it('run requires a task', async () => {
     const r = await cli(['run'], root);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /Görev metni gerekli/);
+    assert.match(r.stderr, /A task is required/);
   });
 
   it('run --dry-run leaves the project untouched; run --yes applies and exits 0', async () => {
     const dry = await cli(['run', 'Implement clamp in src/mathutil.js', '--dry-run', '--mode', 'single'], root);
     assert.equal(dry.code, 2, 'dry-run is not "completed"');
-    assert.match(dry.stdout, /Sonuç: dry-run/);
+    assert.match(dry.stdout, /Result: dry-run/);
     assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /TODO/);
     const real = await cli(['run', 'Implement clamp in src/mathutil.js', '--yes'], root);
     assert.equal(real.code, 0, real.stdout + real.stderr);
-    assert.match(real.stdout, /Sonuç: completed/);
-    assert.match(real.stdout, /Rapor: .*REPORT\.md/);
+    assert.match(real.stdout, /Result: completed/);
+    assert.match(real.stdout, /Report: .*REPORT\.md/);
     assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/);
-    assert.match(real.stderr, /Kurultay toplandı/, 'live log on stderr');
+    assert.match(real.stderr, /Kurultay – \d+ models/, 'live log on stderr');
   });
 
   it('run --req injects a requirements file', async () => {
@@ -181,7 +184,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     const r = await cli(['ask', 'clamp nerede?'], root);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /src\/mathutil\.js/);
-    assert.match(r.stdout, /konsey:/);
+    assert.match(r.stdout, /council:/);
   });
 
   it('console: interactive mode over a pipe (workspace, question, exit)', async () => {
@@ -193,65 +196,65 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
       child.stdin!.end('/status\nclamp nerede?\n/exit\n');
     });
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /LLM ayarları/);
-    assert.match(r.stdout, /Çalışma alanı: /);
-    assert.match(r.stdout, /→ soru/);
-    assert.match(r.stdout, /— konsey: /);
+    assert.match(r.stdout, /LLM settings/);
+    assert.match(r.stdout, /Workspace: /);
+    assert.match(r.stdout, /→ question/);
+    assert.match(r.stdout, /– council: /);
     const noTty = await cli([], root);
-    assert.match(noTty.stdout, /Komutlar:/, 'without a terminal the bare command prints help');
+    assert.match(noTty.stdout, /Commands:/, 'without a terminal the bare command prints help');
   });
 
   it('rewind undoes what the last applied run changed', async () => {
     assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min/);
     const r = await cli(['rewind', '--yes'], root);
     assert.equal(r.code, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /1 dosya eski hâline dönecek: src\/mathutil\.js/);
-    assert.match(r.stdout, /✓ 1 dosya geri yüklendi/);
+    assert.match(r.stdout, /1 file will be restored: src\/mathutil\.js/);
+    assert.match(r.stdout, /✓ 1 file restored/);
     assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /TODO/);
     const again = await cli(['rewind', '--yes'], root);
     assert.equal(again.code, 1);
-    assert.match(again.stderr, /zaten geri alınmış/);
+    assert.match(again.stderr, /already rewound/);
     const none = await cli(['rewind', 'nope'], root);
-    assert.match(none.stderr, /Geri alınabilir oturum bulunamadı: nope/);
+    assert.match(none.stderr, /No session to rewind: nope/);
     const noTty = await cli(['rewind'], tmpProject({ 'a.c': '' }));
-    assert.match(noTty.stderr, /geri alınabilir bir görev yok/);
+    assert.match(noTty.stderr, /No applied task that can be rewound/);
   });
 
   it('run --approve-plan / --max-tokens stop the run; run --resume continues it', async () => {
     const none = await cli(['run', '--resume'], root);
     assert.equal(none.code, 1);
-    assert.match(none.stderr, /Sürdürülecek yarım kalmış görev yok/);
+    assert.match(none.stderr, /no interrupted task to continue/);
     const bad = await cli(['run', 'x', '--max-tokens', 'çok'], root);
-    assert.match(bad.stderr, /--max-tokens sayı olmalı/);
+    assert.match(bad.stderr, /--max-tokens must be a number/);
     const stopped = await cli(['run', 'Implement clamp in src/mathutil.js', '--approve-plan', '--max-tokens', '1', '--mode', 'single'], root);
     assert.equal(stopped.code, 2, stopped.stdout + stopped.stderr);
-    assert.match(stopped.stdout, /Plan \(single modu/);
-    assert.match(stopped.stdout, /etkileşimli değil; plan onaylanmış sayıldı/);
-    assert.match(stopped.stdout, /Durduruldu: token bütçesi doldu.*kurultay run --resume/);
+    assert.match(stopped.stdout, /Plan \(single mode/);
+    assert.match(stopped.stdout, /Not an interactive terminal; the plan is approved automatically/);
+    assert.match(stopped.stdout, /Stopped: token budget used up.*kurultay run --resume/);
     const resumed = await cli(['run', '--resume', '--yes'], root);
-    assert.match(resumed.stdout, /Sürdürülüyor: /);
+    assert.match(resumed.stdout, /Resuming: /);
     assert.equal(resumed.code, 0, resumed.stdout + resumed.stderr);
-    assert.match(resumed.stdout, /Sonuç: completed[\s\S]*Tüketim: \d+ istek/);
+    assert.match(resumed.stdout, /Result: completed[\s\S]*Usage: \d+ requests/);
   });
 
   it('stats shows per-run and per-model usage; index --embed reports the retrieval mode', async () => {
     const r = await cli(['stats', '--runs', '3'], root);
     assert.equal(r.code, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /Son \d+ görev:/);
-    assert.match(r.stdout, /\| Model \| İstek \| Giriş token/);
+    assert.match(r.stdout, /Last \d+ tasks?:/);
+    assert.match(r.stdout, /\| Model \| Requests \| Tokens in/);
     assert.match(r.stdout, /\| cli-\w+@mock \| \d+ \|/);
-    assert.match(r.stdout, /Öğrenilen başarı oranı: cli-/);
+    assert.match(r.stdout, /Learned success rate: cli-/);
     const empty = await cli(['stats'], tmpProject({}));
-    assert.match(empty.stdout, /Henüz kayıtlı görev/);
+    assert.match(empty.stdout, /No task runs recorded yet/);
     const idx = await cli(['index', '--embed'], root);
     assert.equal(idx.code, 0, idx.stdout + idx.stderr);
-    assert.match(idx.stdout, /anlamsal arama: embedding modeli yok/);
+    assert.match(idx.stdout, /semantic search: no embedding model/);
   });
 
   it('reports unreachable endpoints clearly', async () => {
     const dead = tmpProject({ 'a.c': 'int a;', 'kurultay.config.json': JSON.stringify({ endpoints: [{ name: 'dead', baseUrl: 'http://127.0.0.1:9/v1' }] }) });
     const r = await cli(['run', 'something'], dead);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /Hiçbir model erişilebilir değil/);
+    assert.match(r.stderr, /No model is reachable/);
   });
 });

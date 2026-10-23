@@ -28,6 +28,8 @@ export interface EndpointConfig {
 }
 
 export interface ModelOverride {
+  /** API key for this model only (default: the endpoint's key) */
+  apiKey?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
   /** force-enable / disable native tool calling */
@@ -202,7 +204,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     include: [],
     exclude: [],
     maxFileBytes: 512 * 1024,
-    summaryLanguage: 'tr',
+    summaryLanguage: 'en',
     repoMapTokens: 2048,
   },
   tools: {
@@ -233,7 +235,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     timeoutCooldownMs: 120_000,
     stickyFailover: true,
   },
-  language: 'tr',
+  language: 'en',
   stateDir: '.kurultay',
 };
 
@@ -271,27 +273,27 @@ export class ConfigError extends Error {}
 
 export function validateConfig(cfg: KurultayConfig): void {
   if (!Array.isArray(cfg.endpoints) || cfg.endpoints.length === 0) {
-    throw new ConfigError('Yapılandırmada en az bir "endpoints" girdisi olmalı.');
+    throw new ConfigError('The configuration needs at least one endpoint ("baseUrl" or "endpoints").');
   }
   const names = new Set<string>();
   for (const ep of cfg.endpoints) {
-    if (!ep.name || !/^[A-Za-z0-9_.-]+$/.test(ep.name)) throw new ConfigError(`Geçersiz endpoint adı: "${ep.name}"`);
-    if (names.has(ep.name)) throw new ConfigError(`Endpoint adı tekrar ediyor: ${ep.name}`);
+    if (!ep.name || !/^[A-Za-z0-9_.-]+$/.test(ep.name)) throw new ConfigError(`Invalid endpoint name: "${ep.name}"`);
+    if (names.has(ep.name)) throw new ConfigError(`Duplicate endpoint name: ${ep.name}`);
     names.add(ep.name);
     try {
       const u = new URL(ep.baseUrl);
       if (!/^https?:$/.test(u.protocol)) throw new Error();
     } catch {
-      throw new ConfigError(`Endpoint "${ep.name}" için geçersiz baseUrl: ${ep.baseUrl}`);
+      throw new ConfigError(`Invalid baseUrl for endpoint "${ep.name}": ${ep.baseUrl}`);
     }
   }
   const modes: RunMode[] = ['auto', 'single', 'split', 'race', 'council'];
-  if (!modes.includes(cfg.orchestrator.defaultMode)) throw new ConfigError(`Geçersiz defaultMode: ${cfg.orchestrator.defaultMode}`);
+  if (!modes.includes(cfg.orchestrator.defaultMode)) throw new ConfigError(`Invalid defaultMode: ${cfg.orchestrator.defaultMode}`);
   for (const k of ['timeoutMs', 'firstTokenTimeoutMs', 'prefillMsPerToken', 'idleTimeoutMs', 'timeoutRetries', 'timeoutCooldownMs'] as const) {
     const v = cfg.llm[k];
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new ConfigError(`llm.${k} sıfır veya pozitif bir sayı olmalı (değer: ${JSON.stringify(v)})`);
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new ConfigError(`llm.${k} must be zero or a positive number (value: ${JSON.stringify(v)})`);
   }
-  if (cfg.llm.timeoutMs < 1000) throw new ConfigError('llm.timeoutMs en az 1000 ms olmalı');
+  if (cfg.llm.timeoutMs < 1000) throw new ConfigError('llm.timeoutMs must be at least 1000 ms');
 }
 
 export function findConfigFile(projectRoot: string, explicit?: string): string | undefined {
@@ -309,15 +311,15 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
   const path = findConfigFile(projectRoot, explicit);
   if (!path || !existsSync(path)) {
     throw new ConfigError(
-      'Yapılandırma bulunamadı. Proje kökünde "kurultay init" çalıştırın veya kurultay.config.json oluşturun.',
+      'No configuration found. Run "kurultay" for the setup, "kurultay init" in the project root, or create kurultay.config.json.',
     );
   }
-  let raw = readJson(path);
+  let raw = normalizeRawConfig(readJson(path));
   // a project config without endpoints (build/test commands, rules) extends the user's config
   const home = join(kurultayHome(), 'config.json');
   const eps = (raw as { endpoints?: unknown[] } | null)?.endpoints;
   if (resolve(path) !== resolve(home) && (!Array.isArray(eps) || !eps.length) && existsSync(home)) {
-    const base = readJson(home) as Record<string, unknown>;
+    const base = normalizeRawConfig(readJson(home)) as Record<string, unknown>;
     raw = deepMerge(base, raw as Record<string, unknown>);
     (raw as { endpoints?: unknown[] }).endpoints = base.endpoints as unknown[];
   }
@@ -329,12 +331,58 @@ function readJson(path: string): unknown {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    throw new ConfigError(`${path} okunamadı: ${(e as Error).message}`);
+    throw new ConfigError(`could not read ${path}: ${(e as Error).message}`);
   }
 }
 
+/**
+ * Accepts the short form – one server, one key, a list of model names:
+ *
+ *   { "baseUrl": "http://10.0.0.5:8000/v1", "apiKey": "${KEY}",
+ *     "models": ["qwen3-coder-30b", "gpt-oss-120b", { "id": "other", "apiKey": "${OTHER_KEY}" }] }
+ *
+ * and model entries inside `endpoints[].models` given as objects ({ id, apiKey, contextWindow… }).
+ * Everything is normalised to `endpoints[]` with string model lists plus per-model
+ * settings in the `models` map (keyed "model@endpoint"). Models without their own
+ * apiKey use the endpoint's key.
+ */
+export function normalizeRawConfig(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  const overrides: Record<string, Record<string, unknown>> = r.models && typeof r.models === 'object' && !Array.isArray(r.models) ? { ...(r.models as Record<string, Record<string, unknown>>) } : {};
+  const list = Array.isArray(r.models) ? (r.models as unknown[]) : undefined;
+  let endpoints = Array.isArray(r.endpoints) ? (r.endpoints as Array<Record<string, unknown>>).map((e) => ({ ...e })) : [];
+  if (typeof r.baseUrl === 'string' && r.baseUrl.trim()) {
+    const main: Record<string, unknown> = { name: typeof r.endpointName === 'string' && r.endpointName ? r.endpointName : 'main', baseUrl: r.baseUrl, models: list ?? [] };
+    for (const k of ['apiKey', 'maxConcurrency', 'timeoutMs', 'firstTokenTimeoutMs', 'idleTimeoutMs', 'headers'] as const) if (r[k] !== undefined) main[k] = r[k];
+    endpoints = [main, ...endpoints];
+    for (const k of ['baseUrl', 'apiKey', 'endpointName', 'maxConcurrency', 'timeoutMs', 'firstTokenTimeoutMs', 'idleTimeoutMs', 'headers']) delete r[k];
+  } else if (list) {
+    if (endpoints.length !== 1) throw new ConfigError('A "models" list needs a top-level "baseUrl" (or exactly one entry in "endpoints").');
+    endpoints[0].models = list;
+  }
+  for (const ep of endpoints) {
+    if (!Array.isArray(ep.models)) continue;
+    ep.models = (ep.models as unknown[])
+      .map((m) => {
+        if (typeof m === 'string') return m.trim();
+        if (m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string') {
+          const { id, ...rest } = m as Record<string, unknown> & { id: string };
+          const key = `${id.trim()}@${String(ep.name)}`;
+          if (Object.keys(rest).length) overrides[key] = { ...(overrides[key] ?? {}), ...rest };
+          return id.trim();
+        }
+        throw new ConfigError(`Invalid model entry in endpoint "${String(ep.name)}": ${JSON.stringify(m)} (use a name or {"id": "...", "apiKey": "..."})`);
+      })
+      .filter(Boolean);
+  }
+  r.endpoints = endpoints;
+  r.models = overrides;
+  return r;
+}
+
 export function parseConfig(raw: unknown): KurultayConfig {
-  const merged = deepMerge({ ...DEFAULT_CONFIG, endpoints: [] } as KurultayConfig, interpolateEnv(raw));
+  const merged = deepMerge({ ...DEFAULT_CONFIG, endpoints: [] } as KurultayConfig, normalizeRawConfig(interpolateEnv(raw)));
   merged.endpoints = (merged.endpoints || []).map((e) => ({ ...e, baseUrl: e.baseUrl.replace(/\/+$/, '') }));
   validateConfig(merged);
   return merged;
@@ -346,14 +394,12 @@ export function modelKey(model: string, endpoint: string): string {
 
 export const SAMPLE_CONFIG = {
   $comment:
-    'Kurultay yapılandırması. Her endpoint OpenAI-uyumlu olmalı (vLLM, llama.cpp server, Ollama, LM Studio, TGI, LiteLLM...). apiKey içinde ${ORTAM_DEGISKENI} kullanılabilir.',
-  endpoints: [
-    { name: 'gpu1', baseUrl: 'http://127.0.0.1:8000/v1', apiKey: '${GPU1_API_KEY:-none}', maxConcurrency: 0 },
-    { name: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'ollama', models: [] },
-  ],
-  models: {},
+    'Kurultay configuration. One OpenAI-compatible endpoint (vLLM, llama.cpp server, Ollama, LM Studio, TGI, LiteLLM...) with one API key; list the model names below. A model that needs its own key: {"id": "name", "apiKey": "..."}. An empty list uses every model the endpoint reports. ${ENV_VAR} works in any value. More servers: add an "endpoints" array.',
+  baseUrl: 'http://127.0.0.1:8000/v1',
+  apiKey: '${KURULTAY_API_KEY:-none}',
+  models: ['qwen3-coder-30b', 'gpt-oss-20b'],
   verify: { build: '', test: '', lint: '' },
   orchestrator: { defaultMode: 'auto', raceWidth: 3, councilSize: 3, maxIterations: 4, maxStepsPerWorker: 40, confirmMerge: false },
-  index: { include: [], exclude: [], summaryLanguage: 'tr', repoMapTokens: 2048 },
-  language: 'tr',
+  index: { include: [], exclude: [], summaryLanguage: 'en', repoMapTokens: 2048 },
+  language: 'en',
 };

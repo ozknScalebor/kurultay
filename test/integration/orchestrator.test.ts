@@ -171,7 +171,7 @@ describe('Orchestrator', () => {
     assert.deepEqual(report.changedFiles, []);
     assert.equal(report.merge, undefined);
     assert.equal(read(root, 'a.txt'), 'a');
-    assert.match(read(report.sessionDir, 'REPORT.md'), /\*\*Durum:\*\* failed/);
+    assert.match(read(report.sessionDir, 'REPORT.md'), /\*\*Status:\*\* failed/);
   });
 
   it('flags conflicts when parallel subtasks edit the same lines', async () => {
@@ -181,9 +181,9 @@ describe('Orchestrator', () => {
     };
     const { run, root, bus } = await setup(brain, { 'shared.txt': 'header\nvalue = 0\nfooter\n' });
     const report = await run('both edit', { mode: 'split' });
-    assert.ok(bus.ofType('log.warn').some((e) => /çakışma/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /conflict/.test(e.message ?? '')));
     const merged = read(root, 'shared.txt');
-    assert.match(merged, /<<<<<<< kurultay[\s\S]*=======[\s\S]*>>>>>>> mevcut/);
+    assert.match(merged, /<<<<<<< kurultay[\s\S]*=======[\s\S]*>>>>>>> current/);
     assert.ok(report.changedFiles.includes('shared.txt'));
   });
 
@@ -222,9 +222,9 @@ describe('Orchestrator', () => {
     assert.equal(reviews.filter((r) => r.corrected).length, 2);
     assert.ok(reviews.every((r) => !writers.has(`${r.model}@e`) && !writers.has(r.model)), `reviewers ${reviews.map((r) => r.model)} vs writers ${[...writers]}`);
     const md = read(report.reportPath, '');
-    assert.match(md, /İnceleyen modeller: .* — bağımsız/);
-    assert.match(md, /1\. düzeltme yeniden incelendi \(.*\): 1 engelleyici bulgu kaldı/);
-    assert.match(md, /2\. düzeltme yeniden incelendi \(.*\): engelleyici bulgu yok/);
+    assert.match(md, /Reviewers: .* – independent/);
+    assert.match(md, /fix 1 re-reviewed \(.*\): 1 blocking findings left/);
+    assert.match(md, /fix 2 re-reviewed \(.*\): no blocking findings/);
   });
 
   it('asks for confirmation and keeps the project untouched when declined', async () => {
@@ -238,7 +238,7 @@ describe('Orchestrator', () => {
         return false;
       },
     });
-    assert.match(asked, /1 dosya, \+1\/-1 satır/);
+    assert.match(asked, /1 file, \+1\/-1 lines/);
     assert.equal(report.status, 'dry-run');
     assert.equal(read(root, 'a.txt'), 'orig');
     assert.match(read(report.diffPath, ''), /\+changed/);
@@ -264,7 +264,7 @@ describe('Orchestrator', () => {
     const report = await run('refactor the java class Foo', { mode: 'race', requirements: 'REQ-DOC-555' });
     assert.equal(report.skills.available, 3);
     assert.ok(report.skills.used.some((u) => u.name === 'foo-kurallari' && u.how === 'preload'));
-    assert.match(readFileSync(report.reportPath, 'utf8'), /## Skill'ler[\s\S]*foo-kurallari/);
+    assert.match(readFileSync(report.reportPath, 'utf8'), /## Skills[\s\S]*foo-kurallari/);
     assert.ok(seen.plan.some((p) => p.includes('REQ-DOC-555')), 'requirements reach the planner');
     const agentPrompt = seen.agent.join('\n');
     assert.ok(agentPrompt.includes('RULE-GLOBAL-123'));
@@ -285,7 +285,7 @@ describe('Orchestrator', () => {
     writeFileSync(join(root, '.kurultay', 'journal.json'), JSON.stringify({ overlay: 'old', originals: { 'a.txt': 'ORIGINAL' } }));
     await run('noop', { mode: 'single' });
     assert.equal(read(root, 'a.txt'), 'ORIGINAL');
-    assert.ok(bus.ofType('log.warn').some((e) => /geri yüklendi/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /restored/.test(e.message ?? '')));
   });
 
   it('can be aborted mid-run without touching the project', async () => {

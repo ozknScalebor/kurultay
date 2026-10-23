@@ -44,7 +44,7 @@ describe('MCP client', () => {
     assert.deepEqual(await m.call('mcp__tracker__lookup_ticket', { id: 'KUR-7' }), { output: 'KUR-7: Login fails when the password is empty', isError: false });
     assert.deepEqual(await m.call('mcp__tracker__create_ticket', { title: 'x' }), { output: 'created KUR-8\n[image image/png]', isError: false });
     assert.deepEqual(await m.call('mcp__tracker__create_ticket', {}), { output: 'title required', isError: true });
-    assert.match((await m.call('mcp__tracker__nope', {})).output, /bulunamadı/);
+    assert.match((await m.call('mcp__tracker__nope', {})).output, /not found/);
     assert.equal(mcpToolName('my server', 'do.it'), 'mcp__my_server__do_it');
   });
 
@@ -52,19 +52,19 @@ describe('MCP client', () => {
     const { m } = await tracker({ timeoutMs: 300, tools: ['lookup_ticket', 'slow'], readOnlyTools: ['slow'] });
     assert.equal(m.size, 2);
     assert.ok(m.isReadOnly('mcp__tracker__slow'), 'readOnlyTools from the config');
-    assert.match((await m.call('mcp__tracker__slow', {})).output, /zaman aşımı/);
+    assert.match((await m.call('mcp__tracker__slow', {})).output, /timed out/);
     const ctrl = new AbortController();
     const p = m.call('mcp__tracker__slow', {}, ctrl.signal);
     ctrl.abort();
-    assert.match((await p).output, /iptal/);
+    assert.match((await p).output, /cancelled/);
     const broken = new McpManager({ servers: { dead: { command: process.execPath, args: ['-e', 'process.exit(3)'] }, missing: { command: 'kurultay-no-such-binary' }, off: { command: 'x', enabled: false } } }, recordingBus());
     const r = await broken.start(5000);
     assert.deepEqual(r.servers, []);
     assert.deepEqual(r.failed.map((f) => f.server).sort(), ['dead', 'missing']);
-    assert.match(r.failed.find((f) => f.server === 'dead')!.error, /kapandı \(çıkış 3\)/);
+    assert.match(r.failed.find((f) => f.server === 'dead')!.error, /exited \(code 3\)/);
     broken.close();
     m.close();
-    assert.match((await m.call('mcp__tracker__lookup_ticket', { id: 'KUR-7' })).output, /bulunamadı/, 'closed manager has no tools');
+    assert.match((await m.call('mcp__tracker__lookup_ticket', { id: 'KUR-7' })).output, /not found/, 'closed manager has no tools');
   });
 
   it('workers see MCP tools; read-only workers only the read-only ones', async () => {
@@ -73,7 +73,7 @@ describe('MCP client', () => {
     const ctx = ctxFor(root, { external: m });
     assert.equal((await executeTool('mcp__tracker__lookup_ticket', { id: 'KUR-7' }, ctx)).output, 'KUR-7: Login fails when the password is empty');
     const ro = ctxFor(root, { external: m, allowed: new Set(['read_file']) });
-    assert.match((await executeTool('mcp__tracker__create_ticket', { title: 'x' }, ro)).output, /izin verilmeyen/);
+    assert.match((await executeTool('mcp__tracker__create_ticket', { title: 'x' }, ro)).output, /not allowed/);
     assert.equal((await executeTool('mcp__tracker__lookup_ticket', { id: 'KUR-7' }, ro)).isError, false);
     assert.ok(toolSpecs(new Set(['read_file']), { external: m }).some((t) => t.function.name === 'mcp__tracker__lookup_ticket'));
     assert.ok(!toolSpecs(new Set(['read_file']), { external: m }).some((t) => t.function.name === 'mcp__tracker__create_ticket'));
@@ -125,8 +125,8 @@ describe('LSP diagnostics', () => {
     assert.deepEqual(await c.diagnostics(join(root, 'a.foo'), 'fixed'), [], 'didChange on the second call');
     c.close();
     assert.equal(c.alive, false);
-    await assert.rejects(c.diagnostics('a.foo', 'x'), /kapatıldı/);
-    await assert.rejects(new LspClient('none', { command: 'kurultay-no-such-lsp', extensions: ['.x'] }, root).start(5000), /başlatılamadı|kapandı/);
+    await assert.rejects(c.diagnostics('a.foo', 'x'), /closed/);
+    await assert.rejects(new LspClient('none', { command: 'kurultay-no-such-lsp', extensions: ['.x'] }, root).start(5000), /could not start|exited/);
   });
 
   it('is used by the post-edit check before compilers, with a pooled server per project', async () => {
@@ -146,7 +146,7 @@ describe('LSP diagnostics', () => {
     ctx.config.lsp = lspCfg;
     await executeTool('read_file', { path: 'src/a.foo' }, ctx);
     const out = await executeTool('edit_file', { path: 'src/a.foo', old_text: 'fine', new_text: 'ERROR' }, ctx);
-    assert.match(out.output, /LSP fake src\/a\.foo için derleme hatası[\s\S]*src\/a\.foo:1:1: error: unexpected token/);
+    assert.match(out.output, /LSP fake found compile errors in src\/a\.foo[\s\S]*src\/a\.foo:1:1: error: unexpected token/);
     await closeLspServers();
   });
 });

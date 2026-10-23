@@ -90,7 +90,7 @@ describe('end-to-end with mock LLM servers', () => {
     assert.ok(r.filesSummarized >= 2);
     assert.equal(r.failures, 0);
     const arch = readFileSync(r.architecturePath, 'utf8');
-    assert.match(arch, /# Mimari Özet/);
+    assert.match(arch, /# Architecture Summary/);
     assert.match(arch, /```mermaid/);
     assert.ok(Object.keys(r.modelsUsed).length >= 2, 'architecture drafts come from several models');
     assert.ok(index.files.find((f) => f.path === 'src/mathutil.js')?.summary);

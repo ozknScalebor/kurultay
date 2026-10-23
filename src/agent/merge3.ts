@@ -88,7 +88,7 @@ export function merge3(base: string, mine: string, theirs: string): MergeResult 
       if (m.join('\n') === t.join('\n')) out.push(...m);
       else {
         conflicts++;
-        out.push('<<<<<<< kurultay (bu çalışan)', ...m, '=======', ...t, '>>>>>>> mevcut');
+        out.push('<<<<<<< kurultay (this worker)', ...m, '=======', ...t, '>>>>>>> current');
       }
     }
     pos = end;

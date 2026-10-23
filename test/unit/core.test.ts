@@ -33,7 +33,7 @@ describe('edits', () => {
   });
   it('rejects ambiguous matches and gives a hint for misses', () => {
     assert.throws(() => applyReplacement('x\nx', 'x', 'y'), EditError);
-    assert.throws(() => applyReplacement('int read_raw(int ch);', 'int read_raw(int channel);', ''), /En yakın eşleşme/);
+    assert.throws(() => applyReplacement('int read_raw(int ch);', 'int read_raw(int channel);', ''), /Closest match/);
   });
   it('parses SEARCH/REPLACE blocks with file paths', () => {
     const b = parseSearchReplace('src/a.c\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n');

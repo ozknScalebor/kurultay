@@ -9,7 +9,8 @@ import { KeyParser, displayWidth, fitWidth, stripAnsi, type Key } from '../../sr
 import { banner, helpText, llmPanel, table } from '../../src/tui/panels.js';
 import { Screen } from '../../src/tui/screen.js';
 import { checkWorkspace, completePath, expandHome, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath } from '../../src/tui/state.js';
-import { classifyIntent, expandMentions, saveGlobalCapabilities } from '../../src/tui/console.js';
+import { classifyIntent, expandMentions } from '../../src/tui/console.js';
+import { saveProfile } from '../../src/probe/profile.js';
 import { readCapabilitiesFile } from '../../src/llm/models.js';
 import { caps, config, routerFor, tmpProject } from '../helpers.js';
 
@@ -183,7 +184,7 @@ describe('line editor', () => {
     const v = e.view('> ', 40, 1);
     assert.equal(v.menuRows, 2, 'one item plus "more" row');
     assert.match(v.rows[1], /\/mode|\/models/);
-    assert.match(v.rows[2], /1 daha/);
+    assert.match(v.rows[2], /1 more/);
     const plain = new LineEditor();
     plain.handle(k('tab'));
     assert.equal(plain.menu, undefined);
@@ -216,13 +217,13 @@ describe('screen', () => {
     assert.equal(await s.readLine('> '), 'first');
     t.input.write('ond\r\n');
     assert.equal(await s.readLine('> '), 'second');
-    t.input.write('e\n');
+    t.input.write('y\n');
     assert.equal(await s.confirm('ok?'), true);
     s.print('hello');
     t.input.end('tail');
     assert.equal(await s.readLine('> '), 'tail');
     assert.equal(await s.readLine('> '), null);
-    assert.match(t.text(), /> first\n> second\nok\? \[e\/H\] e\nhello\n> tail\n> \n/);
+    assert.match(t.text(), /> first\n> second\nok\? \[y\/N\] y\nhello\n> tail\n> \n/);
     s.close();
   });
 
@@ -256,7 +257,7 @@ describe('screen', () => {
     const r = s.readLine('❯ ');
     t.input.write('\x03');
     await new Promise((res) => setImmediate(res));
-    assert.match(t.text(), /tekrar basın/);
+    assert.match(t.text(), /press Ctrl\+C again/);
     t.input.write('\x03');
     assert.equal(await r, null);
     const d = s.readLine('❯ ');
@@ -285,11 +286,11 @@ describe('console helpers', () => {
   it('workspace checks, path completion and recent list', () => {
     const root = tmpProject({ 'proj/src/a.c': 'int a;', 'proj/Makefile': 'all:', 'plain/readme.txt': 'x', 'file.txt': 'x' });
     assert.equal(checkWorkspace('proj', root).path, join(root, 'proj'));
-    assert.match(checkWorkspace('nope', root).error!, /bulunamadı/);
-    assert.match(checkWorkspace('file.txt', root).error!, /klasör değil/);
-    assert.match(checkWorkspace('', root).error!, /yolu girin/);
-    assert.match(checkWorkspace('/', root).error!, /kökü/);
-    assert.match(checkWorkspace('~', root).error!, /Ev klasörü/);
+    assert.match(checkWorkspace('nope', root).error!, /not found/);
+    assert.match(checkWorkspace('file.txt', root).error!, /Not a folder/);
+    assert.match(checkWorkspace('', root).error!, /Enter a folder path/);
+    assert.match(checkWorkspace('/', root).error!, /root/);
+    assert.match(checkWorkspace('~', root).error!, /home folder/);
     assert.equal(looksLikeProject(join(root, 'proj')), true);
     assert.equal(looksLikeProject(join(root, 'plain')), false);
     assert.equal(looksLikeProject(join(root, 'missing')), false);
@@ -317,11 +318,13 @@ describe('console helpers', () => {
       assert.deepEqual(loadState(), { recent: [], history: ['y'] });
       writeFileSync(join(root, 'home', 'console.json'), 'not json');
       assert.deepEqual(loadState(), { recent: [], history: [] });
-      // global capability cache merges per endpoint
+      // the saved capability profile merges per model
       const m = (id: string, ep: string) => caps(id, ep);
-      saveGlobalCapabilities({ version: 1, generatedAt: 'a', models: [m('x', 'e1'), m('y', 'e2')] });
-      saveGlobalCapabilities({ version: 1, generatedAt: 'b', models: [m('z', 'e1')] });
-      assert.deepEqual(readCapabilitiesFile(join(root, 'home', 'capabilities.json'))!.models.map((c) => c.key).sort(), ['y@e2', 'z@e1']);
+      saveProfile({ version: 1, generatedAt: 'a', models: [m('x', 'e1'), m('y', 'e2')] });
+      saveProfile({ version: 1, generatedAt: 'b', models: [m('z', 'e1'), { ...m('x', 'e1'), notes: ['again'] }] });
+      const saved = readCapabilitiesFile(join(root, 'home', 'capabilities.json'))!.models;
+      assert.deepEqual(saved.map((c) => c.key).sort(), ['x@e1', 'y@e2', 'z@e1']);
+      assert.deepEqual(saved.find((c) => c.key === 'x@e1')!.notes, ['again']);
     } finally {
       if (prev === undefined) delete process.env.KURULTAY_HOME;
       else process.env.KURULTAY_HOME = prev;
@@ -330,25 +333,25 @@ describe('console helpers', () => {
 
   it('renders banner, tables, the LLM panel and help', () => {
     assert.match(stripAnsi(banner('1.2.3', 80)), /v1\.2\.3/);
-    assert.match(stripAnsi(banner('1.2.3', 30)), /^KURULTAY v1\.2\.3/);
+    assert.match(stripAnsi(banner('1.2.3', 30)), /^KURULTAY {2}v1\.2\.3/);
     assert.deepEqual(table([['a', 'bb', 'c'], ['long-cell', 'x', 'y']], [4, 3]), ['a     bb   c', 'lon…  x    y']);
     const cfg = config({ endpoints: [{ name: 'gpu', baseUrl: 'http://h/v1' }, { name: 'dead', baseUrl: 'http://d/v1' }] });
     const router = routerFor(cfg, [caps('m1', 'gpu', { tokensPerSec: 55, contextWindow: 32768 }), caps('m2', 'gpu', { nativeTools: false })]);
     const panel = stripAnsi(
-      llmPanel({ config: cfg, configPath: '/x/config.json', router, probed: false, width: 100, health: [{ name: 'gpu', baseUrl: 'http://h/v1', ok: true, ms: 12, models: ['m1', 'm2'] }, { name: 'dead', baseUrl: 'http://d/v1', ok: false, ms: 5000, models: [], error: '5 sn içinde yanıt yok' }] }),
+      llmPanel({ config: cfg, configPath: '/x/config.json', router, probed: false, width: 100, health: [{ name: 'gpu', baseUrl: 'http://h/v1', ok: true, ms: 12, models: ['m1', 'm2'] }, { name: 'dead', baseUrl: 'http://d/v1', ok: false, ms: 5000, models: [], error: 'no answer within 5 s' }] }),
     );
-    assert.match(panel, /2 endpoint \(1 erişilebilir\) · 2 model/);
-    assert.match(panel, /yetenek profili: yok \(\/probe\)/);
-    assert.match(panel, /gpu\s+http:\/\/h\/v1\s+2 model\s+● 12 ms/);
-    assert.match(panel, /dead.*5 sn içinde yanıt yok/);
+    assert.match(panel, /2 endpoints \(1 reachable\) · 2 models/);
+    assert.match(panel, /capability profile: none \(\/probe\)/);
+    assert.match(panel, /gpu\s+http:\/\/h\/v1\s+2 models\s+● 12 ms/);
+    assert.match(panel, /dead.*no answer within 5 s/);
     assert.match(panel, /m1@gpu\s+32K\s+native\s+55/);
     assert.match(panel, /m2@gpu\s+\d+K\s+prompt/);
-    assert.match(panel, /ilk token 3 dk · sessizlik 90 sn · toplam 10 dk/);
+    assert.match(panel, /first token 3 min · silence 90 s · total 10 min/);
     const empty = stripAnsi(llmPanel({ config: cfg, router: routerFor(cfg, []), probed: true, width: 80 }));
-    assert.match(empty, /Kullanılabilir model yok/);
-    assert.match(empty, /gpu\s+http:\/\/h\/v1\s+0 model\s+\?/);
+    assert.match(empty, /No usable model/);
+    assert.match(empty, /gpu\s+http:\/\/h\/v1\s+0 models\s+\?/);
     const h = stripAnsi(helpText([{ name: 'run', args: '<görev>', description: 'yap' }, { name: 'exit', description: 'çık' }]));
     assert.match(h, /\/run <görev>\s+yap/);
-    assert.match(h, /@dosya/);
+    assert.match(h, /@file/);
   });
 });

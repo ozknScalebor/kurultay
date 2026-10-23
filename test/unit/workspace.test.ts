@@ -43,7 +43,7 @@ describe('Overlay', () => {
     integ.absorb(w3);
     const r = integ.absorb(w4);
     assert.deepEqual(r.conflicts, ['f.c']);
-    assert.match(integ.read('f.c')!, /<<<<<<< kurultay[\s\S]*TWO-b[\s\S]*=======[\s\S]*TWO-a[\s\S]*>>>>>>> mevcut/);
+    assert.match(integ.read('f.c')!, /<<<<<<< kurultay[\s\S]*TWO-b[\s\S]*=======[\s\S]*TWO-a[\s\S]*>>>>>>> current/);
   });
 
   it('absorb() handles deletions and delete/modify conflicts', () => {
@@ -157,12 +157,12 @@ describe('edits – edge cases', () => {
     assert.equal(applyReplacement('', '', 'new'), 'new');
     assert.equal(applyReplacement('k=1; k=1;', 'k=1;', 'k=2;', { replaceAll: true }), 'k=2; k=2;');
     assert.equal(applyReplacement('  a\n  b\n  a\n  b', 'a\nb', 'c', { replaceAll: true }), '  c\n  c');
-    assert.throws(() => applyReplacement('  a\n  b\n  a\n  b', 'a\nb', 'c'), /2 yerde/);
+    assert.throws(() => applyReplacement('  a\n  b\n  a\n  b', 'a\nb', 'c'), /2 places/);
   });
   it('parse errors and multi-file blocks', () => {
     assert.throws(() => parseSearchReplace('f.c\n<<<<<<< SEARCH\nx\n'), EditError);
     assert.throws(() => parseSearchReplace('f.c\n<<<<<<< SEARCH\nx\n=======\ny\n'), /REPLACE/);
-    assert.throws(() => parseSearchReplace('<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE'), /dosya yolu/);
+    assert.throws(() => parseSearchReplace('<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE'), /no file path/);
     const blocks = parseSearchReplace('Edit `src/a.c`:\n<<<<<<< SEARCH\na\n=======\nA\n>>>>>>> REPLACE\nand **src/b.h**\n<<<<<<< SEARCH\n=======\nint b;\n>>>>>>> REPLACE');
     assert.deepEqual(blocks.map((b) => b.path), ['src/a.c', 'src/b.h']);
     const files = new Map([['src/a.c', 'a']]);

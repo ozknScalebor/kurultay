@@ -31,6 +31,8 @@ export interface ModelCapabilities {
   /** 0..1 per role, derived from the above */
   roleScores: Record<Role, number>;
   probedAt: string;
+  /** how long the probe of this model took */
+  probeSeconds?: number;
   notes: string[];
 }
 
@@ -61,7 +63,7 @@ export function defaultCapabilities(model: string, endpoint: string): ModelCapab
     instructionScore: 0.5,
     roleScores: { planner: 0.5, coder: 0.5, summarizer: 0.5, reviewer: 0.5, judge: 0.5, fast: 0.5 },
     probedAt: '',
-    notes: ['probe çalıştırılmadı – varsayılan değerler'],
+    notes: ['not probed – default values'],
   };
 }
 

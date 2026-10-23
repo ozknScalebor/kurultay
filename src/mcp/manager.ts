@@ -54,11 +54,11 @@ export class McpManager implements ExternalTools {
             this.tools.set(mcpToolName(name, t.name), { server: name, tool: t, readOnly });
           }
           this.clients.set(name, client);
-          this.bus?.info('mcp', `${name}: ${list.length} araç${client.serverInfo?.name ? ` (${client.serverInfo.name})` : ''}`);
+          this.bus?.info('mcp', `${name}: ${list.length} tools${client.serverInfo?.name ? ` (${client.serverInfo.name})` : ''}`);
         } catch (e) {
           client.close();
           failed.push({ server: name, error: errorMessage(e) });
-          this.bus?.warn('mcp', `${name} başlatılamadı: ${errorMessage(e)}`);
+          this.bus?.warn('mcp', `${name} could not start: ${errorMessage(e)}`);
         }
       }),
     );
@@ -89,14 +89,14 @@ export class McpManager implements ExternalTools {
   async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ output: string; isError?: boolean }> {
     const t = this.tools.get(name);
     const client = t && this.clients.get(t.server);
-    if (!t || !client) return { output: `MCP aracı bulunamadı: ${name}`, isError: true };
+    if (!t || !client) return { output: `MCP tool not found: ${name}`, isError: true };
     this.bus?.emitEvent('tool.mcp', { message: `${t.server}/${t.tool.name}` });
     try {
       const r = await client.callTool(t.tool.name, args, signal);
-      const text = r.text.length > MAX_OUTPUT ? `${r.text.slice(0, MAX_OUTPUT)}\n… (${r.text.length - MAX_OUTPUT} karakter kısaltıldı)` : r.text;
-      return { output: text || '(boş sonuç)', isError: r.isError };
+      const text = r.text.length > MAX_OUTPUT ? `${r.text.slice(0, MAX_OUTPUT)}\n… (${r.text.length - MAX_OUTPUT} characters cut)` : r.text;
+      return { output: text || '(empty result)', isError: r.isError };
     } catch (e) {
-      return { output: `MCP hatası (${t.server}/${t.tool.name}): ${errorMessage(e)}`, isError: true };
+      return { output: `MCP error (${t.server}/${t.tool.name}): ${errorMessage(e)}`, isError: true };
     }
   }
 

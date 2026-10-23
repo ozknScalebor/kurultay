@@ -70,26 +70,26 @@ export class LoopGuard {
     // consecutive failures (Cline mistake tracker)
     this.errorStreak = isError ? this.errorStreak + 1 : 0;
     if (this.errorStreak >= this.o.maxConsecutiveErrors) {
-      return { action: 'stop', kind: 'errors', message: `${this.errorStreak} araç çağrısı üst üste başarısız oldu` };
+      return { action: 'stop', kind: 'errors', message: `${this.errorStreak} tool calls in a row failed` };
     }
 
     // identical call + identical result within the window (Crush / Cline)
     const recent = this.history.slice(-this.o.window);
     const repeats = recent.filter((s) => s === sig).length;
     if (repeats >= this.o.hardRepeat) {
-      return { action: 'stop', kind: 'repeat', message: `aynı "${name}" çağrısı aynı sonuçla ${repeats} kez tekrarlandı (döngü)` };
+      return { action: 'stop', kind: 'repeat', message: `the same "${name}" call repeated ${repeats} times with the same result (loop)` };
     }
 
     // A-B-A-B-A-B alternation on call keys (Qwen / OpenHands)
     const k = this.keys.slice(-6);
     if (k.length === 6 && k[0] !== k[1] && k[0] === k[2] && k[2] === k[4] && k[1] === k[3] && k[3] === k[5]) {
       const tag = `alt:${k[0]}:${k[1]}`;
-      if (this.warned.has(tag)) return { action: 'stop', kind: 'alternating', message: 'iki çağrı arasında gidip gelme döngüsü' };
+      if (this.warned.has(tag)) return { action: 'stop', kind: 'alternating', message: 'alternating between two calls (loop)' };
       this.warned.add(tag);
       return {
         action: 'warn',
         kind: 'alternating',
-        message: 'Aynı iki çağrı arasında gidip geliyorsunuz. Durun, şu ana kadar öğrendiklerinizi özetleyin ve farklı bir yaklaşım seçin.',
+        message: 'You are alternating between the same two calls. Stop, summarise what you have learned so far and choose a different approach.',
       };
     }
 
@@ -97,12 +97,12 @@ export class LoopGuard {
       return {
         action: 'warn',
         kind: 'repeat',
-        message: `Bu "${name}" çağrısını aynı sonuçla ${repeats}. kez yaptınız. Tekrarlamak sonucu değiştirmez: farklı bir araç/yaklaşım deneyin ya da iş bittiyse finish çağırın.`,
+        message: `You made this "${name}" call ${repeats} times with the same result. Repeating it will not change the result: try another tool/approach, or call finish if the work is done.`,
       };
     }
 
     if (isError && this.errorStreak === Math.ceil(this.o.maxConsecutiveErrors / 2)) {
-      return { action: 'warn', kind: 'errors', message: 'Son araç çağrılarınız başarısız oldu. Hata mesajlarını dikkatle okuyun; düzenleme hatalarında önce dosyayı read_file ile yeniden okuyun.' };
+      return { action: 'warn', kind: 'errors', message: 'Your last tool calls failed. Read the error messages carefully; for edit errors read the file again with read_file first.' };
     }
 
     // read-only exploration budget (Qwen tool-exploration-budget)
@@ -112,7 +112,7 @@ export class LoopGuard {
         return {
           action: 'warn',
           kind: 'exploration',
-          message: `${this.readOnlyStreak} salt-okuma çağrısı yaptınız. Toplanan bilgiyi gözden geçirip uygulamaya geçin; yalnızca belirli bir eksik için aramaya devam edin.`,
+          message: `You made ${this.readOnlyStreak} read-only calls. Review what you gathered and start implementing; only keep searching for something specific that is missing.`,
         };
       }
     } else this.readOnlyStreak = 0;

@@ -49,8 +49,8 @@ export async function verifyOverlay(overlay: Overlay, materializer: Materializer
 }
 
 export function renderVerify(v: VerifyResult): string {
-  if (v.skipped) return 'Doğrulama komutu tanımlı değil.';
-  return v.steps.map((s) => `- ${s.name}: ${s.ok ? '✅' : '❌'} \`${s.command}\` (${(s.ms / 1000).toFixed(1)} sn${s.timedOut ? ', zaman aşımı' : ''})`).join('\n');
+  if (v.skipped) return 'No verification commands configured.';
+  return v.steps.map((s) => `- ${s.name}: ${s.ok ? '✅' : '❌'} \`${s.command}\` (${(s.ms / 1000).toFixed(1)} s${s.timedOut ? ', timed out' : ''})`).join('\n');
 }
 
 export function verifyFailureText(v: VerifyResult): string {

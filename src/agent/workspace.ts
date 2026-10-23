@@ -38,13 +38,13 @@ function isTemporarilyCreated(root: string, path: string): boolean {
 /** Normalise a user/model supplied path to a safe project-relative posix path. */
 export function safeRelPath(root: string, p: string): string {
   let s = (p ?? '').trim().replace(/^["'`]|["'`]$/g, '');
-  if (!s) throw new Error('boş dosya yolu');
+  if (!s) throw new Error('empty file path');
   if (s.startsWith('a/') || s.startsWith('b/')) s = s.slice(2);
   const abs = isAbsolute(s) ? normalize(s) : normalize(join(root, s));
   const rel = relative(root, abs);
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`proje dışındaki yol reddedildi: ${p}`);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`path outside the project rejected: ${p}`);
   const posix = rel.split(sep).join('/');
-  if (/^(\.git|\.kurultay)(\/|$)/.test(posix)) throw new Error(`korunan dizin: ${p}`);
+  if (/^(\.git|\.kurultay)(\/|$)/.test(posix)) throw new Error(`protected folder: ${p}`);
   return posix;
 }
 

@@ -46,8 +46,8 @@ describe('checkpoints', () => {
     assert.ok(r2.restored.includes('a.txt'));
     assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'A');
     assert.ok(readCheckpoint(file)!.rewoundAt);
-    assert.throws(() => rewindCheckpoint(root, file), /zaten geri alınmış/);
-    assert.throws(() => rewindCheckpoint(root, join(root, 'missing.json')), /okunamadı/);
+    assert.throws(() => rewindCheckpoint(root, file), /already undone/);
+    assert.throws(() => rewindCheckpoint(root, join(root, 'missing.json')), /could not read/);
     writeFileSync(join(root, 'bad.json'), '{"version":2}');
     assert.equal(readCheckpoint(join(root, 'bad.json')), undefined);
     const empty = new CheckpointRecorder(root);
@@ -72,7 +72,7 @@ describe('conversations', () => {
     saveConversation(state, a);
     assert.equal(a.title, 'ilk soru');
     const b = branchConversation(a, 1, ' ');
-    assert.equal(b.title, 'ilk soru (dal)');
+    assert.equal(b.title, 'ilk soru (branch)');
     assert.deepEqual(b.parent, { id: a.id, turn: 1 });
     b.turns.push({ n: 2, at: 'y', kind: 'run', input: 'yap', output: 'ok' });
     assert.equal(a.turns.length, 1, 'branch does not change the original');
@@ -91,10 +91,10 @@ describe('conversations', () => {
     assert.equal(branchConversation(a, 0, 'x').turns.length, 0);
     assert.notEqual(newConversationId(), newConversationId());
     const now = Date.parse('2026-01-02T00:00:00Z');
-    assert.equal(relativeTime('2026-01-01T23:59:30Z', now), 'az önce');
-    assert.equal(relativeTime('2026-01-01T23:30:00Z', now), '30 dk önce');
-    assert.equal(relativeTime('2026-01-01T20:00:00Z', now), '4 sa önce');
-    assert.equal(relativeTime('2025-12-30T00:00:00Z', now), '3 gün önce');
+    assert.equal(relativeTime('2026-01-01T23:59:30Z', now), 'just now');
+    assert.equal(relativeTime('2026-01-01T23:30:00Z', now), '30 min ago');
+    assert.equal(relativeTime('2026-01-01T20:00:00Z', now), '4 h ago');
+    assert.equal(relativeTime('2025-12-30T00:00:00Z', now), '3 days ago');
   });
 });
 
@@ -146,7 +146,7 @@ describe('markdown renderer', () => {
     assert.match(out, /│ a \| b\s+│\s+c\s+│\s+1 │/);
     assert.match(out, /│ uzun hücre │\s+d\s+│\s+│/);
     assert.match(out, /┌ ts ─+\n {2}│ const x = 1; \/\/ yorum\n {2}└/);
-    assert.match(out, /\[mermaid diyagramı\]/);
+    assert.match(out, /\[mermaid diagram\]/);
   });
 
   it('wraps, fits tables and colours with ansi on', () => {
@@ -185,7 +185,7 @@ describe('screen: status line and activity indicator', () => {
     s.print('log satırı');
     await new Promise((r) => setTimeout(r, 300));
     stop();
-    assert.match(stripAnsi(text), /⠋ Görev · 0 sn · 2 LLM isteği sürüyor · Ctrl\+C iptal/);
+    assert.match(stripAnsi(text), /⠋ Görev · 0s · 2 LLM isteği sürüyor · Ctrl\+C to cancel/);
     assert.match(stripAnsi(text), /log satırı/);
     assert.match(text, /\x1b\[2K/, 'spinner line is cleared before printing');
     const p = s.readLine('❯ ', undefined, () => '~/proje · ⎇ main');

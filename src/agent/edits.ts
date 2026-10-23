@@ -54,11 +54,11 @@ export function parseSearchReplace(text: string, defaultPath?: string): SearchRe
     const replace: string[] = [];
     let j = i + 1;
     while (j < lines.length && !DIVIDER_RE.test(lines[j].trim())) search.push(lines[j++]);
-    if (j >= lines.length) throw new EditError('SEARCH bloğunda ======= ayırıcısı eksik');
+    if (j >= lines.length) throw new EditError('SEARCH block is missing the ======= separator');
     j++;
     while (j < lines.length && !REPLACE_RE.test(lines[j].trim())) replace.push(lines[j++]);
-    if (j >= lines.length) throw new EditError('>>>>>>> REPLACE satırı eksik');
-    if (!lastPath) throw new EditError('SEARCH/REPLACE bloğundan önce dosya yolu belirtilmemiş');
+    if (j >= lines.length) throw new EditError('>>>>>>> REPLACE line is missing');
+    if (!lastPath) throw new EditError('no file path before the SEARCH/REPLACE block');
     blocks.push({ path: lastPath, search: search.join('\n'), replace: replace.join('\n') });
     i = j;
   }
@@ -150,7 +150,7 @@ export function applyReplacement(content: string, oldText: string, newText: stri
 }
 
 function applyReplacementLF(content: string, oldText: string, newText: string, opts: { replaceAll?: boolean; path?: string }): string {
-  const label = opts.path ?? 'dosya';
+  const label = opts.path ?? 'file';
   if (oldText === '') {
     // empty search: append (or create)
     return content ? content.replace(/\n?$/, '\n') + newText : newText;
@@ -161,7 +161,7 @@ function applyReplacementLF(content: string, oldText: string, newText: string, o
     return opts.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, () => newText);
   }
   if (exact > 1) {
-    throw new EditError(`${label}: aranan metin ${exact} yerde geçiyor; benzersiz olması için daha fazla bağlam ekleyin veya replace_all kullanın.`);
+    throw new EditError(`${label}: the search text occurs ${exact} times; add more context to make it unique or use replace_all.`);
   }
 
   const fileLines = content.split('\n');
@@ -201,11 +201,11 @@ function applyReplacementLF(content: string, oldText: string, newText: string, o
     return fileLines.join('\n');
   }
   if (matches.length > 1) {
-    throw new EditError(`${label}: aranan blok ${matches.length} yerde eşleşiyor; daha fazla bağlam ekleyin.`);
+    throw new EditError(`${label}: the search block matches ${matches.length} places; add more context.`);
   }
   const near = closestSnippet(content, oldText);
-  const hint = near && near.score > 0.5 ? `\nEn yakın eşleşme (satır ${near.line}, benzerlik ${(near.score * 100).toFixed(0)}%):\n${near.snippet}` : '';
-  throw new EditError(`${label}: aranan metin dosyada bulunamadı. Dosyayı tekrar okuyup birebir kopyalayın.${hint}`);
+  const hint = near && near.score > 0.5 ? `\nClosest match (line ${near.line}, ${(near.score * 100).toFixed(0)}% similar):\n${near.snippet}` : '';
+  throw new EditError(`${label}: the search text was not found in the file. Read the file again and copy the lines exactly.${hint}`);
 }
 
 /** Apply a list of SEARCH/REPLACE blocks to an in-memory file map. */
@@ -215,7 +215,7 @@ export function applyBlocks(files: Map<string, string>, blocks: SearchReplaceBlo
   for (const b of blocks) {
     const cur = files.get(b.path);
     if (cur === undefined && b.search.trim() !== '') {
-      errors.push(`${b.path}: dosya yok (yeni dosya için SEARCH bölümünü boş bırakın)`);
+      errors.push(`${b.path}: no such file (leave SEARCH empty for a new file)`);
       continue;
     }
     try {

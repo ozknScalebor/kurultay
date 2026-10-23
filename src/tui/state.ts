@@ -46,12 +46,12 @@ export function expandHome(p: string): string {
 /** Validate a workspace path. Returns the absolute path or an error message. */
 export function checkWorkspace(input: string, cwd: string): { path?: string; error?: string } {
   const raw = input.trim().replace(/^["']|["']$/g, '');
-  if (!raw) return { error: 'Bir klasör yolu girin.' };
+  if (!raw) return { error: 'Enter a folder path.' };
   const p = resolve(cwd, expandHome(raw));
-  if (!existsSync(p)) return { error: `Klasör bulunamadı: ${p}` };
-  if (!statSync(p).isDirectory()) return { error: `Bu bir klasör değil: ${p}` };
-  if (p === dirname(p)) return { error: 'Dosya sisteminin kökü çalışma alanı olamaz.' };
-  if (p === homedir()) return { error: 'Ev klasörünün tamamı çalışma alanı olamaz; proje klasörünü seçin.' };
+  if (!existsSync(p)) return { error: `Folder not found: ${p}` };
+  if (!statSync(p).isDirectory()) return { error: `Not a folder: ${p}` };
+  if (p === dirname(p)) return { error: 'The file system root cannot be the workspace.' };
+  if (p === homedir()) return { error: 'Your whole home folder cannot be the workspace; choose the project folder.' };
   return { path: p };
 }
 

@@ -102,7 +102,7 @@ describe('AgentWorker', () => {
     const r = await w.run();
     assert.equal(r.status, 'done');
     assert.equal(r.summary, 'fallback worked');
-    assert.ok(bus.ofType('log.warn').some((e) => /prompt tabanlı/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.warn').some((e) => /prompt-based/.test(e.message ?? '')));
   });
 
   it('nudges idle models and gives up after three turns without tool calls', async () => {
@@ -110,7 +110,7 @@ describe('AgentWorker', () => {
     const { w } = make('chatty');
     const r = await w.run();
     assert.equal(r.status, 'failed');
-    assert.match(r.summary, /araç çağrısı yapmadan/);
+    assert.match(r.summary, /without calling a tool/);
     assert.equal(s.log.length, 3);
     const msgs = s.log[1].body.messages as Array<{ role: string; content: string }>;
     assert.match(msgs[msgs.length - 1].content, /did not call any tool/);
@@ -133,7 +133,7 @@ describe('AgentWorker', () => {
     const toolNames = (s.log[0].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
     assert.ok(!toolNames.includes('write_file') && !toolNames.includes('run_command'));
     const second = s.log[1].body.messages as Array<{ role: string; content: string }>;
-    assert.match(second[second.length - 1].content, /izin verilmeyen/);
+    assert.match(second[second.length - 1].content, /not allowed/);
   });
 
   it('condenses history when the context window fills up', async () => {
@@ -167,7 +167,7 @@ describe('AgentWorker', () => {
     const r = await w.run();
     assert.equal(r.summary, 'after condense');
     assert.ok(condensed >= 1, 'a condense request was made');
-    assert.ok(bus.ofType('log.info').some((e) => /yoğunlaştırıldı/.test(e.message ?? '')));
+    assert.ok(bus.ofType('log.info').some((e) => /compacted/.test(e.message ?? '')));
   });
 
   it('toolshim turns prose that names a tool into a real call', async () => {
@@ -200,7 +200,7 @@ describe('AgentWorker', () => {
     const { w } = make('stuck');
     const r = await w.run();
     assert.equal(r.status, 'failed');
-    assert.match(r.summary, /döngü/);
+    assert.match(r.summary, /loop/);
     assert.equal(r.steps, 5);
     assert.ok(r.interventions.some((i) => /repeat/.test(i)));
   });
@@ -210,7 +210,7 @@ describe('AgentWorker', () => {
     const { w } = make('clumsy');
     const r = await w.run();
     assert.equal(r.status, 'failed');
-    assert.match(r.summary, /üst üste başarısız/);
+    assert.match(r.summary, /in a row failed/);
   });
 
   it('preloads selected skills, advertises the rest and loads on demand', async () => {
@@ -314,7 +314,7 @@ describe('AgentWorker', () => {
     assert.equal(r.finalModel, 'backup@e');
     assert.equal(r.failovers.length, 1);
     assert.deepEqual([r.failovers[0].from, r.failovers[0].to, r.failovers[0].step], ['flaky@e', 'backup@e', 2]);
-    assert.match(r.failovers[0].reason, /ilk token/);
+    assert.match(r.failovers[0].reason, /first token/);
     assert.ok(r.interventions.includes('failover:flaky@e->backup@e'));
     assert.ok(bus.types().includes('worker.failover'));
     assert.ok(Date.now() - t0 < 2500, 'detected in well under the total timeout');

@@ -46,6 +46,6 @@ describe('offline distribution', () => {
     const launcher = join(dir, isWin ? 'kurultay.cmd' : 'kurultay');
     const help = spawnSync(launcher, ['--help'], { encoding: 'utf8', shell: isWin });
     assert.equal(help.status, 0, help.stderr);
-    assert.match(help.stdout, /Komutlar:/);
+    assert.match(help.stdout, /Commands:/);
   });
 });

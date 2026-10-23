@@ -101,11 +101,11 @@ export function listWorktrees(root: string): WorktreeInfo[] {
 export function createWorktree(root: string, name: string): WorktreeInfo {
   const slug = slugify(name);
   const path = worktreeDir(root, slug);
-  if (existsSync(path)) throw new Error(`worktree zaten var: ${slug}`);
+  if (existsSync(path)) throw new Error(`worktree already exists: ${slug}`);
   const branch = `kurultay/${slug}`;
   ignoreStateDir(root);
   const r = gitOk(root, ['worktree', 'add', '-b', branch, path, 'HEAD']);
-  if (!r.ok) throw new Error(`git worktree add başarısız: ${r.out}`);
+  if (!r.ok) throw new Error(`git worktree add failed: ${r.out}`);
   return { slug, path, branch, dirty: false };
 }
 
@@ -126,7 +126,7 @@ export function commitWorktree(wt: WorktreeInfo, message: string): boolean {
   const add = gitOk(wt.path, ['add', '-A']); // .kurultay/ is excluded via info/exclude
   if (!add.ok) throw new Error(add.out);
   const c = gitOk(wt.path, ['-c', 'user.name=Kurultay', '-c', 'user.email=kurultay@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message]);
-  if (!c.ok) throw new Error(`commit başarısız: ${c.out}`);
+  if (!c.ok) throw new Error(`commit failed: ${c.out}`);
   return true;
 }
 
@@ -135,7 +135,7 @@ export function worktreeDiff(root: string, wt: WorktreeInfo): string {
   const base = gitOk(root, ['merge-base', 'HEAD', wt.branch]).out;
   const committed = gitOk(wt.path, ['diff', base]).out;
   const untracked = gitOk(wt.path, ['ls-files', '--others', '--exclude-standard']).out;
-  return committed + (untracked ? `\n# izlenmeyen yeni dosyalar:\n${untracked}` : '');
+  return committed + (untracked ? `\n# new untracked files:\n${untracked}` : '');
 }
 
 /** Merge the worktree branch into the main repository's current branch. */
@@ -148,6 +148,6 @@ export function mergeWorktree(root: string, wt: WorktreeInfo): { ok: boolean; ou
 
 export function removeWorktree(root: string, wt: WorktreeInfo, deleteBranch = true): void {
   const r = gitOk(root, ['worktree', 'remove', '--force', wt.path]);
-  if (!r.ok) throw new Error(`git worktree remove başarısız: ${r.out}`);
+  if (!r.ok) throw new Error(`git worktree remove failed: ${r.out}`);
   if (deleteBranch && wt.branch) gitOk(root, ['branch', '-D', wt.branch]);
 }

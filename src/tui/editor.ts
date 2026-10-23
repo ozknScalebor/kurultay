@@ -359,7 +359,7 @@ export class LineEditor {
         menuRows++;
       }
       if (items.length > shown.length) {
-        rows.push(`\x1b[2m  … ${items.length - shown.length} daha (↑/↓)\x1b[22m`);
+        rows.push(`\x1b[2m  … ${items.length - shown.length} more (↑/↓)\x1b[22m`);
         menuRows++;
       }
     }

@@ -58,7 +58,7 @@ describe('evaluation harness', () => {
     const bad = suite({ 'solutions/clamp/src/mathutil.js': 'export function clamp() { return 0; }\n' });
     const r2 = await validateSuite({ suiteDir: bad, tasks: ['clamp'], onProgress: (l) => lines.push(l), keepWork: true, outDir: join(bad, 'out') });
     assert.equal(r2[0].solutionPasses, false);
-    assert.match(lines[0], /çözüm KALDI/);
+    assert.match(lines[0], /solution FAILS/);
   });
 
   it('runs every task in every mode on a fresh copy, scores with hidden tests and reports cost', async () => {
@@ -90,17 +90,17 @@ describe('evaluation harness', () => {
     writeFileSync(dead, JSON.stringify({ endpoints: [{ name: 'dead', baseUrl: 'http://127.0.0.1:9/v1' }] }));
     const { summary } = await runEval({ suiteDir: dir, tasks: ['clamp'], config: dead, outDir: join(dir, 'o2'), keepWork: true });
     assert.equal(summary.attempts[0].status, 'error');
-    assert.match(summary.attempts[0].error!, /model yok/);
+    assert.match(summary.attempts[0].error!, /no usable model/);
     assert.ok(existsSync(summary.attempts[0].workDir), '--keep keeps the work copy');
     assert.ok(!existsSync(join(summary.attempts[0].workDir, 'build')) && !existsSync(join(summary.attempts[0].workDir, '.build')), 'stale build outputs are not copied');
     assert.ok(existsSync(join(summary.attempts[0].workDir, 'src', 'build', 'keep.js')), 'only top-level build dirs are skipped');
-    await assert.rejects(runEval({ suiteDir: dir, tasks: ['nope'], config: dead }), /seçilen task yok/);
-    assert.throws(() => loadSuite(tmpProject({})), /suite.json bulunamadı/);
-    assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[]}' })), /en az bir task/);
-    assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[{"id":"a","prompt":"b"}]}' })), /proje klasörü yok/);
-    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","tasks":[{"id":"a","prompt":"b"}]}' })), /check komutu yok/);
-    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a","prompt":"b"},{"id":"a","prompt":"c"}]}' })), /tekrarlanan/);
-    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a"}]}' })), /id ve prompt/);
-    assert.match(renderEval({ suite: 's', startedAt: 'a', finishedAt: 'b', attempts: [], byMode: {} }), /# Kurultay değerlendirmesi: s/);
+    await assert.rejects(runEval({ suiteDir: dir, tasks: ['nope'], config: dead }), /no task selected/);
+    assert.throws(() => loadSuite(tmpProject({})), /suite.json not found/);
+    assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[]}' })), /at least one task/);
+    assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[{"id":"a","prompt":"b"}]}' })), /project folder missing/);
+    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","tasks":[{"id":"a","prompt":"b"}]}' })), /no check command/);
+    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a","prompt":"b"},{"id":"a","prompt":"c"}]}' })), /duplicate task id/);
+    assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a"}]}' })), /needs an id and a prompt/);
+    assert.match(renderEval({ suite: 's', startedAt: 'a', finishedAt: 'b', attempts: [], byMode: {} }), /# Kurultay evaluation: s/);
   });
 });

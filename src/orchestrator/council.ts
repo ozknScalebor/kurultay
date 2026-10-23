@@ -108,10 +108,10 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   let reviewers = outsiders;
   if (reviewers.length < args.reviewers && candidates.length > 1) reviewers = [...reviewers, ...router.pick('reviewer', args.reviewers - reviewers.length, reviewers.map((r) => r.caps.key))];
   if (!reviewers.length) {
-    args.bus?.warn('council', `bağımsız gözden geçiren yok: kodu yazan model(ler) (${authors.join(', ')}) dışında kullanılabilir model kalmadı; inceleme atlandı`);
+    args.bus?.warn('council', `no independent reviewer: no usable model besides the author(s) (${authors.join(', ')}); review skipped`);
     return { ranking: candidates.map((c) => ({ id: c.id, author: c.author, points: 0, verifyScore: c.verifyScore })), reviews: [], winnerIssues: [], winner: candidates[0], independent: false };
   }
-  args.bus?.info('council', `${candidates.length} aday, ${reviewers.length} gözden geçiren: ${reviewers.map((r) => r.caps.key).join(', ')}`);
+  args.bus?.info('council', `${candidates.length} candidates, ${reviewers.length} reviewers: ${reviewers.map((r) => r.caps.key).join(', ')}`);
 
   const results = await settle(
     reviewers.map((r) => {
@@ -126,7 +126,7 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   const reviews: Review[] = [];
   for (const [ri, r] of results.entries()) {
     if (!r.ok) {
-      args.bus?.warn('council', `inceleme başarısız: ${errorMessage(r.error)}`);
+      args.bus?.warn('council', `review failed: ${errorMessage(r.error)}`);
       router.recordOutcome(reviewers[ri].caps.key, 'reviewer', false);
       continue;
     }
@@ -200,7 +200,7 @@ export async function councilAnswer(router: Router, question: string, context: s
   const prompt = `Answer the question about this software project using the project context. Be specific, cite file paths. Answer in ${opts.language}.\n\n${truncateTokens(context, opts.contextTokens)}\n\n# QUESTION\n${question}`;
   const res = await settle(members.map((m) => router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, maxTokens: 2500, purpose: 'ask', signal: opts.signal }, { prefer: [m.caps.key], role: 'reviewer' })));
   const answers = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => r.value);
-  if (!answers.length) throw new Error('Hiçbir model yanıt veremedi');
+  if (!answers.length) throw new Error('No model could answer');
   if (answers.length === 1) return { answer: answers[0].content, members: [answers[0].model] };
   const labelled = answers.map((a, i) => `<answer id="${LABELS[i]}">\n${truncateTokens(a.content, 1500)}\n</answer>`).join('\n');
   const chair = await router.chat(
