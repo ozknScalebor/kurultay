@@ -9,8 +9,8 @@ Mevcut testlerin hepsi geçer; hatalar test edilmeyen yollarda.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j4
-ctest --test-dir build --output-on-failure
+cmake --build build --config Debug -j4
+ctest --test-dir build -C Debug --output-on-failure
 ./build/telemetri_demo
 # CMake yoksa:  make test
 ```

@@ -2,7 +2,7 @@
   "name": "cpp-telemetri",
   "description": "C++17 telemetri projesi (CMake + CTest, ASan/UBSan): 8 hata + 2 özellik. Gizli testler hidden/<görev>/tests/ altında.",
   "project": "../../cpp-telemetri",
-  "check": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j4 && ctest --test-dir build --output-on-failure",
+  "check": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --config Debug -j4 && ctest --test-dir build -C Debug --output-on-failure",
   "tasks": [
     {
       "id": "C1-halka-tampon",

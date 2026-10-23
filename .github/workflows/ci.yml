@@ -119,10 +119,14 @@ jobs:
 
   # 5b) sample projects: every eval task must fail on the base project and pass with its reference solution
   samples:
-    name: Örnek projeler (Java 8 + C++17 görev setleri)
+    name: Örnek projeler (${{ matrix.os }})
     needs: static
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]   # GCC + ASan/UBSan, MSVC (multi-config generator)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -133,7 +137,7 @@ jobs:
       - run: npm run build
       - name: java-envanter (JDK 8, --validate)
         run: node bin/kurultay.js eval samples/evals/java-envanter --validate
-      - name: cpp-telemetri (GCC + ASan/UBSan, --validate)
+      - name: cpp-telemetri (--validate)
         run: node bin/kurultay.js eval samples/evals/cpp-telemetri --validate
 
   # 6) offline distributables per platform (tarball + portable bundle with its own Node)
