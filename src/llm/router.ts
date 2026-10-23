@@ -418,7 +418,7 @@ export class Router {
   /**
    * Route a chat request: best model for the role first, then fall back.
    * When every model fails with connection-type errors, wait and retry
-   * until `recoveryWaitMs` elapses (bağlantı koparsa bekle-tekrar dene).
+   * until `recoveryWaitMs` elapses (wait and retry when the connection drops).
    */
   async chat(req: ChatRequest, opts: RouteOptions = {}): Promise<ChatResult> {
     if (this.models.size === 0) throw new LlmError('Kayıtlı model yok – endpoint yapılandırmasını ve "kurultay probe" çıktısını kontrol edin', 'not_found');

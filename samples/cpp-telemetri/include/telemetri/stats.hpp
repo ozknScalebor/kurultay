@@ -4,8 +4,8 @@
 
 namespace telemetri {
 
-/// Tek geçişte (Welford) istatistik. variance()/stddev() ÖRNEKLEM değerleridir (n-1'e bölünür);
-/// 2'den az örnekte 0 döner.
+/// Single-pass (Welford) statistics. variance()/stddev() are SAMPLE values (divided by n-1);
+/// 0 with fewer than 2 samples.
 class RunningStats {
 public:
     void add(double x);

@@ -2,13 +2,13 @@
 
 namespace telemetri {
 
-/// Histerezisli üst eşik alarmı: değer `high` üstüne çıkınca alarm kurulur,
-/// ancak `high - hysteresis` altına inince kalkar (eşik çevresinde sürekli açılıp kapanmaz).
+/// Upper-threshold alarm with hysteresis: it is raised when the value goes above `high`
+/// and cleared only below `high - hysteresis` (no chattering around the threshold).
 class ThresholdAlarm {
 public:
     ThresholdAlarm(double high, double hysteresis);
 
-    /// Yeni ölçümü işler; alarm durumu değiştiyse true döner.
+    /// Processes a new reading; returns true when the alarm state changed.
     bool update(double value);
     bool active() const { return active_; }
     int transitions() const { return transitions_; }

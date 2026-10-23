@@ -1,4 +1,4 @@
-# CMake yoksa: make test
+# Without CMake: make test
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -g -O0
 SRC := $(filter-out src/main.cpp,$(wildcard src/*.cpp))
