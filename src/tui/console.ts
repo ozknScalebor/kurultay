@@ -13,7 +13,7 @@ import { readCapabilitiesFile, type CapabilitiesFile } from '../llm/models.js';
 import { Router } from '../llm/router.js';
 import { ModelStats } from '../llm/stats.js';
 import { askProject, type AskTurn } from '../ops.js';
-import { Orchestrator, fmtDuration, fmtTokens, renderPlan, renderUsageTable, type RunReport } from '../orchestrator/orchestrator.js';
+import { Orchestrator, fmtDuration, fmtTokens, renderPlan, type RunReport } from '../orchestrator/orchestrator.js';
 import type { Plan } from '../orchestrator/planner.js';
 import { probeAll, writeCapabilities } from '../probe/probe.js';
 import { SkillRegistry } from '../skills/skills.js';
@@ -30,6 +30,7 @@ import { Screen, type TermIO } from './screen.js';
 import { buildCommands } from './commands.js';
 import type { Command } from './command-types.js';
 import * as sessions from './session-commands.js';
+import { UsageMeter, fillBar, fillText, fmtTok, type UsageMark } from './usage.js';
 import { checkWorkspace, completePath, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath, type ConsoleState } from './state.js';
 
 export interface ConsoleOptions {
@@ -99,7 +100,13 @@ export class KurultayConsole {
   /** main repository root while working inside a worktree */
   mainRoot: string | undefined;
   mainConfig: string | undefined;
-  activeRequests = 0;
+  /** tokens, requests and context fill of every LLM call in this console session */
+  readonly usage = new UsageMeter();
+  /** usage mark of the last long operation (question, task, analysis) */
+  lastOp: UsageMark | undefined;
+  get activeRequests(): number {
+    return this.usage.active;
+  }
   exitRequested = false;
   readonly commands: Command[];
   readonly settings = {
@@ -125,10 +132,7 @@ export class KurultayConsole {
     };
     this.commands = buildCommands(this);
     // in-flight LLM requests for the activity line
-    this.bus.on('event', (e: { type: string }) => {
-      if (e.type === 'llm.request') this.activeRequests++;
-      else if (e.type === 'llm.response' || e.type === 'llm.error') this.activeRequests = Math.max(0, this.activeRequests - 1);
-    });
+    this.bus.on('event', (e: { type: string; source?: string; data?: Record<string, unknown> }) => this.usage.onEvent(e));
   }
 
   /** Markdown → terminal text (colours only on a real terminal). */
@@ -170,6 +174,8 @@ export class KurultayConsole {
       const ready = st.filter((x) => !x.circuitOpen).length;
       parts.push(`${ready}/${st.length} model hazır`);
     }
+    const u = this.usage.footerText();
+    if (u) parts.push(u);
     if (this.settings.dryRun) parts.push('dry-run');
     if (this.settings.skills.length) parts.push(`skill: ${this.settings.skills.join(',')}`);
     const c = this.conversation;
@@ -499,7 +505,9 @@ export class KurultayConsole {
       ctrl.abort(new Error('kullanıcı iptal etti'));
     };
     const release = this.screen.busy(stop);
-    const endActivity = this.screen.activity(label, () => (this.activeRequests ? `${this.activeRequests} LLM isteği sürüyor` : ''));
+    const mark = this.usage.begin();
+    this.lastOp = mark;
+    const endActivity = this.screen.activity(label, () => this.usage.activityText(mark));
     // in line mode (no raw terminal) Ctrl+C arrives as SIGINT
     if (!this.screen.interactive) process.once('SIGINT', stop);
     try {
@@ -512,6 +520,7 @@ export class KurultayConsole {
       this.out(color.red(`${label} başarısız: ${errorMessage(e)}`));
       return undefined;
     } finally {
+      this.usage.end(mark);
       endActivity();
       release();
       process.off('SIGINT', stop);
@@ -559,6 +568,7 @@ export class KurultayConsole {
     if (!r) return;
     this.out(`  ${color.green('✓')} ${r.filesSummarized} dosya özetlendi · ${r.modules} modül · ${r.flowPaths.length} akış dokümanı${r.failures ? color.yellow(` · ${r.failures} hata`) : ''}`);
     this.out(color.dim(`    ${shortPath(r.architecturePath)}${r.notesPath ? ` · ${shortPath(r.notesPath)}` : ''}`));
+    this.printUsage();
   }
 
   async ask(question: string): Promise<void> {
@@ -576,6 +586,7 @@ export class KurultayConsole {
     this.out('');
     this.out(this.md(r.answer.trim()));
     this.out(color.dim(`\n— konsey: ${r.members.join(', ')}${r.chair ? ` · başkan: ${r.chair}` : ''}`));
+    this.printUsage();
   }
 
   async runTask(task: string, resumeId?: string | true): Promise<void> {
@@ -605,7 +616,7 @@ export class KurultayConsole {
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
     if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} dosya daha`));
     if (report.merge?.conflicts.length) this.out(color.yellow(`Çakışmalar: ${report.merge.conflicts.join(', ')}`));
-    if (report.usage) this.out(color.dim(`Tüketim: ${report.usage.requests} istek · ${fmtTokens(report.usage.tokensIn + report.usage.tokensOut)} token · ${fmtDuration(report.usage.seconds)} (/stats)`));
+    this.printUsage(report.usage ? fmtDuration(report.usage.seconds) : undefined);
     if (report.stopReason && report.status === 'incomplete') this.out(color.yellow(`Durduruldu: ${report.stopReason}. Sürdürmek için: /continue-run`));
     this.out(color.dim(`Rapor: ${shortPath(report.reportPath)} (/report) · Diff: /diff${report.checkpointPath ? ' · Geri almak için: /rewind' : ''}`));
     this.recordTurn({
@@ -645,12 +656,30 @@ export class KurultayConsole {
   }
 
   /** Per-model consumption of the last run (and the learned success rates). */
-  stats(): void {
-    const r = this.lastReport;
-    if (!r?.usage) return this.out(color.dim('Bu oturumda henüz görev çalıştırılmadı. Model profili için /models.'));
-    this.out(`${color.bold('Son görev')}: ${r.sessionId} · ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış · ${fmtDuration(r.usage.seconds)}`);
-    this.out(this.md(renderUsageTable(r.usage).join('\n')));
+  /** One dim line with what the last operation consumed. */
+  printUsage(duration?: string): void {
+    if (!this.lastOp) return;
+    const line = this.usage.summary(this.lastOp);
+    if (line) this.out(color.dim(`⟡ ${line}${duration ? ` · ${duration}` : ''} (/stats)`));
   }
+
+  /** Session-wide consumption and context fill per model, then the last task. */
+  stats(arg = ''): void {
+    if (arg.trim() === 'reset') {
+      this.usage.reset();
+      return this.out(color.dim('Oturum sayaçları sıfırlandı.'));
+    }
+    const u = this.usage;
+    if (!u.requests && !u.errors) return this.out(color.dim('Bu oturumda henüz LLM isteği yapılmadı.'));
+    this.out(`${color.bold('Bu oturum')}: ${u.requests} istek · ${fmtTok(u.tokensIn)} giriş / ${fmtTok(u.tokensOut)} çıkış token${u.errors ? ` · ${u.errors} hata` : ''}`);
+    if (u.last) this.out(`${color.bold('Son cevabın bağlamı')}: ${fillBar(u.last.fill)} ${fillText(u.last)} · ${u.last.model}`);
+    this.out(this.md(u.table().join('\n')));
+    const r = this.lastReport;
+    if (r?.usage) {
+      this.out(`${color.bold('Son görev')}: ${r.sessionId} · ${r.usage.requests} istek · ${fmtTokens(r.usage.tokensIn)} giriş / ${fmtTokens(r.usage.tokensOut)} çıkış · ${fmtDuration(r.usage.seconds)}`);
+    }
+  }
+
 
   // ------------------------------------------------------------------ sessions (session-commands.ts)
 

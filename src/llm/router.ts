@@ -347,7 +347,8 @@ export class Router {
   async callModel(h: ModelHandle, req: ChatRequest, attempts = 3, retryBaseMs = 1000): Promise<ChatResult> {
     const slots = this.slotsFor(h.caps.endpoint);
     let lastErr: LlmError | undefined;
-    const limits = this.timeoutsFor(h, estimateTokens(req.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n')));
+    const promptEstimate = estimateTokens(req.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n'));
+    const limits = this.timeoutsFor(h, promptEstimate);
     let timeouts = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (h.health.circuitOpenUntil > Date.now()) {
@@ -358,7 +359,9 @@ export class Router {
       const maxTokens = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
       try {
         const send = async (tokens: number, messages = req.messages): Promise<ChatResult> => {
-          this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt } });
+          // prompt estimate + window: the console shows how full each model's context is while it works
+          const prompt = messages === req.messages ? promptEstimate : estimateTokens(messages.map((m) => m.content ?? '').join('\n'));
+          this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt, prompt, window: h.caps.contextWindow, maxTokens: tokens } });
           const res = await h.client.chat(
             h.caps.model,
             {
@@ -378,7 +381,7 @@ export class Router {
           );
           this.bus?.emitEvent('llm.response', {
             source: h.caps.key,
-            data: { purpose: req.purpose, ms: res.durationMs, in: res.usage.promptTokens, out: res.usage.completionTokens, finish: res.finishReason },
+            data: { purpose: req.purpose, ms: res.durationMs, in: res.usage.promptTokens, out: res.usage.completionTokens, finish: res.finishReason, window: h.caps.contextWindow },
           });
           return res;
         };
