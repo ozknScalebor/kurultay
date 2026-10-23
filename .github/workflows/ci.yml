@@ -132,10 +132,14 @@ jobs:
             generator: Ninja
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    env:
-      CXX: ${{ matrix.cxx }}
-      CMAKE_GENERATOR: ${{ matrix.generator }}
     steps:
+      - name: Compiler and generator
+        if: matrix.cxx
+        shell: bash
+        run: |
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+          echo "CMAKE_GENERATOR=${{ matrix.generator }}" >> "$GITHUB_ENV"
+          clang++ --version && ninja --version
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm }
