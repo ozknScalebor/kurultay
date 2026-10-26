@@ -210,8 +210,10 @@ jobs:
             tag="v$(node -p "require('./package.json').version")"
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::error::$tag zaten yayınlanmış; package.json sürümünü artırın."
-            exit 1
+            # the release exists (e.g. created by hand): attach/replace the packages instead of failing
+            echo "::notice::$tag already exists – uploading the packages to it"
+            gh release upload "$tag" $files --clobber
+            exit 0
           fi
           # --target creates the tag on this commit when it does not exist yet
           gh release create "$tag" $files --target "${GITHUB_SHA}" --title "Kurultay $tag" --generate-notes
