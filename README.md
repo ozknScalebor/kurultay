@@ -126,7 +126,7 @@ This creates a `release/` folder:
 - `kurultay-<version>.tgz`: install on the target with `npm install -g ./kurultay-<version>.tgz`. No internet needed, there are no runtime dependencies.
 - `kurultay-<version>-portable-<os>-<arch>/`: for machines **without Node.js**. It contains a Node runtime; run `./kurultay` (`kurultay.cmd` on Windows). Build it on the same OS and architecture as the target.
 
-Prebuilt packages for Linux x64, Windows x64 and macOS arm64 are attached to every [GitHub release](https://github.com/ozknScalebor/kurultay/releases). Copy the folder to the closed network on a USB stick and you are done.
+Prebuilt packages for Linux x64 and Windows x64 are attached to every [GitHub release](https://github.com/ozknScalebor/kurultay/releases). Copy the folder to the closed network on a USB stick and you are done.
 
 ## Quick start
 
@@ -431,16 +431,16 @@ npm run test:coverage     # coverage thresholds: lines ≥ 96%, branches ≥ 88%
 ### CI pipeline (`.github/workflows/ci.yml`)
 
 ```
-static checks (types, ESLint, package contents) ─┬─ unit         (Linux/Windows/macOS × Node 20/22)
+static checks (types, ESLint, package contents) ─┬─ unit         (Linux/Windows × Node 20/22)
                                                  ├─ integration  (Linux/Windows × Node 20/22)
-                                                 ├─ CLI          (Linux/Windows/macOS)
+                                                 ├─ CLI          (Linux/Windows)     
                                                  └─ sample projects (JDK 8 + GCC: 20 tasks --validate)
                                                         └─┬─ coverage gate
-                                                          └─ offline packages (Linux/Windows/macOS → artifacts)
+                                                          └─ offline packages (Linux/Windows → artifacts)
                                                                 └─ release (GitHub Release)
 ```
 
-**Cutting a release:** push a tag such as `v0.3.1`, or bump the version in `package.json` and push to `main` with `[release]` in the commit message. Once all tests pass, the Linux/Windows/macOS offline packages are attached to the GitHub Release.
+**Cutting a release:** push a tag such as `v0.3.1`, or bump the version in `package.json` and push to `main` with `[release]` in the commit message. Once all tests pass, the Linux/Windows offline packages are attached to the GitHub Release.
 
 Failing tests show up on GitHub as error annotations; result and coverage tables appear in the job summary.
 
