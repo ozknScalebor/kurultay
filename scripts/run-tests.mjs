@@ -50,5 +50,5 @@ if (flags.coverage) {
   }
 }
 console.error(`Çalıştırılıyor: ${suites.join(', ')} – ${files.length} dosya`);
-const r = spawnSync(process.execPath, [...nodeArgs, ...files.map((f) => relative(root, f))], { cwd: root, stdio: 'inherit', env: { ...process.env, KURULTAY_TEST: '1' } });
+const r = spawnSync(process.execPath, [...nodeArgs, ...files.map((f) => relative(root, f))], { cwd: root, stdio: 'inherit', env: { ...process.env, KURULTAY_TEST: '1', KURULTAY_ASCII: process.env.KURULTAY_ASCII ?? '0' } });
 process.exit(r.status ?? 1);
