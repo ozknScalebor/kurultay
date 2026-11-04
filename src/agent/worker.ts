@@ -1,7 +1,7 @@
 import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { ModelHandle, Router } from '../llm/router.js';
-import { LlmError, type ChatMessage, type ChatResult } from '../llm/types.js';
+import { LlmError, type ChatMessage, type ChatResult, type ToolSpec } from '../llm/types.js';
 import { SkillRegistry, type Skill } from '../skills/skills.js';
 import { errorMessage } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
@@ -40,6 +40,8 @@ export interface WorkerSpec {
   /** extra system instructions (role specific) */
   roleInstructions?: string;
   skills?: WorkerSkills;
+  /** sampling temperature for models without a publisher preset (default 0.2) */
+  temperature?: number;
 }
 
 export interface WorkerResult {
@@ -61,6 +63,10 @@ export interface WorkerResult {
   failovers: Array<{ from: string; to: string; step: number; reason: string }>;
   /** model the worker ended on (after failovers) */
   finalModel: string;
+  /** the conversation as the model saw it last (for fine-tuning data) */
+  transcript?: ChatMessage[];
+  /** tool specs offered to the model (for fine-tuning data) */
+  toolSpecs?: ToolSpec[];
 }
 
 const BASE_SYSTEM = `You are a senior software engineer working autonomously inside an existing codebase, as one member of a team of AI models (a "kurultay").
@@ -140,7 +146,22 @@ export class AgentWorker {
       staleFiles: this.staleFiles,
       external: deps.external,
     };
+    this.applyEditFormat();
     this.guard = new LoopGuard({ maxConsecutiveErrors: cfg.orchestrator.maxConsecutiveErrors ?? 6 });
+  }
+
+  /** Edit format measured by the probe for the current model (aider: the format can matter more than the model). */
+  private editFormat(): 'tool' | 'search_replace' | 'whole' {
+    return this.cfg.tools.editFormat ?? this.handle()?.caps.editFormat ?? 'tool';
+  }
+
+  private toolOpts(): { skills: boolean; external?: ExternalTools; hidden?: Set<string> } {
+    return { skills: this.hasSkills, external: this.toolCtx.external, hidden: this.toolCtx.hidden };
+  }
+
+  /** Hide edit_file for models that edit whole files; re-evaluated after a failover. */
+  private applyEditFormat(): void {
+    this.toolCtx.hidden = this.editFormat() === 'whole' && !this.spec.readOnly ? new Set(['edit_file']) : undefined;
   }
 
   private get hasSkills(): boolean {
@@ -168,7 +189,9 @@ export class AgentWorker {
       if (cat) parts.push(cat);
       for (const s of sk.registry.visible()) if (!files || SkillRegistry.matchesFiles(s, files)) this.advertised.add(s.name);
     }
-    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external })));
+    const fmt = this.editFormat();
+    if (fmt === 'whole' && !this.spec.readOnly) parts.push('Editing: rewrite files completely with write_file – read the file, then write every line of the new version. Do not send partial snippets.');
+    if (!this.nativeTools) parts.push(textToolInstructions(toolCatalogue(this.toolCtx.allowed, this.toolOpts()), { searchReplace: fmt !== 'whole' }));
     return parts.join('\n\n');
   }
 
@@ -252,8 +275,9 @@ export class AgentWorker {
   private async callModel(): Promise<ChatResult> {
     const req = () => ({
       messages: this.messages,
-      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external }) : undefined,
-      temperature: 0.2,
+      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, this.toolOpts()) : undefined,
+      temperature: this.spec.temperature ?? 0.2,
+      agentic: true,
       purpose: `worker:${this.spec.id}`,
       signal: this.signal,
       onToken: (t: string) => this.bus?.emitEvent('worker.token', { source: this.spec.id, data: { t } }),
@@ -313,6 +337,7 @@ export class AgentWorker {
   private switchModel(to: string, reason: string): void {
     const from = this.currentModel;
     this.currentModel = to;
+    this.applyEditFormat();
     this.failovers.push({ from, to, step: this.step, reason: reason.slice(0, 200) });
     this.interventions.push(`failover:${from}->${to}`);
     this.bus?.emitEvent('worker.failover', { source: this.spec.id, message: `${from} → ${to}`, data: { from, to, reason } });
@@ -334,7 +359,7 @@ export class AgentWorker {
    */
   private async toolshim(text: string): Promise<ParsedCall[]> {
     if (!text.trim() || text.length > 20_000) return [];
-    const names = toolSpecs(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external }).map((t) => t.function.name);
+    const names = toolSpecs(this.toolCtx.allowed, this.toolOpts()).map((t) => t.function.name);
     // only worth a model call when the prose looks like an attempted tool call
     if (!names.some((n) => text.includes(n)) && !/[{`]/.test(text)) return [];
     try {
@@ -343,7 +368,7 @@ export class AgentWorker {
           messages: [
             {
               role: 'user',
-              content: `An AI coding agent replied with plain text instead of a tool call. Extract the tool call(s) it intends to make, using ONLY these tools:\n${toolCatalogue(this.toolCtx.allowed, { skills: this.hasSkills, external: this.toolCtx.external })}\n\nReturn ONLY JSON: {"calls":[{"name":"...","arguments":{...}}]} – return {"calls":[]} if the text does not clearly intend a tool action (e.g. it only asks a question or says it is done without calling finish).\n\nAgent text:\n${text}`,
+              content: `An AI coding agent replied with plain text instead of a tool call. Extract the tool call(s) it intends to make, using ONLY these tools:\n${toolCatalogue(this.toolCtx.allowed, this.toolOpts())}\n\nReturn ONLY JSON: {"calls":[{"name":"...","arguments":{...}}]} – return {"calls":[]} if the text does not clearly intend a tool action (e.g. it only asks a question or says it is done without calling finish).\n\nAgent text:\n${text}`,
             },
           ],
           temperature: 0,
@@ -395,6 +420,7 @@ export class AgentWorker {
         : parseTextToolCalls(r.content).map((c, i) => ({ id: `t${step}_${i}`, name: c.name, args: c.arguments }));
 
       if (!calls.length && r.content.trim()) {
+        this.issue(r.model, 'no_tool_call');
         const shim = await this.toolshim(r.content);
         if (shim.length) {
           calls = shim.map((c, i) => ({ id: `s${step}_${i}`, name: c.name, args: c.arguments }));
@@ -434,10 +460,15 @@ export class AgentWorker {
         }
         let text = truncateMiddle(out.output, 16_000);
         text += this.newlyRelevantSkills(typeof c.args.path === 'string' ? c.args.path : undefined);
+        if (out.isError) {
+          if (c.name === 'edit_file' || c.name === 'write_file') this.issue(r.model, 'edit_failed');
+          else if (/^(Unknown tool|Tool error|Tool not allowed)|parameter "/.test(out.output)) this.issue(r.model, 'bad_tool_call');
+        }
         const verdict = this.guard.record(c.name, c.args, out.output, !!out.isError);
         if (verdict.action === 'stop') {
           this.interventions.push(`stop:${verdict.kind}`);
           this.bus?.warn(this.spec.id, `worker stopped: ${verdict.message}`);
+          this.issue(r.model, 'loop_stop');
           return this.result('failed', `stopped: ${verdict.message}`, step, finalText, verdict.kind);
         }
         if (verdict.action === 'warn') {
@@ -451,6 +482,11 @@ export class AgentWorker {
       if (results.length) this.messages.push({ role: 'user', content: results.join('\n') });
     }
     return this.result('max_steps', `step limit reached (${maxSteps})`, maxSteps, finalText);
+  }
+
+  /** Per-model failure counters (/stats, REPORT.md): which models fight the tool interface. */
+  private issue(model: string, kind: 'no_tool_call' | 'edit_failed' | 'bad_tool_call' | 'loop_stop'): void {
+    this.bus?.emitEvent('worker.issue', { source: model, data: { kind, worker: this.spec.id } });
   }
 
   private result(status: WorkerResult['status'], summary: string, steps: number, finalText: string, error?: string): WorkerResult {
@@ -468,6 +504,8 @@ export class AgentWorker {
       failovers: [...this.failovers],
       finalModel: this.currentModel,
       interventions: [...this.interventions],
+      transcript: this.messages,
+      toolSpecs: this.nativeTools ? toolSpecs(this.toolCtx.allowed, this.toolOpts()) : undefined,
     };
     this.bus?.emitEvent('worker.end', { source: this.spec.id, data: { status, steps, files: res.changedFiles.length, models: res.models, skills: res.skills.map((s) => s.name) } });
     return res;

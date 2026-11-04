@@ -65,7 +65,7 @@ export function llmPanel(args: { config: KurultayConfig; configPath?: string; ro
   if (models.length) {
     out.push('');
     out.push(color.bold('  Models'));
-    const rows = [[color.dim('  name'), color.dim('context'), color.dim('tools'), color.dim('tok/s'), color.dim('parallel'), color.dim('best roles'), color.dim('success'), color.dim('state')]];
+    const rows = [[color.dim('  name'), color.dim('context'), color.dim('tools'), color.dim('edits'), color.dim('tok/s'), color.dim('parallel'), color.dim('best roles'), color.dim('success'), color.dim('state')]];
     const stats = new Map(router.stats().map((s) => [s.key, s]));
     for (const h of models) {
       const c = h.caps;
@@ -77,9 +77,9 @@ export function llmPanel(args: { config: KurultayConfig; configPath?: string; ro
       const st = stats.get(c.key);
       const state = st?.circuitOpen ? color.yellow('paused') : st && st.failures > st.successes && st.failures > 0 ? color.yellow('unstable') : color.green('ready');
       const learned = router.learned?.summary(c.key);
-      rows.push([`  ${c.key}`, `${Math.round(c.contextWindow / 1024)}K`, c.nativeTools ? 'native' : 'prompt', c.tokensPerSec ? String(c.tokensPerSec) : '-', String(c.maxConcurrency), best, learned ? `${Math.round(learned.rate * 100)}% (${learned.n})` : '-', state]);
+      rows.push([`  ${c.key}`, `${Math.round(c.contextWindow / 1024)}K`, c.nativeTools ? 'native' : 'prompt', c.editFormat === 'search_replace' ? 'diff' : c.editFormat ?? '-', c.tokensPerSec ? String(c.tokensPerSec) : '-', String(c.maxConcurrency), best, learned ? `${Math.round(learned.rate * 100)}% (${learned.n})` : '-', state]);
     }
-    out.push(...table(rows, [Math.min(36, Math.max(...models.map((m) => displayWidth(m.caps.key))) + 2), 7, 6, 6, 8, 22, 9]));
+    out.push(...table(rows, [Math.min(36, Math.max(...models.map((m) => displayWidth(m.caps.key))) + 2), 7, 6, 5, 6, 8, 22, 9]));
   } else {
     out.push('', color.yellow('  No usable model. Check the endpoint address and key (/llm, /endpoint add, /model add), then run /probe.'));
   }

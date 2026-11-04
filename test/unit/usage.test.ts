@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { startMockServer, type MockServerHandle } from '../../src/mock/server.js';
-import { UsageMeter, fillBar, fillText, fmtTok } from '../../src/tui/usage.js';
+import { UsageMeter, fillBar, fillText, fmtTok, problems } from '../../src/tui/usage.js';
 import { caps, config, recordingBus, routerFor } from '../helpers.js';
 
 const servers: MockServerHandle[] = [];
@@ -34,8 +34,11 @@ describe('console usage meter', () => {
     assert.equal(u.footerText(), '13K tokens · context 78%');
     assert.deepEqual([u.byModel['b@e'].truncated, u.byModel['a@e'].errors], [1, 1]);
     const t = u.table();
-    assert.equal(t[2], '| b@e | 1 | 12K | 800 | 0.5 s | 78% / 16K | 0 | 1 |');
-    assert.equal(t[3], '| a@e | 0 | 0 | 0 | - | 23% / 128K | 1 | 0 |');
+    assert.equal(t[2], '| b@e | 1 | 12K | 800 | 0.5 s | 78% / 16K | 0 | 1 cut |');
+    assert.equal(t[3], '| a@e | 0 | 0 | 0 | - | 23% / 128K | 1 | - |');
+    for (const kind of ['edit_failed', 'edit_failed', 'no_tool_call', 'bad_tool_call', 'loop_stop', 'other']) u.onEvent({ type: 'worker.issue', source: 'a@e', data: { kind } });
+    assert.equal(u.table()[3], '| a@e | 0 | 0 | 0 | - | 23% / 128K | 1 | 2 failed edits, 2 no tool call, 1 loop |');
+    assert.equal(problems({ truncated: 0, editFails: 1, noToolCalls: 0, loopStops: 2 }), '1 failed edit, 2 loops');
     // a later operation keeps its own peak; a server without usage falls back to the estimate
     const op2 = u.begin();
     u.onEvent(req('a@e', 5000, 128_000));

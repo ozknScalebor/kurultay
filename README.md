@@ -107,6 +107,23 @@ flowchart TB
 | **Evaluation harness** | `kurultay eval <suite>` runs every task in a fresh copy and adds hidden tests once the agent is done; success, requests, tokens and time per mode go to `EVAL.md` / `results.json`. `--validate` checks that each task fails on the base project and passes with the reference solution |
 | **Observability** | `REPORT.md` has a per-model table of requests / input-output tokens / mean latency / errors / truncations; `kurultay stats` and `/stats` in the console |
 
+### Getting more out of weak local models
+
+Each measure below comes from an open-source project that measured it; none of them needs a new model.
+
+| Measure | What Kurultay does | Evidence |
+|---|---|---|
+| **Publisher sampling settings** | Known families get the settings their publishers recommend: Qwen3-Coder `temperature 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05`; Qwen3 / Qwen3-2507 Instruct and Thinking; Devstral `0.15`; gpt-oss `1.0 / 1.0`. Used for agent steps and the probe's benchmarks; structured calls keep a low temperature. A model's own `temperature`/`extraBody` wins; `llm.samplingPresets: false` or `"preset": false` per model turns it off. Servers that reject `top_k`/`min_p` are retried without them | Qwen, Mistral and OpenAI model cards |
+| **Thinking off for hybrid Qwen3** | Qwen3 hybrid models get the `/no_think` switch (`"thinking": true` per model keeps reasoning on) – long hidden reasoning makes slow local models time out | Qwen3 model card; [local aider bench](https://lostechies.com/erichexter/2026/06/03/local-llm-bench-part-4-harness-optimization/) |
+| **Edit format per model** | The probe measures three edit formats – `edit_file` tool call, SEARCH/REPLACE blocks, whole file – and the worker uses the best one (a whole-file model does not see `edit_file`). Shown as `edits` in `/models` and in CAPABILITIES.md; `tools.editFormat` forces one | aider: qwen3-coder:30b scored 0/100 with `diff` and 100/100 with `whole` |
+| **Silent context cuts** | The context test puts a code word at the start of the prompt and checks the server's prompt-token count: a server that cuts the prompt without an error (Ollama's `/v1` endpoint, 4K by default) is measured at its real size and you get a warning with the fix (`OLLAMA_CONTEXT_LENGTH` / Modelfile `num_ctx`) | aider: Qwen2.5-Coder-32B fell from 71.4% to 51.9% under Ollama's 2K default |
+| **Repeated sampling** | In race mode the candidate count is `raceWidth` even with fewer models: the best models are sampled again, the repeats with a freer temperature (`orchestrator.repeatModels: false` keeps one candidate per model) | Agentless (40 samples), SWE-Gym best@k: 20.6% → 32.0% from 1 to 16 samples |
+| **Selection by rival tests** | Every candidate's own test that FAILS on the original code is run against the other candidates; passing the rivals' tests weighs more than the council's vote. Shown as `rival tests: 2/2` in REPORT.md (`orchestrator.crossTest: false` turns it off) | Agentless: voting 77 → + regression tests 81 → + reproduction tests 96 solved; CodeMonkeys: selection is the bottleneck |
+| **Localisation first** | Before the workers start, one model picks the files, then the functions from a skeleton of those files; their code goes into every worker's prompt as `LIKELY EDIT LOCATIONS` (projects with 8+ files; `orchestrator.localize: false`) | Agentless hierarchical localisation; Chroma "Context Rot": focused prompts beat long ones on every model tested |
+| **Agent–computer interface** | `read_file` shows 100 lines per call by default (`tools.readWindow`), silent commands answer "ran successfully and printed nothing", broken edits are rejected by the syntax/compiler check | SWE-agent ACI study |
+| **Failure counters** | Failed edits, replies without a tool call and loop-guard stops are counted per model (`/stats` "Problems", REPORT.md) – this shows which model fights the tool interface | aider's "well-formed edits" metric |
+| **Fine-tuning data** | Every verified task saves the winning conversation (`sessions/<id>/trajectories.jsonl`, OpenAI chat format with tools); `kurultay trajectories` collects them into one file for LoRA training with LLaMA-Factory, axolotl or Unsloth (`orchestrator.saveTrajectories: false`) | SWE-Gym: 491 trajectories took Qwen2.5-Coder-32B from 7.0% to 20.6%; SWE-smith: SWE-agent-LM-32B 40.2% |
+
 ---
 
 ## Installation (air-gapped)
@@ -140,7 +157,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.4.0 · all your local LLMs in one council · offline
+ v0.5.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -238,6 +255,7 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay run --resume [session]` | Continues an interrupted / out-of-budget task from the subtask where it stopped |
 | `kurultay eval <suite>` | Quality measurement with hidden tests: `--modes single,race,council`, `--tasks a,b`, `--repeat N`, `--out <dir>`, `--keep`, `--validate` |
 | `kurultay stats [--runs N]` | Per-model requests/tokens/time of the last tasks and the learned success rates |
+| `kurultay trajectories [--out file]` | Collects the conversations of verified tasks into one JSONL file for fine-tuning |
 | `kurultay ask "<question>"` | A question about the project; models answer separately, a chair model merges |
 | `kurultay map [--tokens N] [--focus a,b]` | Repo map (Aider style) |
 | `kurultay search "<query>"` | Code search (BM25; BM25 + embeddings with RRF once vectors exist) |
@@ -367,7 +385,7 @@ flows/NN-*.md                        end-to-end flow documents (steps, source li
 PROJECT_NOTES.md                     project notes the agents read on every task
 skills/<name>/SKILL.md               project skills
 sandboxes/sb-N/                      per-worker build/test copies
-sessions/<id>/                       plan.json, events.jsonl, session.json, changes.diff, REPORT.md
+sessions/<id>/                       plan.json, events.jsonl, session.json, changes.diff, REPORT.md, trajectories.jsonl (verified runs)
 ```
 
 ## Security

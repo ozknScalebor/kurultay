@@ -14,6 +14,8 @@ import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/
 import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
+import { crossTest } from './cross-test.js';
+import { localize } from './localize.js';
 import { councilReview, type Candidate, type CouncilVerdict } from './council.js';
 import { makePlan, type Plan, type SubTask } from './planner.js';
 import { renderVerify, verifyFailureText, verifyOverlay, type VerifyResult } from './verify.js';
@@ -50,6 +52,12 @@ export interface ModelUsage {
   ms: number;
   errors: number;
   truncated: number;
+  /** edit_file/write_file calls that failed */
+  editFails?: number;
+  /** replies without a tool call (prose instead of an action) */
+  noToolCalls?: number;
+  /** workers stopped by the loop guard */
+  loopStops?: number;
 }
 
 export interface RunUsage {
@@ -95,12 +103,14 @@ export interface SkillUsage {
 export interface SubtaskReport {
   subtask: SubTask;
   iteration: number;
-  candidates: Array<{ worker: string; models: string[]; status: string; files: number; verify?: string; summary: string }>;
+  candidates: Array<{ worker: string; models: string[]; status: string; files: number; verify?: string; crossTests?: string; summary: string }>;
   verdict?: Pick<CouncilVerdict, 'ranking' | 'winnerIssues'> & { reviewers: string[]; independent: boolean };
   winner?: { worker: string; models: string[] };
   fixes: number;
   /** re-reviews of fix rounds by a model that did not write the code */
   fixReviews?: Array<{ round: number; reviewers: string[]; blocking: number; independent: boolean }>;
+  /** edit locations found by the localisation step */
+  localized?: string[];
   /** worker model switches (a model stopped answering) */
   failovers?: Array<{ worker: string; from: string; to: string; step: number; reason: string }>;
   status: 'done' | 'failed';
@@ -208,9 +218,18 @@ export class Orchestrator {
     return plan.subtasks.length === 1 ? 'race' : 'split';
   }
 
+  /** Coders for a race: distinct models first, then the best ones again (repeated sampling). */
+  private pickCoders(width: number): ReturnType<Router['pick']> {
+    const distinct = this.router.pick('coder', width);
+    if (!distinct.length || distinct.length >= width) return distinct;
+    const out = [...distinct];
+    for (let i = 0; out.length < width; i++) out.push(distinct[i % distinct.length]);
+    return out;
+  }
+
   private widthFor(mode: RunMode, st: SubTask): number {
     const live = this.router.size;
-    if (mode === 'race' || mode === 'council') return Math.max(1, Math.min(this.cfg.orchestrator.raceWidth, live));
+    if (mode === 'race' || mode === 'council') return Math.max(1, this.cfg.orchestrator.repeatModels === false ? Math.min(this.cfg.orchestrator.raceWidth, live) : this.cfg.orchestrator.raceWidth);
     if (mode === 'split') return st.critical ? Math.min(2, live) : 1;
     return 1;
   }
@@ -321,6 +340,8 @@ export class Orchestrator {
   }
 
   private stopReason: string | undefined;
+  /** winning workers of this run – exported as fine-tuning data when the run is verified */
+  private readonly winners: Array<{ subtask: string; worker: string; model: string; verified: boolean; result: WorkerResult }> = [];
 
   /** Count tokens/time per model and stop the run when the budget is exhausted. */
   private startMeter(usage: RunUsage, opts: RunOptions) {
@@ -356,6 +377,13 @@ export class Orchestrator {
         check();
       } else if (e.type === 'llm.error') model(e.source ?? '?').errors++;
       else if (e.type === 'llm.truncated') model(e.source ?? '?').truncated++;
+      else if (e.type === 'worker.issue') {
+        const m = model(e.source ?? '?');
+        const k = e.data?.kind;
+        if (k === 'edit_failed') m.editFails = (m.editFails ?? 0) + 1;
+        else if (k === 'no_tool_call' || k === 'bad_tool_call') m.noToolCalls = (m.noToolCalls ?? 0) + 1;
+        else if (k === 'loop_stop') m.loopStops = (m.loopStops ?? 0) + 1;
+      }
     };
     this.bus.on('event', onEvent);
     const timer = minutes > 0 ? setInterval(check, 1000) : undefined;
@@ -533,6 +561,11 @@ export class Orchestrator {
     this.persist(st, integration);
     this.router.learned?.save();
     writeFileSync(report.reportPath, renderReport(report, diff));
+    // verified runs become fine-tuning data (SWE-Gym: 491 such trajectories took Qwen2.5-Coder-32B from 7.0% to 20.6%)
+    if (status === 'completed' && finalVerify && !finalVerify.skipped && finalVerify.ok && this.cfg.orchestrator.saveTrajectories !== false) {
+      const lines = this.winners.filter((w) => w.verified).map((w) => JSON.stringify(trajectoryRecord(st, w)));
+      if (lines.length) writeFileSync(join(this.sessionDir, 'trajectories.jsonl'), lines.join('\n') + '\n');
+    }
     this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length, stopReason: report.stopReason } });
     return report;
   }
@@ -615,25 +648,32 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
 
   private async runSubtask(st: SubTask, integration: Overlay, mode: RunMode, plan: Plan, fullTask: string, iteration: number, signal?: AbortSignal): Promise<SubtaskReport> {
     const width = this.widthFor(mode, st);
-    const models = this.router.pick('coder', width);
+    const models = this.pickCoders(width);
+    this.bus.emitEvent('subtask.start', { source: st.id, data: { title: st.title, models: models.map((m) => m.caps.key) } });
     // every worker gets a context sized for ITS model's window
     const contexts = new Map<number, string>();
     const retrieved = await this.retrieve(`${st.title}\n${st.description}`, signal);
+    // Agentless-style localisation: files → functions → their code, shared by all candidates
+    const loc =
+      this.index && this.cfg.orchestrator.localize !== false && this.index.files.length >= 8
+        ? await localize(this.index, this.router, `${st.title}\n${st.description}`, { files: st.files, retrieved }, { budgetTokens: this.contextBudget(0.15, models.map((m) => m.caps.key)), signal, bus: this.bus, source: st.id })
+        : undefined;
     const contextFor = (mk: string) => {
       const budget = this.contextBudget(0.3, [mk]);
-      if (!contexts.has(budget)) contexts.set(budget, this.buildContext(`${st.title}\n${st.description}`, st.files, budget, retrieved));
+      if (!contexts.has(budget)) contexts.set(budget, [this.buildContext(`${st.title}\n${st.description}`, [...new Set([...st.files, ...(loc?.files ?? [])])], budget, retrieved), loc?.context].filter(Boolean).join('\n\n'));
       return contexts.get(budget)!;
     };
     const workerSkills = this.skillsFor(st, fullTask);
-    const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed' };
-    this.bus.emitEvent('subtask.start', { source: st.id, data: { title: st.title, models: models.map((m) => m.caps.key) } });
+    const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed', ...(loc?.locations.length ? { localized: loc.locations.map((l) => (l.symbol === '(file)' ? l.path : `${l.path}:${l.symbol}`)) } : {}) };
 
     const launch = (modelKeys: string[], suffix: string) =>
       settle(
         modelKeys.map(async (mk, i) => {
           const overlay = integration.fork(`${st.id}${suffix}-${i + 1}`);
+          // a repeated model samples more freely so its candidates differ
+          const sample = modelKeys.slice(0, i).filter((k) => k === mk).length;
           const w = new AgentWorker(
-            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills },
+            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined },
             this.router,
             this.cfg,
             { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external },
@@ -679,11 +719,18 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       if (c) c.verify = v.skipped ? 'none' : v.ok ? 'passed' : `failed (${v.score.toFixed(2)})`;
     }
 
+    // ---- rival tests: every candidate runs the others' reproducing tests (Agentless / CodeMonkeys)
+    const cross = this.cfg.orchestrator.crossTest === false || usable.length < 2 ? undefined : await crossTest(usable.slice(0, 4).map((r) => ({ id: r.overlay.id, overlay: r.overlay })), integration, this.materializer, this.cfg, { signal, bus: this.bus, source: st.id });
+    for (const [id, s] of cross?.scores ?? []) {
+      const c = report.candidates.find((x) => x.worker === id);
+      if (c && s.total) c.crossTests = `${s.passed}/${s.total}`;
+    }
+
     // ---- council review (anonymous ranking); single candidates still get a reviewer when possible
     const reviewRules = this.rules.review.map((r) => r.body).join('\n\n');
     const candidates: Candidate[] = usable.map((r) => {
       const v = verifies.get(r.overlay.id)!;
-      return { id: r.overlay.id, author: r.result.models[0] ?? '', authors: [...r.result.models, ...r.result.failovers.map((f) => f.from)], diff: r.overlay.diffAgainstParent(), summary: r.result.summary, verifyScore: v.skipped ? undefined : v.score, verifyOk: v.skipped ? undefined : v.ok };
+      return { id: r.overlay.id, author: r.result.models[0] ?? '', authors: [...r.result.models, ...r.result.failovers.map((f) => f.from)], diff: r.overlay.diffAgainstParent(), summary: r.result.summary, verifyScore: v.skipped ? undefined : v.score, verifyOk: v.skipped ? undefined : v.ok, crossTests: cross?.scores.get(r.overlay.id) };
     });
     let winner: Winner = usable[0];
     let verdict: CouncilVerdict | undefined;
@@ -707,9 +754,11 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
         this.bus.warn(st.id, `council review failed: ${errorMessage(e)}`);
       }
     } else if (usable.length > 1) {
-      winner = [...usable].sort((a, b) => (verifies.get(b.overlay.id)?.score ?? 0) - (verifies.get(a.overlay.id)?.score ?? 0))[0];
+      const crossOf = (id: string) => { const s = cross?.scores.get(id); return s?.total ? s.passed / s.total : 0; };
+      winner = [...usable].sort((a, b) => (verifies.get(b.overlay.id)?.score ?? 0) - (verifies.get(a.overlay.id)?.score ?? 0) || crossOf(b.overlay.id) - crossOf(a.overlay.id))[0];
     }
     this.bus.emitEvent('subtask.winner', { source: st.id, data: { worker: winner.overlay.id, models: winner.result.models } });
+    if (winner.result.transcript?.length) this.winners.push({ subtask: st.id, worker: winner.overlay.id, model: winner.result.finalModel, verified: verifies.get(winner.overlay.id)?.ok === true && !verifies.get(winner.overlay.id)?.skipped, result: winner.result });
     // learn from the outcome: verified code (or, without tests, the council's pick) counts as a coder success
     for (const r of runs) {
       const v = verifies.get(r.overlay.id);
@@ -895,9 +944,10 @@ export function renderReport(r: RunReport, diff: string): string {
   ];
   for (const s of r.subtasks) {
     lines.push(`### ${s.subtask.id} – ${s.subtask.title} (${s.status}, iteration ${s.iteration})`, '');
+    if (s.localized?.length) lines.push(`Localised: ${s.localized.map((l) => `\`${l}\``).join(', ')}`, '');
     for (const c of s.candidates) {
       const win = s.winner?.worker === c.worker ? ' 🏆' : '';
-      lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${plural(c.files, 'file')}, verification: ${c.verify ?? '-'}${win}`);
+      lines.push(`- \`${c.worker}\` [${c.models.join(', ')}] → ${c.status}, ${plural(c.files, 'file')}, verification: ${c.verify ?? '-'}${c.crossTests ? `, rival tests: ${c.crossTests}` : ''}${win}`);
     }
     if (s.verdict) {
       const how = s.verdict.independent
@@ -965,6 +1015,7 @@ export function mergeUsage(into: RunUsage, u: RunUsage): RunUsage {
   for (const [k, m] of Object.entries(u.byModel)) {
     const t = (into.byModel[k] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0 });
     for (const f of ['requests', 'tokensIn', 'tokensOut', 'ms', 'errors', 'truncated'] as const) t[f] += m[f];
+    for (const f of ['editFails', 'noToolCalls', 'loopStops'] as const) if (m[f]) t[f] = (t[f] ?? 0) + m[f]!;
   }
   return into;
 }
@@ -973,9 +1024,9 @@ export function mergeUsage(into: RunUsage, u: RunUsage): RunUsage {
 export function renderUsageTable(u: RunUsage): string[] {
   const rows = Object.entries(u.byModel).sort((a, b) => b[1].tokensIn + b[1].tokensOut - (a[1].tokensIn + a[1].tokensOut));
   return [
-    '| Model | Requests | Tokens in | Tokens out | Avg. response | Errors | Truncated |',
-    '|---|---:|---:|---:|---:|---:|---:|',
-    ...rows.map(([k, m]) => `| ${k} | ${m.requests} | ${fmtTokens(m.tokensIn)} | ${fmtTokens(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.errors} | ${m.truncated} |`),
+    '| Model | Requests | Tokens in | Tokens out | Avg. response | Errors | Truncated | Failed edits | No tool call | Loops |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map(([k, m]) => `| ${k} | ${m.requests} | ${fmtTokens(m.tokensIn)} | ${fmtTokens(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.errors} | ${m.truncated} | ${m.editFails ?? 0} | ${m.noToolCalls ?? 0} | ${m.loopStops ?? 0} |`),
   ];
 }
 
@@ -997,4 +1048,16 @@ export function renderPlan(plan: Plan, mode: RunMode): string {
   }
   if (plan.acceptance.length) lines.push('', 'Acceptance criteria:', ...plan.acceptance.map((a) => `  - ${a}`));
   return lines.join('\n');
+}
+
+/**
+ * One fine-tuning example in the OpenAI chat format ({messages, tools}) that LLaMA-Factory,
+ * axolotl, Unsloth and most trainers read; extra fields are ignored by them.
+ */
+export function trajectoryRecord(st: { sessionId: string; task: string }, w: { subtask: string; worker: string; model: string; result: WorkerResult }): Record<string, unknown> {
+  return {
+    messages: w.result.transcript,
+    ...(w.result.toolSpecs?.length ? { tools: w.result.toolSpecs } : {}),
+    meta: { session: st.sessionId, subtask: w.subtask, worker: w.worker, model: w.model, steps: w.result.steps, task: st.task.split('\n')[0].slice(0, 200) },
+  };
 }

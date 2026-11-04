@@ -344,7 +344,7 @@ describe('console helpers', () => {
     assert.match(panel, /capability profile: none \(\/probe\)/);
     assert.match(panel, /gpu\s+http:\/\/h\/v1\s+2 models\s+● 12 ms/);
     assert.match(panel, /dead.*no answer within 5 s/);
-    assert.match(panel, /m1@gpu\s+32K\s+native\s+55/);
+    assert.match(panel, /m1@gpu\s+32K\s+native\s+-\s+55/);
     assert.match(panel, /m2@gpu\s+\d+K\s+prompt/);
     assert.match(panel, /first token 3 min · silence 90 s · total 10 min/);
     const empty = stripAnsi(llmPanel({ config: cfg, router: routerFor(cfg, []), probed: true, width: 80 }));

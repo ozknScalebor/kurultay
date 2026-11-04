@@ -46,7 +46,7 @@ describe('agent tools', () => {
     const first = await executeTool('read_file', { path: 'big.txt' }, c);
     assert.match(first.output, /big\.txt \(600 lines\)/);
     assert.match(first.output, /\n\s*1│ line 1\n/);
-    assert.match(first.output, /start_line=401/);
+    assert.match(first.output, /start_line=101/);
     const range = await executeTool('read_file', { path: 'big.txt', start_line: 598, end_line: 900 }, c);
     assert.match(range.output, /600│ line 600/);
     assert.doesNotMatch(range.output, /continue with/);

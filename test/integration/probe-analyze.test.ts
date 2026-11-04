@@ -252,3 +252,41 @@ describe('saved capability profile', () => {
     }
   });
 });
+
+describe('probe: edit formats, silent truncation, sampling presets', () => {
+  it('finds the edit format each model handles, catches Ollama-style silent truncation and sends the preset', async () => {
+    const s = await mock([
+      { id: 'whole-coder', quality: 'good', tools: true, ctx: 65_536, editStyle: 'whole-only' },
+      { id: 'cutter', quality: 'good', tools: true, ctx: 4096, hideCtx: true, truncateCtx: true },
+      { id: 'qwen3-coder-30b', quality: 'good', tools: true, ctx: 65_536 },
+    ]);
+    const bus = recordingBus();
+    const file = await probeAll(config({ baseUrl: s.url }), bus, {});
+    const by = Object.fromEntries(file.models.map((m) => [m.model, m]));
+    assert.equal(by['whole-coder'].editFormat, 'whole');
+    assert.deepEqual(by['whole-coder'].editScores, { tool: 0, search_replace: 0, whole: 1 });
+    assert.equal(by['qwen3-coder-30b'].editFormat, 'tool');
+    assert.equal(by.cutter.contextWindow, 4096, 'a silently cut prompt does not count as fitting');
+    assert.ok(by.cutter.notes.some((n) => /cut a 8192-token prompt/.test(n)));
+    assert.ok(bus.ofType('log.warn').some((e) => /silently cut/.test(e.message ?? '')));
+    const sent = s.log.filter((l) => l.model === 'qwen3-coder-30b' && l.body.top_k === 20);
+    assert.ok(sent.length >= 4, 'benchmarks use the publisher sampling');
+    assert.ok(sent.every((l) => l.body.temperature === 0.7 && l.body.repetition_penalty === 1.05));
+    assert.ok(s.log.some((l) => l.model === 'qwen3-coder-30b' && l.body.temperature === 0), 'feature checks stay deterministic');
+  });
+});
+
+describe('router: servers that reject the preset fields', () => {
+  it('drops top_k/min_p once the server rejects them and keeps the preset temperature', async () => {
+    const s = await mock([{ id: 'qwen3-coder-strict', quality: 'good', tools: true, ctx: 65_536, rejectSampling: true }]);
+    const bus = recordingBus();
+    const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), [caps('qwen3-coder-strict', 'e')], bus);
+    const a = await r.chat({ messages: [{ role: 'user', content: 'What is 17 * 23?' }], agentic: true, temperature: 0.2 });
+    assert.match(a.content, /391/);
+    assert.equal(r.get('qwen3-coder-strict@e')!.presetRejected, true);
+    assert.ok(bus.ofType('log.info').some((e) => /rejects extra sampling fields/.test(e.message ?? '')));
+    const last = s.log[s.log.length - 1].body;
+    assert.equal(last.top_k, undefined);
+    assert.equal(last.temperature, 0.7);
+  });
+});

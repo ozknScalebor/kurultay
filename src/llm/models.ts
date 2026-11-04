@@ -24,8 +24,12 @@ export interface ModelCapabilities {
   aggregateTokensPerSec: number;
   /** 0..1 – fraction of mini benchmark tasks passed */
   codingScore: number;
-  /** 0..1 – SEARCH/REPLACE edit accuracy */
+  /** 0..1 – edit accuracy with the best edit format */
   editScore: number;
+  /** edit format that worked best for this model (probe); undefined = not measured */
+  editFormat?: 'tool' | 'search_replace' | 'whole';
+  /** 0..1 per measured edit format */
+  editScores?: Partial<Record<'tool' | 'search_replace' | 'whole', number>>;
   /** 0..1 – instruction / JSON following */
   instructionScore: number;
   /** 0..1 per role, derived from the above */

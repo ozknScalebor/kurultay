@@ -86,21 +86,25 @@ export function parseTextToolCalls(text: string): ParsedCall[] {
   return calls;
 }
 
-export function textToolInstructions(catalogue: string): string {
-  return `## Tool use
-You can call tools by writing one or more blocks EXACTLY like this (JSON inside the tags):
-<tool_call>
-{"name": "read_file", "arguments": {"path": "src/main.c"}}
-</tool_call>
-After your tool calls, STOP and wait – results arrive in the next message inside <tool_result> tags.
-To edit files you may also use SEARCH/REPLACE blocks:
+export function textToolInstructions(catalogue: string, opts: { searchReplace?: boolean } = {}): string {
+  const sr = opts.searchReplace !== false
+    ? `To edit files you may also use SEARCH/REPLACE blocks:
 path/to/file.ext
 <<<<<<< SEARCH
 exact existing lines
 =======
 new lines
 >>>>>>> REPLACE
-When the task is complete call the finish tool.
+`
+    : `To edit a file, read it, then write the complete new version with write_file (every line, not only the changed part).
+`;
+  return `## Tool use
+You can call tools by writing one or more blocks EXACTLY like this (JSON inside the tags):
+<tool_call>
+{"name": "read_file", "arguments": {"path": "src/main.c"}}
+</tool_call>
+After your tool calls, STOP and wait – results arrive in the next message inside <tool_result> tags.
+${sr}When the task is complete call the finish tool.
 
 Available tools:
 ${catalogue}`;

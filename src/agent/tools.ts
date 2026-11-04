@@ -36,6 +36,8 @@ export interface ToolContext {
   staleFiles?: Set<string>;
   /** tools from MCP servers (mcp__server__tool) */
   external?: ExternalTools;
+  /** tools this worker's model should not use (e.g. edit_file for models that edit whole files) */
+  hidden?: Set<string>;
 }
 
 /** Read-before-edit: an existing file may only be modified after the worker read it. */
@@ -166,7 +168,8 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.staleFiles?.delete(path);
       const total = content.split('\n').length;
       const start = optNum(a.start_line) ?? 1;
-      const end = optNum(a.end_line) ?? Math.min(total, start + 399);
+      // a 100-line window by default (SWE-agent's ACI study: the viewer size that worked best)
+      const end = optNum(a.end_line) ?? Math.min(total, start + Math.max(20, ctx.config.tools.readWindow ?? 100) - 1);
       const body = numbered(content, start, end);
       const more = end < total ? `\n… (showing lines ${start}-${end} of ${total}; continue with start_line=${end + 1})` : '';
       return { output: `${r.note}${path} (${total} lines)\n${body}${more}` };
@@ -408,7 +411,10 @@ const TOOLS: Record<string, ToolDef> = {
       };
       const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal, shellOpts), ctx.signal);
       const status = r.timedOut ? 'TIMED OUT' : `exit code ${r.code}`;
-      return { output: `$ ${cmd}\n[${status}]\n${truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000)}`, isError: r.code !== 0 };
+      const text = truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000);
+      // SWE-agent: an explicit message for silent commands keeps weak models from re-running them
+      const body = text.trim() ? text : r.code === 0 ? '(the command ran successfully and printed nothing)' : '(no output)';
+      return { output: `$ ${cmd}\n[${status}]\n${body}`, isError: r.code !== 0 };
     },
   },
   skill: {
@@ -470,9 +476,10 @@ const TOOLS: Record<string, ToolDef> = {
 export const READ_ONLY_TOOLS = Object.entries(TOOLS).filter(([, t]) => t.readOnly).map(([n]) => n);
 export const ALL_TOOLS = Object.keys(TOOLS);
 
-export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools } = {}): ToolSpec[] {
+export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string> } = {}): ToolSpec[] {
   const own = Object.entries(TOOLS)
     .filter(([n]) => !allowed || allowed.has(n))
+    .filter(([n]) => !opts.hidden?.has(n))
     .filter(([n]) => opts.skills !== false || (n !== 'skill' && n !== 'skill_file'))
     .map(([, t]) => t.spec);
   // read-only workers (reviewers) only get MCP tools that declare themselves read-only
@@ -487,6 +494,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
   }
   if (!def) return { output: `Unknown tool: ${name}. Available: ${[...(ctx.allowed ?? new Set(ALL_TOOLS))].join(', ')}`, isError: true };
   if (ctx.allowed && !ctx.allowed.has(name)) return { output: `Tool not allowed for this worker: ${name}`, isError: true };
+  if (ctx.hidden?.has(name)) return { output: name === 'edit_file' ? 'edit_file is not used with this model: read the file, then write the complete new version with write_file.' : `Tool not available: ${name}`, isError: true };
   try {
     return await def.run(args, ctx);
   } catch (e) {
@@ -495,7 +503,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 }
 
 /** Human-readable tool catalogue for prompt-based tool calling. */
-export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools } = {}): string {
+export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string> } = {}): string {
   return toolSpecs(allowed, opts)
     .map((s) => {
       const props = (s.function.parameters as { properties?: Record<string, { type?: string }>; required?: string[] }).properties ?? {};

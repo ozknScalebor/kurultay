@@ -244,6 +244,15 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(r.stdout, /\| Model \| Requests \| Tokens in/);
     assert.match(r.stdout, /\| cli-\w+@mock \| \d+ \|/);
     assert.match(r.stdout, /Learned success rate: cli-/);
+    // the verified run above left its conversation as fine-tuning data
+    const tj = await cli(['trajectories', '--out', join(root, 'ft.jsonl')], root);
+    assert.equal(tj.code, 0, tj.stdout + tj.stderr);
+    assert.match(tj.stdout, /✓ \d+ conversations? → /);
+    const first = JSON.parse(readFileSync(join(root, 'ft.jsonl'), 'utf8').split('\n')[0]);
+    assert.equal(first.messages[0].role, 'system');
+    assert.ok(first.messages.some((m: { role: string }) => m.role === 'tool'));
+    assert.ok(Array.isArray(first.tools) && first.meta.model.endsWith('@mock'));
+    assert.match((await cli(['trajectories'], tmpProject({}))).stdout, /No verified task runs yet/);
     const empty = await cli(['stats'], tmpProject({}));
     assert.match(empty.stdout, /No task runs recorded yet/);
     const idx = await cli(['index', '--embed'], root);

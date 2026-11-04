@@ -22,7 +22,7 @@ import { startDashboard } from './ui/dashboard.js';
 import { attachTerminal, color, fmtSeconds } from './ui/terminal.js';
 import { EventBus } from './util/events.js';
 import { forTerminal, setUnicode } from './ui/symbols.js';
-import { plural } from './util/text.js';
+import { plural, tryExtractJson } from './util/text.js';
 
 const VERSION = JSON.parse(readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'package.json'), 'utf8')).version as string;
 
@@ -81,6 +81,7 @@ Commands:
   search "<query>"     Search the index (BM25; BM25 + embeddings with RRF once vectors exist)
   status               Models, index and recent sessions
   stats                Per-model requests/tokens/time of recent tasks and learned success rates (--runs N)
+  trajectories         Collect the verified task conversations into one JSONL file for fine-tuning (--out <file>)
   mock                 Start a fake OpenAI-compatible LLM server for testing (--port 9100)
 
 Options:
@@ -210,6 +211,28 @@ async function cmdAnalyze(app: App, flags: Args['flags']) {
   } finally {
     stop();
   }
+}
+
+/** Gather sessions/<id>/trajectories.jsonl (verified runs) into one fine-tuning file. */
+function cmdTrajectories(stateDir: string, flags: Args['flags']) {
+  const sessions = join(stateDir, 'sessions');
+  const target = typeof flags.out === 'string' ? flags.out : join(stateDir, 'trajectories.jsonl');
+  const lines: string[] = [];
+  const byModel = new Map<string, number>();
+  for (const id of existsSync(sessions) ? readdirSync(sessions).sort() : []) {
+    const f = join(sessions, id, 'trajectories.jsonl');
+    if (!existsSync(f)) continue;
+    for (const l of readFileSync(f, 'utf8').split('\n').filter(Boolean)) {
+      lines.push(l);
+      const m = (tryExtractJson<{ meta?: { model?: string } }>(l)?.meta?.model ?? '?').toString();
+      byModel.set(m, (byModel.get(m) ?? 0) + 1);
+    }
+  }
+  if (!lines.length) return out('No verified task runs yet. Every task that passes the build/test check saves its conversation; run some tasks first.');
+  writeFileSync(target, lines.join('\n') + '\n');
+  out(`${color.green('✓')} ${plural(lines.length, 'conversation')} → ${target}`);
+  out(color.dim(`  ${[...byModel].map(([m, n]) => `${m} ${n}`).join(' · ')}`));
+  out(color.dim('  OpenAI chat format ({"messages", "tools"}): LLaMA-Factory, axolotl and Unsloth read it for LoRA fine-tuning.'));
 }
 
 async function confirmPrompt(question: string): Promise<boolean> {
@@ -478,7 +501,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'stats'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'stats', 'trajectories'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Unknown command: ${args.cmd}\n`);
     out(HELP);
@@ -502,14 +525,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       case 'rewind':
         return await cmdRewind(root, args);
-      case 'stats': {
+      case 'stats':
+      case 'trajectories': {
         let stateDir = '.kurultay';
         try {
           stateDir = loadConfig(root, configPath).config.stateDir;
         } catch {
           /* statistics need no endpoints */
         }
-        return cmdStats(join(root, stateDir), args.flags);
+        return args.cmd === 'stats' ? cmdStats(join(root, stateDir), args.flags) : cmdTrajectories(join(root, stateDir), args.flags);
       }
       case 'eval':
         return await cmdEval(args);

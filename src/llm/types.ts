@@ -44,6 +44,11 @@ export interface ChatRequest {
   idleTimeoutMs?: number;
   /** free-form label for logs/telemetry ("probe", "summary", "worker-2"...) */
   purpose?: string;
+  /**
+   * Open-ended generation (agent steps, answers): use the model's recommended sampling
+   * (temperature included) instead of `temperature`. Structured calls leave this off.
+   */
+  agentic?: boolean;
 }
 
 export interface Usage {

@@ -375,7 +375,7 @@ describe('Kurultay console', () => {
     assert.match(out, /Result: completed/);
     assert.match(out, /⟡ \d+ requests · [\d.K]+ in \/ [\d.K]+ out tokens · peak context \d+% \([\d.K]+\/[\d.K]+\) \(mock-/);
     assert.match(out, /Context of the last answer: [▰▱]{10} \d+% /);
-    assert.match(out, /Model[│\s]+Requests[│\s]+In[│\s]+Out[│\s]+Avg\. response[│\s]+Peak context[\s\S]*mock-coder-\S+[│\s]+\d+[\s\S]*\d+% \/ 66K/);
+    assert.match(out, /Model[│\s]+Requests[│\s]+In[│\s]+Out[│\s]+Avg\.[│\s]+Peak context[\s\S]*mock-coder-\S+[│\s]+\d+[\s\S]*\d+% \/ 66K/);
     assert.match(out, /Last task: .* \d+ requests/);
     assert.match(out, /plan approval: off/);
   });
