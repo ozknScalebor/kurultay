@@ -21,6 +21,8 @@ interface Brain {
   judge?: Array<{ complete: boolean; missing?: string[] }>;
   review?: (prompt: string) => MockReply;
   record?: (kind: string, prompt: string, model: string) => void;
+  /** answers of the localisation step */
+  locate?: { files: string[]; locations: Array<{ file: string; symbol: string }> };
 }
 
 const call = (name: string, args: Record<string, unknown>): MockReply => ({ toolCall: { name, args } });
@@ -35,6 +37,8 @@ function brainHandler(b: Brain, model: string) {
       b.record?.('agent', `${q.messages[0].content}\n${first}`, model);
       return b.agent(id, toolResults(q.messages), q, model) ?? call('finish', { summary: `${id} done by ${model}` });
     }
+    if (b.locate && /Which files must be EDITED/.test(u)) return { content: JSON.stringify({ files: b.locate.files }) };
+    if (b.locate && /Skeleton of the files to edit/.test(u)) return { content: JSON.stringify({ locations: b.locate.locations }) };
     if (/You are the planner of a team/.test(u)) {
       b.record?.('plan', u, model);
       return { content: JSON.stringify(b.plan) };
@@ -225,6 +229,50 @@ describe('Orchestrator', () => {
     assert.match(md, /Reviewers: .* – independent/);
     assert.match(md, /fix 1 re-reviewed \(.*\): 1 blocking findings left/);
     assert.match(md, /fix 2 re-reviewed \(.*\): no blocking findings/);
+  });
+
+  it('race with one model samples it again and the rivals\' tests pick the right candidate', async () => {
+    const runner = "import { readdirSync } from 'node:fs';\nimport { pathToFileURL } from 'node:url';\nfor (const f of readdirSync('tests').filter((f) => f.endsWith('.test.mjs'))) await import(pathToFileURL('tests/' + f).href);\n";
+    const check = (call: string, want: number) => `import { twice } from '../src/m.mjs';\nif (${call} !== ${want}) throw new Error('wrong');\n`;
+    const temps: number[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'fix twice', description: 'twice(x) must return 2*x' }] },
+      agent: (_id, step, q) => {
+        const t = Number(q.body.temperature);
+        if (step === 0) temps.push(t);
+        // the first sample over-fits to one input, the freer samples fix it properly
+        const right = t > 0.5;
+        if (step === 0) return call('read_file', { path: 'src/m.mjs' });
+        if (step === 1) return call('write_file', { path: 'src/m.mjs', content: right ? 'export const twice = (x) => x * 2;\n' : 'export const twice = (x) => (x === 3 ? 6 : 0);\n' });
+        if (step === 2) return call('write_file', { path: right ? 'tests/right.test.mjs' : 'tests/overfit.test.mjs', content: right ? check('twice(2)', 4) : check('twice(3)', 6) });
+        return undefined;
+      },
+    };
+    const { run, root } = await setup(brain, { 'src/m.mjs': 'export const twice = (x) => x + x + 1;\n', 'run.mjs': runner, 'tests/base.test.mjs': check('1', 1) }, { models: ['m1'], cfg: { verify: { test: 'node run.mjs' } } });
+    const report = await run('fix twice', { mode: 'race' });
+    assert.deepEqual(temps.sort(), [0.2, 0.7, 0.7], 'three samples of the one model, the repeats sample more freely');
+    const st = report.subtasks[0];
+    assert.equal(st.candidates.length, 3);
+    assert.deepEqual(st.candidates.map((c) => c.crossTests).sort(), ['0/2', '2/2', '2/2']);
+    assert.equal(read(root, 'src/m.mjs'), 'export const twice = (x) => x * 2;\n');
+    assert.match(read(report.reportPath, ''), /rival tests: 2\/2/);
+  });
+
+  it('localises the edit before the workers start and shows them that code', async () => {
+    const prompts: string[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'fix uart_send', description: 'uart_send writes one byte too many' }] },
+      locate: { files: ['src/uart.c'], locations: [{ file: 'src/uart.c', symbol: 'uart_send' }] },
+      agent: () => undefined,
+      record: (kind, prompt) => kind === 'agent' && prompts.push(prompt),
+    };
+    const files: Record<string, string> = { 'src/uart.c': 'int uart_init(void) {\n  return 0;\n}\n\nint uart_send(int n) {\n  return n + 1;\n}\n' };
+    for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run } = await setup(brain, files, { models: ['m1'] });
+    const report = await run('fix uart_send', { mode: 'single' });
+    assert.deepEqual(report.subtasks[0].localized, ['src/uart.c:uart_send']);
+    assert.ok(prompts.some((p) => /LIKELY EDIT LOCATIONS[\s\S]*5│ int uart_send\(int n\)/.test(p)));
+    assert.match(read(report.reportPath, ''), /Localised: `src\/uart\.c:uart_send`/);
   });
 
   it('asks for confirmation and keeps the project untouched when declined', async () => {

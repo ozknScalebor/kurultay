@@ -15,6 +15,8 @@ export interface Candidate {
   /** 0..1 from build/test (undefined = no verify configured) */
   verifyScore?: number;
   verifyOk?: boolean;
+  /** rival candidates' reproducing tests this candidate passes (cross-test.ts) */
+  crossTests?: { passed: number; total: number };
 }
 
 export interface Review {
@@ -79,7 +81,8 @@ export async function councilReview(
   const body = shuffled
     .map((c) => {
       const v = c.verifyScore === undefined ? 'not run' : c.verifyOk ? 'PASSED' : `FAILED (score ${c.verifyScore.toFixed(2)})`;
-      return `<candidate id="${labelOf.get(c.id)}">\nBuild/tests: ${v}\nAuthor's note: ${scrub(c.summary.slice(0, 600))}\n\`\`\`diff\n${truncateTokens(c.diff || '(no changes)', perDiff)}\n\`\`\`\n</candidate>`;
+      const x = c.crossTests?.total ? `\nOther engineers' tests for this issue: ${c.crossTests.passed}/${c.crossTests.total} pass` : '';
+      return `<candidate id="${labelOf.get(c.id)}">\nBuild/tests: ${v}${x}\nAuthor's note: ${scrub(c.summary.slice(0, 600))}\n\`\`\`diff\n${truncateTokens(c.diff || '(no changes)', perDiff)}\n\`\`\`\n</candidate>`;
     })
     .join('\n\n');
   const prompt = `You are a strict senior code reviewer in a review council. Several independent engineers implemented the same task. Evaluate each candidate for correctness, completeness against the acceptance criteria, safety (memory, concurrency, error handling), minimality and consistency with the codebase.
@@ -171,6 +174,8 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   for (const c of candidates) {
     if (c.verifyScore !== undefined) points.set(c.id, points.get(c.id)! + c.verifyScore * 20 + (c.verifyOk ? 5 : 0));
     if (!c.diff.trim()) points.set(c.id, points.get(c.id)! - 50);
+    // passing the rivals' reproducing tests is the strongest evidence after the project's own tests
+    if (c.crossTests?.total) points.set(c.id, points.get(c.id)! + 30 * (c.crossTests.passed / c.crossTests.total));
   }
   const authorsOf = (id: string) => {
     const c = candidates.find((x) => x.id === id);
@@ -198,7 +203,7 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
 export async function councilAnswer(router: Router, question: string, context: string, opts: { members: number; contextTokens: number; bus?: EventBus; signal?: AbortSignal; language: string }): Promise<{ answer: string; members: string[]; chair?: string }> {
   const members = router.pick('reviewer', Math.max(1, opts.members));
   const prompt = `Answer the question about this software project using the project context. Be specific, cite file paths. Answer in ${opts.language}.\n\n${truncateTokens(context, opts.contextTokens)}\n\n# QUESTION\n${question}`;
-  const res = await settle(members.map((m) => router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, maxTokens: 2500, purpose: 'ask', signal: opts.signal }, { prefer: [m.caps.key], role: 'reviewer' })));
+  const res = await settle(members.map((m) => router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, agentic: true, maxTokens: 2500, purpose: 'ask', signal: opts.signal }, { prefer: [m.caps.key], role: 'reviewer' })));
   const answers = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => r.value);
   if (!answers.length) throw new Error('No model could answer');
   if (answers.length === 1) return { answer: answers[0].content, members: [answers[0].model] };

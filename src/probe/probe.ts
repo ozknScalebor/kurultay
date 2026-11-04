@@ -8,7 +8,10 @@ import { LlmError, type ChatRequest, type ChatResult, type ToolSpec } from '../l
 import { errorMessage, mapLimit, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { tryExtractJson } from '../util/text.js';
-import { CODING_TASKS, EDIT_TASKS, editTaskPrompt, evaluateCodingAnswer, evaluateEditAnswer } from './bench.js';
+import { CODING_TASKS, EDIT_TASKS, editTaskPrompt, evaluateCodingAnswer, evaluateEditAnswer, evaluateToolEdit, evaluateWholeAnswer, toolTaskPrompt, wholeTaskPrompt, type EditFormat } from './bench.js';
+import { toolSpecs } from '../agent/tools.js';
+import { presetBody, presetFor } from '../llm/presets.js';
+import { withNoThink } from '../llm/router.js';
 
 export interface ProbeOptions {
   /** full measurement: context ladder up to 256k, concurrency up to 16, every benchmark task */
@@ -22,6 +25,8 @@ export interface ProbeOptions {
   only?: (key: string) => boolean;
   /** called before every step: the console prints one tidy line per model */
   onStep?: (key: string, step: string, index: number, total: number) => void;
+  /** apply the publishers' recommended sampling in the benchmarks (default true; config llm.samplingPresets) */
+  presets?: boolean;
 }
 
 /** Benchmark tasks per level: standard probes keep it short (a few minutes per model at most). */
@@ -55,8 +60,17 @@ class ModelProber {
     this.opts.onStep?.(this.caps.key, name, all.indexOf(name) + 1, all.length);
   }
 
+  /** Benchmark calls (`agentic`) use the model's recommended sampling, like the real workers do. */
   private async call(req: ChatRequest): Promise<ChatResult> {
-    return this.client.chat(this.caps.model, { timeoutMs: 120_000, signal: this.opts.signal, temperature: 0, ...req });
+    const p = req.agentic && this.opts.presets !== false ? presetFor(this.caps.model) : undefined;
+    const temperature = p?.temperature ?? 0;
+    const messages = p?.hybridThinking ? withNoThink(req.messages) : req.messages;
+    return this.client.chat(this.caps.model, { timeoutMs: 120_000, signal: this.opts.signal, temperature, ...req, messages }, p ? presetBody(p) : undefined);
+  }
+
+  /** Ollama serves its OpenAI-compatible API on port 11434 by default. */
+  private isOllama(): boolean {
+    return /:11434(\/|$)/.test(this.client.endpoint.baseUrl) || /ollama/i.test(this.client.endpoint.name);
   }
 
   /** Output budget: reasoning models spend tokens on thinking before they answer. */
@@ -193,6 +207,7 @@ class ModelProber {
               { role: 'user', content: task.prompt },
             ],
             maxTokens: this.budget(1024),
+            agentic: true,
           });
           codeTotal += evaluateCodingAnswer(task, r.content);
         } catch (e) {
@@ -201,19 +216,33 @@ class ModelProber {
       }
       c.codingScore = Math.round((codeTotal / coding.length) * 1000) / 1000;
 
-      // 8. edit format accuracy
+      // 8. edit formats: tool call, SEARCH/REPLACE, whole file – the worker uses the best one
       this.step('editing');
       const edits = this.opts.deep ? EDIT_TASKS : EDIT_TASKS.slice(0, STANDARD_TASKS);
-      let editTotal = 0;
-      for (const t of edits) {
-        try {
-          const r = await this.call({ messages: [{ role: 'user', content: editTaskPrompt(t) }], maxTokens: this.budget(1024) });
-          editTotal += evaluateEditAnswer(t, r.content);
-        } catch {
-          /* zero */
+      const formats: EditFormat[] = c.nativeTools ? ['tool', 'search_replace', 'whole'] : ['search_replace', 'whole'];
+      const scores: Partial<Record<EditFormat, number>> = {};
+      const editSpec = toolSpecs(new Set(['edit_file']));
+      for (const f of formats) {
+        let total = 0;
+        for (const t of edits) {
+          try {
+            if (f === 'tool') {
+              const r = await this.call({ messages: [{ role: 'user', content: toolTaskPrompt(t) }], tools: editSpec, maxTokens: this.budget(1024), agentic: true });
+              total += evaluateToolEdit(t, r.toolCalls.map((tc) => ({ name: tc.function.name, arguments: tryExtractJson<Record<string, unknown>>(tc.function.arguments) ?? {} })));
+            } else {
+              const r = await this.call({ messages: [{ role: 'user', content: f === 'whole' ? wholeTaskPrompt(t) : editTaskPrompt(t) }], maxTokens: this.budget(f === 'whole' ? 1536 : 1024), agentic: true });
+              total += f === 'whole' ? evaluateWholeAnswer(t, r.content) : evaluateEditAnswer(t, r.content);
+            }
+          } catch {
+            /* zero */
+          }
         }
+        scores[f] = Math.round((total / edits.length) * 1000) / 1000;
       }
-      c.editScore = Math.round((editTotal / edits.length) * 1000) / 1000;
+      c.editScores = scores;
+      c.editFormat = bestEditFormat(scores);
+      c.editScore = scores[c.editFormat] ?? 0;
+      if (c.editFormat === 'whole') c.notes.push('edits work best as whole files (search/replace was unreliable)');
     }
     c.probedAt = new Date().toISOString();
     c.probeSeconds = Math.round((Date.now() - started) / 100) / 10;
@@ -243,11 +272,31 @@ class ModelProber {
     } catch {
       /* keep heuristic */
     }
+    // Some servers (Ollama's /v1 endpoint) cut a long prompt silently instead of failing; aider
+    // measured Qwen2.5-Coder-32B dropping from 71.4% to 51.9% that way. A code word at the very
+    // start of the prompt and the server's own prompt-token count reveal the cut.
     const fits = async (size: number): Promise<boolean | undefined> => {
       const chars = Math.floor((size * 0.88) / tokPerChar);
       const text = filler.repeat(Math.ceil(chars / filler.length)).slice(0, chars);
+      const word = `KRL${Math.floor(1000 + Math.random() * 9000)}`;
       try {
-        await this.call({ messages: [{ role: 'user', content: `${text}\n\nIgnore the text above. Reply with OK.` }], maxTokens: 8, stream: false, timeoutMs: 300_000 });
+        const r = await this.call({
+          messages: [{ role: 'user', content: `The code word is ${word}. Remember it.\n\n${text}\n\nWhat is the code word from the first line? Reply with the code word only.` }],
+          maxTokens: this.budget(16),
+          stream: false,
+          timeoutMs: 300_000,
+        });
+        const expected = size * 0.88;
+        const cut = r.usage.promptTokens > 0 && r.usage.promptTokens < expected * 0.6;
+        if (cut || !r.content.toUpperCase().includes(word)) {
+          if (cut) this.bus?.warn(`probe:${c.key}`, `the server silently cut a ${size}-token prompt to ${r.usage.promptTokens} tokens${this.isOllama() ? ' – set OLLAMA_CONTEXT_LENGTH=32768 (or a Modelfile "PARAMETER num_ctx") on the Ollama server' : ''}`);
+          c.notes.push(
+            cut
+              ? `the server cut a ${size}-token prompt to ${r.usage.promptTokens} tokens without an error${this.isOllama() ? ' – raise the context with OLLAMA_CONTEXT_LENGTH or a Modelfile "PARAMETER num_ctx"' : ''}`
+              : `lost the start of a ${size}-token prompt (silent truncation or weak long-context recall)`,
+          );
+          return false;
+        }
         return true;
       } catch (e) {
         if (e instanceof LlmError && e.kind === 'context_length') return false;
@@ -346,7 +395,7 @@ async function probeEndpoint(ep: EndpointConfig, cfg: KurultayConfig, bus: Event
     caps.contextWindow = m.contextWindow ?? 0;
     const ov = cfg.models[caps.key] ?? cfg.models[m.id];
     if (ov?.contextWindow) caps.contextWindow = ov.contextWindow;
-    const r = await new ModelProber(clientFor(ep, ov), caps, bus, opts).run();
+    const r = await new ModelProber(clientFor(ep, ov), caps, bus, { ...opts, presets: opts.presets !== false && cfg.llm.samplingPresets !== false && ov?.preset !== false }).run();
     bus?.emitEvent('probe.model', { source: r.key, data: { reachable: r.reachable, seconds: r.probeSeconds } });
     out.push(r);
   }
@@ -427,15 +476,15 @@ export function writeCapabilities(stateDir: string, file: CapabilitiesFile): { j
 export function renderCapabilitiesMarkdown(file: CapabilitiesFile): string {
   const rows = file.models.map((m) => {
     const best = Object.entries(m.roleScores).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([r]) => r).join(', ');
-    return `| ${m.key} | ${m.reachable ? 'yes' : 'no'} | ${m.contextWindow.toLocaleString('en')} | ${m.nativeTools ? 'native' : 'prompt'} | ${m.jsonMode ? 'yes' : '-'} | ${m.thinking ? 'yes' : '-'} | ${m.tokensPerSec} | ${m.ttftMs} | ${m.maxConcurrency} | ${m.codingScore} | ${m.editScore} | ${m.instructionScore} | ${best} |`;
+    return `| ${m.key} | ${m.reachable ? 'yes' : 'no'} | ${m.contextWindow.toLocaleString('en')} | ${m.nativeTools ? 'native' : 'prompt'} | ${m.jsonMode ? 'yes' : '-'} | ${m.thinking ? 'yes' : '-'} | ${m.tokensPerSec} | ${m.ttftMs} | ${m.maxConcurrency} | ${m.codingScore} | ${m.editScore} | ${m.editFormat ?? '-'} | ${m.instructionScore} | ${best} |`;
   });
   const notes = file.models.filter((m) => m.notes.length).map((m) => `- **${m.key}**: ${m.notes.join('; ')}`);
   return `# Model Capability Report
 
 Generated: ${file.generatedAt}
 
-| Model | Reachable | Context | Tools | JSON | Thinking | tok/s | TTFT ms | Parallel | Coding | Editing | Instructions | Best roles |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Model | Reachable | Context | Tools | JSON | Thinking | tok/s | TTFT ms | Parallel | Coding | Editing | Edit format | Instructions | Best roles |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}
 
 ## Role scores
@@ -445,4 +494,19 @@ ${rows.join('\n')}
 ${file.models.map((m) => `| ${m.key} | ${m.roleScores.planner} | ${m.roleScores.coder} | ${m.roleScores.summarizer} | ${m.roleScores.reviewer} | ${m.roleScores.judge} | ${m.roleScores.fast} |`).join('\n')}
 
 ${notes.length ? '## Notes\n\n' + notes.join('\n') + '\n' : ''}`;
+}
+
+/** Highest score wins; on a tie the cheaper format (tool < search_replace < whole) is used. */
+export function bestEditFormat(scores: Partial<Record<EditFormat, number>>): EditFormat {
+  const order: EditFormat[] = ['tool', 'search_replace', 'whole'];
+  let best: EditFormat = 'tool';
+  let top = -1;
+  for (const f of order) {
+    const v = scores[f];
+    if (v !== undefined && v > top + 1e-9) {
+      best = f;
+      top = v;
+    }
+  }
+  return best;
 }

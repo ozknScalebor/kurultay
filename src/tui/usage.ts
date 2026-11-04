@@ -16,6 +16,10 @@ export interface LiveModelUsage {
   ms: number;
   errors: number;
   truncated: number;
+  /** failed edit_file/write_file calls, replies without a tool call, loop-guard stops */
+  editFails: number;
+  noToolCalls: number;
+  loopStops: number;
   /** highest prompt/window ratio seen (0..1) */
   peakFill: number;
   window: number;
@@ -59,7 +63,7 @@ export class UsageMeter {
   private readonly marks = new Set<UsageMark>();
 
   private model(key: string): LiveModelUsage {
-    return (this.byModel[key] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0, peakFill: 0, window: 0 });
+    return (this.byModel[key] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0, editFails: 0, noToolCalls: 0, loopStops: 0, peakFill: 0, window: 0 });
   }
 
   onEvent(e: UsageEvent): void {
@@ -97,6 +101,12 @@ export class UsageMeter {
       this.model(key).errors++;
     } else if (e.type === 'llm.truncated') {
       this.model(key).truncated++;
+    } else if (e.type === 'worker.issue') {
+      const m = this.model(key);
+      const k = e.data?.kind;
+      if (k === 'edit_failed') m.editFails++;
+      else if (k === 'no_tool_call' || k === 'bad_tool_call') m.noToolCalls++;
+      else if (k === 'loop_stop') m.loopStops++;
     }
   }
 
@@ -184,11 +194,11 @@ export class UsageMeter {
   table(): string[] {
     const rows = Object.entries(this.byModel).sort((a, b) => b[1].tokensIn + b[1].tokensOut - (a[1].tokensIn + a[1].tokensOut));
     return [
-      '| Model | Requests | In | Out | Avg. response | Peak context | Errors | Truncated |',
-      '|---|---:|---:|---:|---:|---:|---:|---:|',
+      '| Model | Requests | In | Out | Avg. | Peak context | Errors | Problems |',
+      '|---|---:|---:|---:|---:|---:|---:|---|',
       ...rows.map(
         ([k, m]) =>
-          `| ${k} | ${m.requests} | ${fmtTok(m.tokensIn)} | ${fmtTok(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.window ? `${Math.round(m.peakFill * 100)}% / ${fmtTok(m.window)}` : '-'} | ${m.errors} | ${m.truncated} |`,
+          `| ${k} | ${m.requests} | ${fmtTok(m.tokensIn)} | ${fmtTok(m.tokensOut)} | ${m.requests ? (m.ms / m.requests / 1000).toFixed(1) + ' s' : '-'} | ${m.window ? `${Math.round(m.peakFill * 100)}% / ${fmtTok(m.window)}` : '-'} | ${m.errors} | ${problems(m)} |`,
       ),
     ];
   }
@@ -213,4 +223,15 @@ export function fillText(f: ContextFill): string {
 export function fillBar(fill: number, cells = 10): string {
   const n = Math.max(0, Math.min(cells, Math.round(fill * cells)));
   return '▰'.repeat(n) + '▱'.repeat(cells - n);
+}
+
+/** Non-zero failure counters in one short cell: "2 cut, 1 failed edit, 3 no tool call". */
+export function problems(m: Pick<LiveModelUsage, 'truncated' | 'editFails' | 'noToolCalls' | 'loopStops'>): string {
+  const parts = [
+    m.truncated ? `${m.truncated} cut` : '',
+    m.editFails ? `${m.editFails} failed edit${m.editFails === 1 ? '' : 's'}` : '',
+    m.noToolCalls ? `${m.noToolCalls} no tool call` : '',
+    m.loopStops ? `${m.loopStops} loop${m.loopStops === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : '-';
 }

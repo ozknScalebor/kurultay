@@ -1,5 +1,5 @@
 {
-  "$comment": "Full Kurultay example – a typical setup on a closed network: vLLM on two GPU servers, llama.cpp and Ollama on a workstation. Copy it to the project root as kurultay.config.json. For a single server the short form in kurultay.config.simple.json is enough.",
+  "$comment": "Full Kurultay example – a typical setup on a closed network: vLLM on two GPU servers, llama.cpp and Ollama on a workstation. Copy it to the project root as kurultay.config.json. For a single server the short form in kurultay.config.simple.json is enough. Ollama: its OpenAI-compatible endpoint ignores num_ctx – set OLLAMA_CONTEXT_LENGTH on the server (the probe warns when prompts are cut).",
   "endpoints": [
     {
       "name": "gpu1-vllm",
@@ -39,12 +39,7 @@
   ],
   "models": {
     "qwen2.5-coder:14b@ollama": {
-      "contextWindow": 32768,
-      "extraBody": {
-        "options": {
-          "num_ctx": 32768
-        }
-      }
+      "contextWindow": 32768
     },
     "gpt-oss-120b@gpu2-vllm": {
       "roles": [
@@ -55,6 +50,9 @@
     },
     "tiny-model@ollama": {
       "disabled": true
+    },
+    "qwen3:14b@ollama": {
+      "thinking": false
     }
   },
   "verify": {
@@ -74,7 +72,10 @@
     "approvePlan": false,
     "maxTokens": 2000000,
     "maxMinutes": 90,
-    "testFirst": true
+    "testFirst": true,
+    "repeatModels": true,
+    "crossTest": true,
+    "localize": true
   },
   "index": {
     "include": [],
@@ -117,7 +118,8 @@
     "timeoutMs": 600000,
     "timeoutRetries": 0,
     "timeoutCooldownMs": 120000,
-    "stickyFailover": true
+    "stickyFailover": true,
+    "samplingPresets": true
   },
   "embeddings": {
     "mode": "auto",

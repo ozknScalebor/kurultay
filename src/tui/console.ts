@@ -471,7 +471,10 @@ export class KurultayConsole {
       if (missing.length) {
         this.out(color.dim(`  capability probe for ${missing.length} new model${missing.length === 1 ? '' : 's'} (once; Ctrl+C skips, /probe re-measures)`));
         await this.probe({ models: missing });
-      } else this.out(`  ${color.green('✓')} capability profile saved ${color.dim('(/probe to re-measure)')}`);
+      } else {
+        const old = this.app.router.list().some((h) => h.caps.reachable && h.caps.editScore > 0 && !h.caps.editFormat);
+        this.out(`  ${color.green('✓')} capability profile saved ${color.dim(old ? '(made by an older version – run /probe once to measure the edit format of each model)' : '(/probe to re-measure)')}`);
+      }
     }
     if (this.opts.autoAnalyze !== false && this.app.router.size > 0 && this.index) {
       const pending = this.index.needsSummary().length;

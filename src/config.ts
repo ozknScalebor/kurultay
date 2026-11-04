@@ -38,6 +38,13 @@ export interface ModelOverride {
   roles?: Role[];
   disabled?: boolean;
   temperature?: number;
+  /** false = do not apply the publisher's recommended sampling (llm/presets.ts) to this model */
+  preset?: boolean;
+  /**
+   * Hybrid reasoning models (Qwen3): false (the default for them) adds the /no_think switch,
+   * true keeps the hidden reasoning on.
+   */
+  thinking?: boolean;
   /** extra body fields merged into every request (e.g. {"top_k": 20}) */
   extraBody?: Record<string, unknown>;
   /** per-model timeouts (override endpoint and llm settings) */
@@ -66,6 +73,8 @@ export interface LlmConfig {
   timeoutCooldownMs: number;
   /** a worker whose model failed continues on the replacement and never returns to the failed one */
   stickyFailover: boolean;
+  /** apply the publishers' recommended sampling settings to known model families (default true) */
+  samplingPresets: boolean;
 }
 
 export interface VerifyConfig {
@@ -80,8 +89,19 @@ export type RunMode = 'auto' | 'single' | 'split' | 'race' | 'council';
 
 export interface OrchestratorConfig {
   defaultMode: RunMode;
-  /** how many models compete in race mode */
+  /** how many candidates compete in race mode */
   raceWidth: number;
+  /**
+   * with fewer models than raceWidth, sample the best models again (default true). Repeated
+   * sampling raises the chance that one candidate is right (Agentless, SWE-Gym best@k).
+   */
+  repeatModels?: boolean;
+  /** run every candidate against its rivals' reproducing tests to pick the winner (default true) */
+  crossTest?: boolean;
+  /** narrow the code down (files → functions) before the workers start (default true; projects with 8+ files) */
+  localize?: boolean;
+  /** save the winning, verified conversations as fine-tuning data (sessions/<id>/trajectories.jsonl; default true) */
+  saveTrajectories?: boolean;
   /** how many reviewers in council */
   councilSize: number;
   /** plan → execute → verify → requirement-check loops */
@@ -111,6 +131,10 @@ export interface IndexConfig {
 }
 
 export interface ToolsConfig {
+  /** lines read_file returns when no range is given (default 100) */
+  readWindow?: number;
+  /** force one edit format for every model (default: the format the probe measured best per model) */
+  editFormat?: 'tool' | 'search_replace' | 'whole';
   allowCommands: boolean;
   /** an existing file must be read before it is edited/overwritten/deleted */
   requireReadBeforeEdit: boolean;
@@ -234,6 +258,7 @@ export const DEFAULT_CONFIG: Omit<KurultayConfig, 'endpoints'> = {
     timeoutRetries: 0,
     timeoutCooldownMs: 120_000,
     stickyFailover: true,
+    samplingPresets: true,
   },
   language: 'en',
   stateDir: '.kurultay',

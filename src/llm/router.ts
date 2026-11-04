@@ -6,7 +6,8 @@ import { estimateTokens } from '../util/text.js';
 import { OpenAICompatClient, clientFor } from './client.js';
 import type { ModelStats } from './stats.js';
 import { defaultCapabilities, type ModelCapabilities } from './models.js';
-import { LlmError, type ChatRequest, type ChatResult } from './types.js';
+import { LlmError, type ChatMessage, type ChatRequest, type ChatResult } from './types.js';
+import { presetBody, presetFor, type SamplingPreset } from './presets.js';
 
 interface Health {
   consecutiveFailures: number;
@@ -26,6 +27,10 @@ export interface ModelHandle {
   client: OpenAICompatClient;
   override: ModelOverride;
   health: Health;
+  /** publisher-recommended sampling for this model (undefined = server defaults) */
+  preset?: SamplingPreset;
+  /** the server rejected the preset's extra sampling fields once */
+  presetRejected?: boolean;
 }
 
 export interface RouteOptions {
@@ -99,6 +104,7 @@ export class Router {
         caps: merged,
         client: clientFor(ep, override),
         override,
+        preset: override.preset === false || this.config.llm.samplingPresets === false ? undefined : presetFor(c.model),
         health: { consecutiveFailures: 0, circuitOpenUntil: 0, successes: 0, failures: 0, ewmaMsPerToken: 0, consecutiveTimeouts: 0, timeouts: 0 },
       });
       if (!this.endpointSlots.has(ep.name)) {
@@ -249,6 +255,18 @@ export class Router {
     return { ...DEFAULT_CONFIG.llm, ...(this.config.llm ?? {}) };
   }
 
+  /**
+   * Sampling for one request. Precedence: the model's configured temperature/extraBody >
+   * the publisher preset (agentic calls only) > the caller's temperature.
+   */
+  samplingFor(h: ModelHandle, req: ChatRequest): { temperature?: number; body?: Record<string, unknown>; noThink: boolean } {
+    const p = h.preset;
+    const usePreset = !!p && !!req.agentic;
+    const temperature = h.override.temperature ?? (usePreset && p!.temperature !== undefined ? p!.temperature : req.temperature);
+    const body = usePreset && !h.presetRejected ? presetBody(p!) : undefined;
+    return { temperature, body: body && Object.keys(body).length ? body : undefined, noThink: !!p?.hybridThinking && h.override.thinking !== true };
+  }
+
   /** Timeouts for one model: model override > endpoint > llm defaults; first-token grows with the prompt. */
   timeoutsFor(h: ModelHandle, promptTokens: number): { timeoutMs: number; firstTokenTimeoutMs?: number; idleTimeoutMs?: number } {
     const l = this.llm;
@@ -362,22 +380,23 @@ export class Router {
           // prompt estimate + window: the console shows how full each model's context is while it works
           const prompt = messages === req.messages ? promptEstimate : estimateTokens(messages.map((m) => m.content ?? '').join('\n'));
           this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt, prompt, window: h.caps.contextWindow, maxTokens: tokens } });
+          const sampling = this.samplingFor(h, req);
           const res = await h.client.chat(
             h.caps.model,
             {
               ...req,
-              messages,
+              messages: sampling.noThink ? withNoThink(messages) : messages,
               timeoutMs: req.timeoutMs ?? limits.timeoutMs,
               firstTokenTimeoutMs: req.firstTokenTimeoutMs ?? limits.firstTokenTimeoutMs,
               idleTimeoutMs: req.idleTimeoutMs ?? limits.idleTimeoutMs,
               maxTokens: tokens,
-              temperature: req.temperature ?? h.override.temperature,
+              temperature: sampling.temperature,
               jsonMode: (req.jsonMode || !!req.jsonSchema) && h.caps.jsonMode,
               // constrained decoding unless this server is known not to support it
               jsonSchema: req.jsonSchema && h.caps.jsonSchema !== false ? req.jsonSchema : undefined,
               stream: req.stream ?? h.caps.streaming,
             },
-            h.override.extraBody,
+            sampling.body || h.override.extraBody ? { ...sampling.body, ...h.override.extraBody } : undefined,
           );
           this.bus?.emitEvent('llm.response', {
             source: h.caps.key,
@@ -391,6 +410,13 @@ export class Router {
         return r;
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError(String(e), 'network', undefined, h.caps.key);
+        // server rejected the preset's sampling fields (top_k, min_p…) → drop them and retry
+        if (err.kind === 'bad_request' && h.preset && !h.presetRejected && req.agentic && /top_k|top_p|min_p|repetition|repeat_penalty|unrecognized|unknown|extra/i.test(err.message)) {
+          h.presetRejected = true;
+          this.bus?.info('router', `${h.caps.key} rejects extra sampling fields; using the server defaults`);
+          attempt--;
+          continue;
+        }
         // server rejected json_schema → remember and retry right away with plain JSON mode
         if (err.kind === 'bad_request' && req.jsonSchema && h.caps.jsonSchema !== false && /response_format|json_schema|schema|guided|grammar/i.test(err.message)) {
           h.caps.jsonSchema = false;
@@ -479,4 +505,14 @@ export class Router {
     }
     throw lastErr ?? new LlmError('No suitable model found', 'not_found');
   }
+}
+
+/** Qwen3 hybrid models: the /no_think soft switch at the end of the system prompt turns reasoning off. */
+export function withNoThink(messages: ChatMessage[]): ChatMessage[] {
+  const i = messages.findIndex((m) => m.role === 'system');
+  if (i >= 0) {
+    if ((messages[i].content ?? '').includes('/no_think')) return messages;
+    return messages.map((m, j) => (j === i ? { ...m, content: `${m.content ?? ''}\n/no_think` } : m));
+  }
+  return [{ role: 'system', content: '/no_think' }, ...messages];
 }

@@ -50,6 +50,39 @@ const call = (name: string, args: Record<string, unknown>): MockReply => ({ tool
 const text = (content: string): MockReply => ({ content });
 
 describe('AgentWorker', () => {
+  it('a model measured as a whole-file editor gets no edit_file tool and is told to rewrite files', async () => {
+    let tools: string[] = [];
+    let system = '';
+    const { make } = await setup(
+      [
+        {
+          id: 'whole',
+          script: (n, q) => {
+            tools = ((q.body.tools ?? []) as Array<{ function: { name: string } }>).map((t) => t.function.name);
+            system = String(q.messages[0].content);
+            return [call('read_file', { path: 'src/a.c' }), call('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 2;' }), call('write_file', { path: 'src/a.c', content: 'int a = 2;\n' }), call('finish', { summary: 'done' })][n];
+          },
+        },
+      ],
+      undefined,
+      { whole: { editFormat: 'whole' } },
+    );
+    const { w, overlay } = make('whole');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.ok(!tools.includes('edit_file') && tools.includes('write_file'));
+    assert.match(system, /rewrite files completely with write_file/);
+    assert.equal(overlay.read('src/a.c'), 'int a = 2;\n');
+  });
+
+  it('text-tool models that edit whole files are not offered SEARCH/REPLACE blocks', async () => {
+    let system = '';
+    const { make } = await setup([{ id: 'txt', tools: false, script: (n, q) => ((system = String(q.messages[0].content)), [text('<tool_call>{"name":"finish","arguments":{"summary":"x"}}</tool_call>')][n]) }], undefined, { txt: { editFormat: 'whole' } });
+    await make('txt').w.run();
+    assert.doesNotMatch(system, /<<<<<<< SEARCH/);
+    assert.match(system, /write the complete new version with write_file/);
+  });
+
   it('runs a native tool-calling loop: read → edit → finish', async () => {
     const { make, s } = await setup([{ id: 'nat', script: (n) => [call('read_file', { path: 'src/a.c' }), call('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 2;' }), call('finish', { summary: 'a is 2' })][n] }]);
     const { w, overlay } = make('nat');

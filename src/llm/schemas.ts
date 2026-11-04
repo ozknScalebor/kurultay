@@ -84,3 +84,17 @@ export const TOOLSHIM_SCHEMA: JsonSchemaSpec = {
     required: ['calls'],
   },
 };
+
+export const LOCATE_FILES_SCHEMA: JsonSchemaSpec = {
+  name: 'kurultay_locate_files',
+  schema: { type: 'object', properties: { files: strArr }, required: ['files'] },
+};
+
+export const LOCATE_ELEMENTS_SCHEMA: JsonSchemaSpec = {
+  name: 'kurultay_locate_elements',
+  schema: {
+    type: 'object',
+    properties: { locations: { type: 'array', items: { type: 'object', properties: { file: str, symbol: str }, required: ['file', 'symbol'] } } },
+    required: ['locations'],
+  },
+};

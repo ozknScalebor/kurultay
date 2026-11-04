@@ -227,3 +227,65 @@ export function evaluateEditAnswer(t: EditTask, answer: string): number {
     return 0;
   }
 }
+
+/**
+ * Edit formats a model can be asked to use. Aider's measurements show the format can
+ * matter more than the model (qwen3-coder:30b: 0/100 with "diff", 100/100 with "whole"),
+ * so the probe measures each one and the worker uses the best.
+ *  - tool: edit_file tool call (path, old_text, new_text)
+ *  - search_replace: SEARCH/REPLACE blocks in the reply
+ *  - whole: the complete updated file
+ */
+export type EditFormat = 'tool' | 'search_replace' | 'whole';
+
+export function wholeTaskPrompt(t: EditTask): string {
+  return `You are editing a file. Respond ONLY with the complete updated file in a single fenced code block – every line, not just the changed part.
+
+File ${t.path}:
+\`\`\`
+${t.original}\`\`\`
+
+Task: ${t.instruction}`;
+}
+
+export function toolTaskPrompt(t: EditTask): string {
+  return `Make the change with the edit_file tool (old_text must be copied exactly from the file).
+
+File ${t.path}:
+\`\`\`
+${t.original}\`\`\`
+
+Task: ${t.instruction}`;
+}
+
+/** Last fenced code block of the answer (or the whole answer when there is none). */
+export function lastCodeBlock(answer: string): string {
+  const blocks = [...answer.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  return blocks.length ? blocks[blocks.length - 1] : answer;
+}
+
+export function evaluateWholeAnswer(t: EditTask, answer: string): number {
+  const content = lastCodeBlock(answer);
+  if (!content.trim()) return 0;
+  // the rest of the file must survive: every untouched original line is still there
+  const kept = t.original.split('\n').filter((l) => l.trim().length > 3);
+  const survived = kept.filter((l) => content.includes(l.trim())).length / Math.max(1, kept.length);
+  if (!t.check(content)) return survived > 0.5 ? 0.25 : 0;
+  return survived >= 0.6 ? 1 : 0.25;
+}
+
+export function evaluateToolEdit(t: EditTask, calls: Array<{ name: string; arguments: Record<string, unknown> }>): number {
+  const edits = calls.filter((c) => c.name === 'edit_file');
+  if (!edits.length) return 0;
+  try {
+    let content = t.original;
+    for (const c of edits) {
+      const { old_text, new_text, replace_all } = c.arguments as { old_text?: unknown; new_text?: unknown; replace_all?: unknown };
+      if (typeof old_text !== 'string' || typeof new_text !== 'string') return 0;
+      content = applyReplacement(content, old_text, new_text, { path: t.path, replaceAll: replace_all === true });
+    }
+    return t.check(content) ? 1 : 0.25;
+  } catch {
+    return 0;
+  }
+}

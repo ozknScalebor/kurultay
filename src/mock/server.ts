@@ -26,6 +26,12 @@ export interface MockModel {
   noStream?: boolean;
   /** do not advertise the context window in GET /models (forces the probe ladder) */
   hideCtx?: boolean;
+  /** 'whole-only': fails SEARCH/REPLACE and tool edits but writes whole files correctly (aider's qwen3-coder case) */
+  editStyle?: 'any' | 'whole-only';
+  /** reject non-OpenAI sampling fields (top_k, min_p…) with HTTP 400, like strict OpenAI-compatible proxies */
+  rejectSampling?: boolean;
+  /** like Ollama's /v1 endpoint: silently drop the start of a prompt longer than ctx instead of failing */
+  truncateCtx?: boolean;
   /** an embedding model: served on POST /embeddings (deterministic vectors), not a chat model */
   embedding?: boolean;
   /**
@@ -69,6 +75,14 @@ const GOOD_CODE: Record<string, string> = {
 };
 
 const tok = (s: string) => Math.ceil(s.length / 3.6);
+
+/** The correct edits for the probe's edit tasks (probe/bench.ts EDIT_TASKS). */
+function benchEdits(path: string): Array<{ old: string; new: string; all?: boolean }> {
+  if (path.endsWith('sensor.c')) return [{ old: 'static int read_raw(int ch) {', new: 'static int sensor_read_raw(int ch) {' }, { old: '    int raw = read_raw(ch);', new: '    int raw = sensor_read_raw(ch);' }];
+  if (path.endsWith('queue.cpp')) return [{ old: 'bool Queue::pop(Item &out) {\n    out = items_[head_];', new: 'bool Queue::pop(Item &out) {\n    if (count_ == 0) {\n        return false;\n    }\n    out = items_[head_];' }];
+  if (path.endsWith('Stack.java')) return [{ old: '        data.add(v);\n    }', new: '        data.add(v);\n    }\n\n    public int size() {\n        return data.size();\n    }' }];
+  return [];
+}
 
 function lastUser(messages: Msg[]): string {
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return messages[i].content ?? '';
@@ -137,15 +151,26 @@ function respond(model: MockModel, body: { messages: Msg[]; tools?: unknown[]; r
   if (/three lowercase color names/.test(u)) return { content: '["red","green","blue"]' };
   if (/"kurultay" in uppercase/.test(u)) return { content: 'KURULTAY' };
   if (/Ignore the text above\. Reply with OK/.test(u)) return { content: 'OK' };
+  if (/What is the code word from the first line\?/.test(u)) return { content: u.match(/The code word is (KRL\d+)/)?.[1] ?? 'I do not know.' };
   if (/short words about rivers/.test(u)) return { content: 'river flows water bank delta stream current '.repeat(6) };
   const fn = u.match(/function `(\w+)\(/)?.[1];
   if (fn && GOOD_CODE[fn]) return { content: model.quality === 'good' ? '```javascript\n' + GOOD_CODE[fn] + '\n```' : '```javascript\nfunction ' + fn + '(){ return null }\n```' };
+  const editPath = u.match(/File (\S+):\n```/)?.[1] ?? '';
+  const edits = benchEdits(editPath);
   if (/Respond ONLY with one or more SEARCH\/REPLACE blocks/.test(u)) {
-    const path = u.match(/File (\S+):/)?.[1] ?? '';
-    if (model.quality === 'bad') return { content: 'I would rename it.' };
-    if (path.endsWith('sensor.c')) return { content: `${path}\n<<<<<<< SEARCH\nstatic int read_raw(int ch) {\n=======\nstatic int sensor_read_raw(int ch) {\n>>>>>>> REPLACE\n${path}\n<<<<<<< SEARCH\n    int raw = read_raw(ch);\n=======\n    int raw = sensor_read_raw(ch);\n>>>>>>> REPLACE` };
-    if (path.endsWith('queue.cpp')) return { content: `${path}\n<<<<<<< SEARCH\nbool Queue::pop(Item &out) {\n    out = items_[head_];\n=======\nbool Queue::pop(Item &out) {\n    if (count_ == 0) {\n        return false;\n    }\n    out = items_[head_];\n>>>>>>> REPLACE` };
-    if (path.endsWith('Stack.java')) return { content: `${path}\n<<<<<<< SEARCH\n        data.add(v);\n    }\n=======\n        data.add(v);\n    }\n\n    public int size() {\n        return data.size();\n    }\n>>>>>>> REPLACE` };
+    if (model.quality === 'bad' || model.editStyle === 'whole-only') return { content: 'I would rename it.' };
+    if (edits.length) return { content: edits.map((e) => `${editPath}\n<<<<<<< SEARCH\n${e.old}\n=======\n${e.new}\n>>>>>>> REPLACE`).join('\n') };
+  }
+  if (/Respond ONLY with the complete updated file/.test(u) && edits.length) {
+    if (model.quality === 'bad') return { content: 'Here is the idea: rename it.' };
+    let file = u.match(/File \S+:\n```\n([\s\S]*?)```/)?.[1] ?? '';
+    for (const e of edits) file = file.split(e.old).join(e.new);
+    return { content: '```\n' + file + '```' };
+  }
+  if (/Make the change with the edit_file tool/.test(u) && edits.length && body.tools?.length) {
+    if (model.quality === 'bad' || model.editStyle === 'whole-only') return { content: 'I would change the function.' };
+    const e = edits.length > 1 ? { old: 'read_raw(', new: 'sensor_read_raw(', all: true } : edits[0];
+    return { content: '', toolCall: { name: 'edit_file', args: { path: editPath, old_text: e.old, new_text: e.new, replace_all: e.all } } };
   }
   if (/Summarize each source file below/.test(u)) {
     const files = [...u.matchAll(/### FILE: (\S+)/g)].map((m) => m[1]);
@@ -311,13 +336,24 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
       res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'model is loading' } }));
       return;
     }
-    const promptTok = tok(allText(body.messages));
+    let promptTok = tok(allText(body.messages));
+    if (promptTok > model.ctx && model.truncateCtx) {
+      const last = body.messages[body.messages.length - 1];
+      const text = String(last.content ?? '');
+      const keep = Math.max(0, text.length - Math.floor(text.length * (1 - model.ctx / promptTok)));
+      body.messages = [...body.messages.slice(0, -1), { ...last, content: text.slice(text.length - keep) }];
+      promptTok = model.ctx;
+    }
     if (promptTok > model.ctx) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: `This model's maximum context length is ${model.ctx} tokens. However, you requested ${promptTok} tokens.` } }));
       return;
     }
     if (body.tools?.length && !model.tools && /strict-tools/.test(model.id)) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'tools are not supported for this model' } }));
+      return;
+    }
+    if (model.rejectSampling && ('top_k' in body || 'min_p' in body)) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Unrecognized request argument supplied: top_k' } }));
       return;
     }
     if (model.rejectSchema && (body as { response_format?: { type?: string } }).response_format?.type === 'json_schema') {

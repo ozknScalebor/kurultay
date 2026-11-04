@@ -171,7 +171,7 @@ describe('budgets and resume', () => {
 
   it('renders the per-model usage table', () => {
     const t = renderUsageTable({ requests: 3, tokensIn: 25_000, tokensOut: 2_000_000, seconds: 5, byModel: { 'a@e': { requests: 2, tokensIn: 25_000, tokensOut: 2_000_000, ms: 3000, errors: 1, truncated: 1 }, 'b@e': { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 2, truncated: 0 } } });
-    assert.equal(t[2], '| a@e | 2 | 25K | 2.0M | 1.5 s | 1 | 1 |');
-    assert.equal(t[3], '| b@e | 0 | 0 | 0 | - | 2 | 0 |');
+    assert.equal(t[2], '| a@e | 2 | 25K | 2.0M | 1.5 s | 1 | 1 | 0 | 0 | 0 |');
+    assert.equal(t[3], '| b@e | 0 | 0 | 0 | - | 2 | 0 | 0 | 0 | 0 |');
   });
 });
