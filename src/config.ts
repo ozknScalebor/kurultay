@@ -25,6 +25,10 @@ export interface EndpointConfig {
   idleTimeoutMs?: number;
   headers?: Record<string, string>;
   disabled?: boolean;
+  /** default roles for every model of this endpoint (a model's own `roles` wins) */
+  roles?: Role[];
+  /** models of this endpoint only take their roles (set for the `helper` section) */
+  rolesOnly?: boolean;
 }
 
 export interface ModelOverride {
@@ -36,6 +40,8 @@ export interface ModelOverride {
   nativeTools?: boolean;
   /** pin roles instead of using probe scores */
   roles?: Role[];
+  /** use this model ONLY for its `roles` (other work goes to other models; it is a last resort when no other model is up) */
+  rolesOnly?: boolean;
   disabled?: boolean;
   temperature?: number;
   /** false = do not apply the publisher's recommended sampling (llm/presets.ts) to this model */
@@ -319,6 +325,14 @@ export function validateConfig(cfg: KurultayConfig): void {
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new ConfigError(`llm.${k} must be zero or a positive number (value: ${JSON.stringify(v)})`);
   }
   if (cfg.llm.timeoutMs < 1000) throw new ConfigError('llm.timeoutMs must be at least 1000 ms');
+  for (const [key, m] of Object.entries(cfg.models ?? {})) {
+    for (const r of m.roles ?? []) if (!ALL_ROLES.includes(r)) throw new ConfigError(`Unknown role "${r}" for model ${key} (valid: ${ALL_ROLES.join(', ')})`);
+    if (m.rolesOnly && !m.roles?.length) throw new ConfigError(`Model ${key} has rolesOnly but no roles`);
+  }
+  for (const ep of cfg.endpoints) {
+    for (const r of ep.roles ?? []) if (!ALL_ROLES.includes(r)) throw new ConfigError(`Unknown role "${r}" for endpoint ${ep.name} (valid: ${ALL_ROLES.join(', ')})`);
+    if (ep.rolesOnly && !ep.roles?.length) throw new ConfigError(`Endpoint ${ep.name} has rolesOnly but no roles`);
+  }
 }
 
 export function findConfigFile(projectRoot: string, explicit?: string): string | undefined {
@@ -385,6 +399,19 @@ export function normalizeRawConfig(raw: unknown): unknown {
   } else if (list) {
     if (endpoints.length !== 1) throw new ConfigError('A "models" list needs a top-level "baseUrl" (or exactly one entry in "endpoints").');
     endpoints[0].models = list;
+  }
+  // helper: a small extra model (e.g. on this PC) for the light work only – summaries, compaction
+  if (r.helper !== undefined) {
+    const h = r.helper as Record<string, unknown>;
+    if (!h || typeof h !== 'object' || typeof h.baseUrl !== 'string' || !h.baseUrl.trim()) throw new ConfigError('"helper" needs a "baseUrl" (and usually "models")');
+    const name = typeof h.name === 'string' && h.name ? h.name : 'helper';
+    const roles = Array.isArray(h.roles) && h.roles.length ? (h.roles as unknown[]).map(String) : ['fast', 'summarizer'];
+    const ep: Record<string, unknown> = { name, baseUrl: h.baseUrl, apiKey: h.apiKey ?? 'none', models: Array.isArray(h.models) ? h.models : [] };
+    for (const k of ['maxConcurrency', 'timeoutMs', 'firstTokenTimeoutMs', 'idleTimeoutMs', 'headers'] as const) if (h[k] !== undefined) ep[k] = h[k];
+    ep.roles = roles;
+    ep.rolesOnly = true;
+    endpoints.push(ep);
+    delete r.helper;
   }
   for (const ep of endpoints) {
     if (!Array.isArray(ep.models)) continue;

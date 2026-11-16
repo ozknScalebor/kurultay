@@ -157,7 +157,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.5.0 · all your local LLMs in one council · offline
+ v0.6.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -282,6 +282,25 @@ One server, one key, a list of model names – that is all most setups need (`~/
 ```
 
 Every model uses the main `apiKey` unless it has its own. In the console `/model add <name> [apiKey]` and `/model remove <name>` edit the list. Short example: [`examples/kurultay.config.simple.json`](examples/kurultay.config.simple.json).
+
+### Helper model (light work only)
+
+A small extra model – for example one running on the PC itself with llama.cpp, LM Studio or Ollama – can take the light work so the big models stay free for coding:
+
+```jsonc
+{
+  "baseUrl": "http://10.0.0.11:8000/v1",
+  "apiKey": "${KURULTAY_API_KEY}",
+  "models": ["qwen3-coder-30b", "gpt-oss-120b"],
+  "helper": {
+    "baseUrl": "http://127.0.0.1:8080/v1",          // apiKey defaults to "none"
+    "models": ["qwen2.5-coder-1.5b-instruct"],
+    "roles": ["fast", "summarizer"]                  // the default
+  }
+}
+```
+
+Helper models are only used for their roles – `summarizer` (file/module summaries, flow pages during the analysis) and `fast` (context compaction, turning a prose reply into a tool call). They never write code, plan, review or judge, except as a last resort when no other model is reachable. The same switch exists per model (`"rolesOnly": true` next to `"roles"`) and per endpoint (`"roles"`, `"rolesOnly"`). The helper is probed like every other model; compare its `tok/s` in `/models` with the main models.
 
 Several servers use the `endpoints` list instead (it can also be added next to `baseUrl`). Full example: [`examples/kurultay.config.full.json`](examples/kurultay.config.full.json)
 
