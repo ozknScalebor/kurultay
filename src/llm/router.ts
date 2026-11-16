@@ -89,7 +89,9 @@ export class Router {
       if (!ep || ep.disabled) continue;
       // capabilities.json may be older than the config: honour the endpoint's model whitelist
       if (ep.models?.length && !ep.models.includes(c.model)) continue;
-      const override = this.config.models[c.key] ?? this.config.models[c.model] ?? {};
+      const own = this.config.models[c.key] ?? this.config.models[c.model] ?? {};
+      // endpoint-wide roles (the helper section) apply unless the model sets its own
+      const override: ModelOverride = ep.roles?.length ? { roles: ep.roles, rolesOnly: ep.rolesOnly, ...own } : own;
       if (override.disabled) continue;
       const merged: ModelCapabilities = {
         ...c,
@@ -220,12 +222,21 @@ export class Router {
    */
   rank(role?: Role, opts: { exclude?: string[]; only?: string[]; minContext?: number; includeUnavailable?: boolean } = {}): ModelHandle[] {
     const now = Date.now();
-    return this.list()
+    const list = this.list()
       .filter((h) => (opts.only ? opts.only.includes(h.caps.key) : true))
       .filter((h) => !opts.exclude?.includes(h.caps.key))
       .filter((h) => opts.includeUnavailable || this.available(h, now))
       .filter((h) => !opts.minContext || h.caps.contextWindow >= opts.minContext)
       .sort((a, b) => this.score(b, role) - this.score(a, role));
+    // rolesOnly models (helpers) only do their own roles – unless nothing else is left
+    if (!role) return list;
+    const allowed = list.filter((h) => this.allows(h, role));
+    return allowed.length ? allowed : list;
+  }
+
+  /** May this model take work of this role? (rolesOnly restricts it to its pinned roles) */
+  allows(h: ModelHandle, role: Role): boolean {
+    return !h.override.rolesOnly || !!h.override.roles?.includes(role);
   }
 
   /** Pick up to n distinct models for a role, spreading across endpoints first. */

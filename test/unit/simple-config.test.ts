@@ -6,7 +6,7 @@ import { ConfigError, loadConfig, normalizeRawConfig, parseConfig } from '../../
 import { editModelList } from '../../src/tui/commands.js';
 import { detectUnicode, forTerminal, setUnicode, toAscii, unicodeEnabled } from '../../src/ui/symbols.js';
 import { plural } from '../../src/util/text.js';
-import { tmpProject } from '../helpers.js';
+import { caps, routerFor, tmpProject } from '../helpers.js';
 
 describe('short configuration form', () => {
   it('one endpoint, one key, a list of model names; a model may carry its own key', () => {
@@ -98,5 +98,40 @@ describe('terminal symbols', () => {
     assert.equal(plural(0, 'file'), '0 files');
     assert.equal(plural(2, 'dependency'), '2 dependencies');
     assert.equal(plural(3, 'day'), '3 days');
+  });
+});
+
+describe('helper model', () => {
+  it('the helper section becomes an endpoint whose models only do light work', () => {
+    const c = parseConfig({ baseUrl: 'http://gpu/v1', apiKey: 'k', models: ['big'], helper: { baseUrl: 'http://127.0.0.1:8080/v1', models: ['small'] } });
+    const h = c.endpoints.find((e) => e.name === 'helper')!;
+    assert.deepEqual({ ...h }, { name: 'helper', baseUrl: 'http://127.0.0.1:8080/v1', apiKey: 'none', models: ['small'], roles: ['fast', 'summarizer'], rolesOnly: true });
+    const custom = parseConfig({ baseUrl: 'http://gpu/v1', helper: { name: 'pc', baseUrl: 'http://127.0.0.1:1234/v1', roles: ['summarizer'], maxConcurrency: 1 } });
+    assert.deepEqual(custom.endpoints[1].roles, ['summarizer']);
+    assert.equal(custom.endpoints[1].maxConcurrency, 1);
+    assert.throws(() => parseConfig({ baseUrl: 'http://gpu/v1', helper: { models: ['x'] } }), /"helper" needs a "baseUrl"/);
+    assert.throws(() => parseConfig({ baseUrl: 'http://gpu/v1', helper: { baseUrl: 'http://h/v1', roles: ['typist'] } }), /Unknown role "typist" for endpoint helper/);
+    assert.throws(() => parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1', rolesOnly: true }] }), /rolesOnly but no roles/);
+    assert.throws(() => parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1' }], models: { 'm@e': { roles: ['coder', 'nap'] } } }), /Unknown role "nap"/);
+    assert.throws(() => parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1' }], models: { 'm@e': { rolesOnly: true } } }), /rolesOnly but no roles/);
+  });
+
+  it('rolesOnly models get no coding, planning or review – unless nothing else is up', () => {
+    const cfg = parseConfig({ baseUrl: 'http://gpu/v1', models: ['big', 'mid'], helper: { baseUrl: 'http://pc/v1', models: ['small'] }, skills: { includeUser: false } });
+    const r = routerFor(cfg, [caps('big', 'main', { codingScore: 0.9 }), caps('mid', 'main', { codingScore: 0.6 }), caps('small', 'helper', { codingScore: 0.9, tokensPerSec: 500 })]);
+    const helper = r.get('small@helper')!;
+    assert.equal(helper.override.rolesOnly, true);
+    assert.deepEqual(r.pick('coder', 3).map((h) => h.caps.key).sort(), ['big@main', 'mid@main'], 'the helper never joins a race');
+    assert.ok(!r.rank('reviewer').includes(helper));
+    assert.ok(!r.rank('planner').includes(helper));
+    assert.equal(r.rank('summarizer')[0].caps.key, 'small@helper', 'pinned roles come first');
+    assert.ok(r.rank('fast').includes(helper));
+    assert.equal(r.rank().length, 3);
+    // alone it is still used rather than failing the task
+    const solo = routerFor(cfg, [caps('small', 'helper')]);
+    assert.deepEqual(solo.rank('coder').map((h) => h.caps.key), ['small@helper']);
+    // a model's own roles win over the endpoint default
+    const own = parseConfig({ baseUrl: 'http://gpu/v1', helper: { baseUrl: 'http://pc/v1', models: [{ id: 'small', roles: ['fast'] }] }, skills: { includeUser: false } });
+    assert.deepEqual(routerFor(own, [caps('small', 'helper')]).get('small@helper')!.override.roles, ['fast']);
   });
 });
