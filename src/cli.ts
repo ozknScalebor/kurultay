@@ -35,7 +35,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history', 'keep-tests']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -72,6 +72,12 @@ Commands:
                           --validate: check that tasks fail on the base project and pass with the reference solution;
                           --score <dir>: score a folder another agent worked on with the same hidden tests;
                           --history: earlier runs per version, from ~/.kurultay/eval-history.jsonl)
+  swebench prepare <dataset.jsonl>  SWE-bench: one checkout per instance at its base commit + prompts/<id>.txt
+                         (--dir swebench-work --sample N --seed S | --instances a,b --repos <mirrors>)
+  swebench run         Run Kurultay on the prepared instances → predictions-<name>.jsonl (resumable;
+                         --dir --mode --timeout <min> --instances a,b --name)
+  swebench collect     Patches of folders another agent worked on → predictions (--dir --name qwen-code)
+                         Grade with the official harness: swebench eval verified -p <predictions> --run-id <id>
   rewind [session]     Undo what a task applied to the project (default: last task; --yes, --force)
   init                 Create kurultay.config.json and rule/skill templates in the project root
   index                Index the project (symbols, dependency graph, PageRank) – no LLM needed
@@ -419,6 +425,40 @@ async function cmdEval(args: Args) {
   }
 }
 
+/** SWE-bench: prepare checkouts, run Kurultay on them, or collect another agent's patches. */
+async function cmdSwebench(args: Args) {
+  const sub = args.positional[0];
+  const list = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
+  const sw = await import('./eval/swebench.js');
+  const dir = resolve(typeof args.flags.dir === 'string' ? args.flags.dir : 'swebench-work');
+  const progress = (l: string) => out(l);
+  try {
+    if (sub === 'prepare') {
+      const dataset = args.positional[1];
+      if (!dataset) throw new ConfigError('kurultay swebench prepare <dataset.jsonl> [--dir d] [--sample N --seed S | --instances a,b] [--repos dir]');
+      const r = sw.prepare({ dataset: resolve(dataset), dir, instances: list(args.flags.instances), sample: args.flags.sample !== undefined ? Number(args.flags.sample) : undefined, seed: args.flags.seed !== undefined ? Number(args.flags.seed) : undefined, repos: typeof args.flags.repos === 'string' ? resolve(args.flags.repos) : undefined, gitBase: typeof args.flags['git-base'] === 'string' ? args.flags['git-base'] : undefined, onProgress: progress });
+      out(`${color.green('✓')} ${plural(r.length, 'instance')} prepared in ${dir} (prompts/<id>.txt for other agents)`);
+      return;
+    }
+    if (sub === 'run') {
+      const name = typeof args.flags.name === 'string' ? args.flags.name : `kurultay-${VERSION}`;
+      const r = await sw.runAll({ dir, name, mode: typeof args.flags.mode === 'string' ? (args.flags.mode as RunMode) : undefined, config: typeof args.flags.config === 'string' ? args.flags.config : undefined, instances: list(args.flags.instances), timeoutMin: args.flags.timeout !== undefined ? Number(args.flags.timeout) : undefined, keepTests: !!args.flags['keep-tests'], onProgress: progress });
+      out(`${color.bold('Predictions')}: ${r.out} (${r.done} new, ${r.skipped} already done)\nGrade: swebench eval verified -p ${r.out} --run-id ${name} -j 6`);
+      return;
+    }
+    if (sub === 'collect') {
+      const name = typeof args.flags.name === 'string' ? args.flags.name : 'other-agent';
+      const r = sw.collect({ dir, name, out: typeof args.flags.out === 'string' ? args.flags.out : undefined, instances: list(args.flags.instances), keepTests: !!args.flags['keep-tests'], onProgress: progress });
+      out(`${color.bold('Predictions')}: ${r.out} (${plural(r.predictions.length, 'instance')}, ${r.predictions.filter((p) => p.model_patch).length} with a patch)`);
+      return;
+    }
+    throw new ConfigError('kurultay swebench prepare|run|collect – see kurultay --help');
+  } catch (e) {
+    if (e instanceof Error && !(e instanceof ConfigError)) throw new ConfigError(e.message);
+    throw e;
+  }
+}
+
 /** Undo what a run applied to the project, using its checkpoint (last applied run by default). */
 async function cmdRewind(root: string, args: Args) {
   const sessions = join(root, '.kurultay', 'sessions');
@@ -516,7 +556,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'stats', 'trajectories'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'swebench', 'stats', 'trajectories'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Unknown command: ${args.cmd}\n`);
     out(HELP);
@@ -552,6 +592,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       case 'eval':
         return await cmdEval(args);
+      case 'swebench':
+        return await cmdSwebench(args);
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
         // --latency <ms>: answer slowly, to watch the live progress display

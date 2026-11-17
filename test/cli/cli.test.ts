@@ -257,6 +257,20 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(h.stdout, /\| 0\.9\.0 \| mini \| single \| 1 \| 3 \| 66\.7% \| 100\.0% \| 0\.0% \|/);
   });
 
+  it('swebench: usage errors and collect without prepared tasks', async () => {
+    const none = await cli(['swebench'], root);
+    assert.equal(none.code, 1);
+    assert.match(none.stderr, /prepare\|run\|collect/);
+    const noData = await cli(['swebench', 'prepare'], root);
+    assert.match(noData.stderr, /swebench prepare <dataset\.jsonl>/);
+    const empty = tmpProject({});
+    const c = await cli(['swebench', 'collect', '--dir', empty, '--name', 'qwen-code'], root);
+    assert.equal(c.code, 1);
+    assert.match(c.stderr, /tasks\.jsonl not found/);
+    const r = await cli(['swebench', 'run', '--dir', empty], root);
+    assert.match(r.stderr, /tasks\.jsonl not found/);
+  });
+
   it('stats shows per-run and per-model usage; index --embed reports the retrieval mode', async () => {
     const r = await cli(['stats', '--runs', '3'], root);
     assert.equal(r.code, 0, r.stdout + r.stderr);

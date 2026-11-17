@@ -183,7 +183,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.9.0 · all your local LLMs in one council · offline
+ v0.10.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -387,6 +387,30 @@ Other sections:
 
 - **MCP**: tools of stdio MCP servers are offered to the workers as `mcp__<server>__<tool>`; read-only ones (`readOnlyHint` or `readOnlyTools`) are also available to reviewers. `/mcp` in the console.
 - **LSP**: the configured language server starts once per project and its diagnostics are collected after every edit; if it cannot start, the compiler check takes over.
+
+## SWE-bench
+
+Patches are generated and graded in separate steps, so the agents can run on the offline machine and the grading (Docker, about 120 GB of images) on any x86_64 machine with internet access.
+
+```bash
+# 1. machine with internet: dataset → JSONL, one checkout per instance at its base commit
+python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', split='test').to_json('verified.jsonl')"
+kurultay swebench prepare verified.jsonl --dir swe --sample 50 --seed 42      # or --instances a,b
+#    copy swe/ to the offline machine (once for every agent you compare: swe-kurultay, swe-qwen …)
+
+# 2. offline machine: Kurultay → predictions-kurultay-<version>.jsonl (resumable, runs-*.jsonl has time/requests)
+kurultay swebench run --dir swe-kurultay --timeout 30
+
+#    another agent on the same checkouts with the same prompts (prompts/<id>.txt), then:
+kurultay swebench collect --dir swe-qwen --name qwen-code
+
+# 3. machine with Docker: the official harness
+pip install swebench
+swebench eval verified -p predictions-kurultay-0.10.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
+```
+
+Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
 
 ## Rules and skills
 
