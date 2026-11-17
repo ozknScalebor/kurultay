@@ -410,6 +410,8 @@ swebench eval verified -p predictions-kurultay-0.10.0.jsonl --run-id kurultay -j
 swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 ```
 
+**Grading on GitHub instead:** put the predictions under `benchmarks/swebench/<run>/` (see its README) and push – the `swebench` workflow grades them with the official harness, commits `results-*.json` and `RESULTS.md`, and adds the table to the latest release's notes. Run the workflow by hand without a folder for a smoke test with the reference patches.
+
 Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
 
 ## Rules and skills
