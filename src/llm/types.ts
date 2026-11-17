@@ -49,6 +49,8 @@ export interface ChatRequest {
    * (temperature included) instead of `temperature`. Structured calls leave this off.
    */
   agentic?: boolean;
+  /** token estimate of the prompt's parts (system, tools, task, history) – reported, not sent */
+  promptParts?: Record<string, number>;
 }
 
 export interface Usage {

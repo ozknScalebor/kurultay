@@ -237,6 +237,26 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(resumed.stdout, /Result: completed[\s\S]*Usage: \d+ requests/);
   });
 
+  it('eval --score grades another agent\'s folder; eval --history lists earlier runs', async () => {
+    const suiteDir = tmpProject({
+      'suite.json': JSON.stringify({ name: 'mini', project: 'project', check: 'node hidden_test.js', tasks: [{ id: 'clamp', prompt: 'x', timeoutSec: 60 }] }),
+      'project/src/mathutil.js': 'export function clamp() { throw new Error("TODO"); }\n',
+      'project/package.json': '{"type":"module"}',
+      'hidden/clamp/hidden_test.js': "import { clamp } from './src/mathutil.js';\nif (clamp(15, 0, 10) !== 10) process.exit(1);\n",
+    });
+    const done = tmpProject({ 'src/mathutil.js': 'export const clamp = (v, a, b) => Math.min(Math.max(v, a), b);\n', 'package.json': '{"type":"module"}' });
+    const ok = await cli(['eval', suiteDir, '--score', done], root);
+    assert.equal(ok.code, 0, ok.stdout + ok.stderr);
+    assert.match(ok.stdout, /Score: 1\/1 tasks pass – clamp ✓/);
+    const bad = await cli(['eval', suiteDir, '--score', join(suiteDir, 'project')], root);
+    assert.equal(bad.code, 1);
+    assert.match(bad.stdout, /0\/1 tasks pass – clamp ✗/);
+    const kh = tmpProject({ 'eval-history.jsonl': JSON.stringify({ at: 'x', version: '0.9.0', suite: 'mini', tasks: ['clamp'], mode: 'single', stats: { attempts: 3, passed: 2, passRate: 2 / 3, avgSeconds: 30, avgTokens: 1, avgRequests: 5, trials: 3, passAtK: 1, passHatK: 0 } }) + '\n' });
+    const h = await cli(['eval', '--history'], root, { KURULTAY_HOME: kh });
+    assert.equal(h.code, 0);
+    assert.match(h.stdout, /\| 0\.9\.0 \| mini \| single \| 1 \| 3 \| 66\.7% \| 100\.0% \| 0\.0% \|/);
+  });
+
   it('stats shows per-run and per-model usage; index --embed reports the retrieval mode', async () => {
     const r = await cli(['stats', '--runs', '3'], root);
     assert.equal(r.code, 0, r.stdout + r.stderr);

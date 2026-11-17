@@ -380,6 +380,7 @@ describe('Orchestrator', () => {
     assert.ok(prompts.some((p) => /Files likely involved: src\/uart\.c/.test(p)));
     assert.ok(bus.ofType('log.info').some((e) => /small task/.test(e.message ?? '')));
     assert.match(read(root, 'src/uart.c'), /return n;/);
+    assert.match(read(report.reportPath, ''), /## Prompt makeup \(\d+ coding requests?\)[\s\S]*\| Tool declarations \| \d+ \|/);
     // a task that touches more files, a forced mode or plan approval go through the planners
     brain.locate = { files: ['src/f1.c', 'src/f2.c', 'src/f3.c'], locations: [] };
     await run('change f1, f2 and f3');

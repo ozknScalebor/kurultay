@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { loadSuite, renderEval, runEval, validateSuite } from '../../src/eval/eval.js';
+import { appendHistory, loadSuite, modeStats, readHistory, renderEval, renderHistory, runEval, scoreFolder, validateSuite, type EvalAttempt } from '../../src/eval/eval.js';
 import { DEFAULT_MOCK_MODELS, startMockServer, type MockServerHandle } from '../../src/mock/server.js';
 import { CLAMP_PROJECT, tmpProject } from '../helpers.js';
 
@@ -102,5 +102,38 @@ describe('evaluation harness', () => {
     assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a","prompt":"b"},{"id":"a","prompt":"c"}]}' })), /duplicate task id/);
     assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a"}]}' })), /needs an id and a prompt/);
     assert.match(renderEval({ suite: 's', startedAt: 'a', finishedAt: 'b', attempts: [], byMode: {} }), /# Kurultay evaluation: s/);
+  });
+
+  it('pass@k and pass^k over trials, a history per version', () => {
+    const a = (task: string, passed: boolean): EvalAttempt => ({ task, mode: 'single', repeat: 1, passed, baselineFailed: true, status: 'x', seconds: 10, requests: 4, tokensIn: 1, tokensOut: 1, llmErrors: 0, models: [], changedFiles: 1, iterations: 1, checkOutput: '', workDir: '' });
+    const st = modeStats([a('t1', true), a('t1', true), a('t1', true), a('t2', true), a('t2', false), a('t2', false), a('t3', false), a('t3', false), a('t3', false)]);
+    assert.equal(st.trials, 3);
+    assert.equal(st.passRate, 4 / 9);
+    assert.equal(st.passAtK, 2 / 3, 't1 and t2 solved at least once');
+    assert.equal(st.passHatK, 1 / 3, 'only t1 solved every time');
+    assert.match(renderEval({ suite: 's', startedAt: 'a', finishedAt: 'b', attempts: [], byMode: { single: st } }), /\| single \| 9 \| 4 \| 44% \| 67% \| 33% \|/);
+    const file = join(tmpProject({}), 'h', 'history.jsonl');
+    assert.deepEqual(readHistory(file), []);
+    assert.match(renderHistory([]), /No evaluation runs/);
+    appendHistory(file, { suite: 's', startedAt: 'a', finishedAt: '2026-11-17', attempts: [], byMode: { single: st }, version: '0.9.0' }, ['t1', 't2', 't3']);
+    writeFileSync(file, readFileSync(file, 'utf8') + 'not json\n');
+    appendHistory(file, { suite: 's', startedAt: 'a', finishedAt: '2026-11-18', attempts: [], byMode: { single: { ...st, passRate: 1 } }, version: '0.9.1' }, ['t1', 't2', 't3']);
+    const h = readHistory(file);
+    assert.equal(h.length, 2);
+    const md = renderHistory(h);
+    assert.match(md, /\| 0\.9\.0 \| s \| single \| 3 \| 3 \| 44\.4% \| 66\.7% \| 33\.3% \|/);
+    assert.match(md, /\| 0\.9\.1 \| s \| single \| 3 \| 3 \| 100\.0% \|/);
+  });
+
+  it('scores a folder another agent worked on with the same hidden tests, task by task', async () => {
+    const dir = suite();
+    const solved = tmpProject({ 'src/mathutil.js': 'export function clamp(v, a, b) { return Math.min(Math.max(v, a), b); }\n', 'package.json': '{"type":"module"}' });
+    const lines: string[] = [];
+    const r = await scoreFolder({ suiteDir: dir, dir: solved, onProgress: (l) => lines.push(l) });
+    assert.deepEqual(r.map((x) => [x.task, x.passed]), [['clamp', true], ['twice', false]]);
+    assert.match(r[1].output, /twice yok/);
+    assert.deepEqual(lines, ['✓ clamp', '✗ twice']);
+    await assert.rejects(scoreFolder({ suiteDir: dir, dir: join(dir, 'nope') }), /folder not found/);
+    await assert.rejects(scoreFolder({ suiteDir: dir, dir: solved, tasks: ['x'] }), /no task selected/);
   });
 });

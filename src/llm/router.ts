@@ -425,7 +425,7 @@ export class Router {
         const send = async (tokens: number, messages = req.messages): Promise<ChatResult> => {
           // prompt estimate + window: the console shows how full each model's context is while it works
           const prompt = messages === req.messages ? promptEstimate : estimateTokens(messages.map((m) => m.content ?? '').join('\n'));
-          this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt, prompt, window: h.caps.contextWindow, maxTokens: tokens } });
+          this.bus?.emitEvent('llm.request', { source: h.caps.key, data: { purpose: req.purpose, attempt, prompt, window: h.caps.contextWindow, maxTokens: tokens, ...(req.promptParts ? { parts: req.promptParts } : {}) } });
           const sampling = this.samplingFor(h, req);
           const res = await h.client.chat(
             h.caps.model,

@@ -203,6 +203,37 @@ describe('AgentWorker', () => {
     assert.ok(bus.ofType('log.info').some((e) => /compacted/.test(e.message ?? '')));
   });
 
+  it('clears old tool outputs before it summarises (microcompaction), and re-reads then show the content again', async () => {
+    const big = Array.from({ length: 300 }, (_, i) => `int value_${i} = ${i}; // padding padding padding`).join('\n');
+    let sawCleared = false;
+    let rereadContent = false;
+    let summaries = 0;
+    const { make } = await setup(
+      [
+        {
+          id: 'small',
+          script: (n, q) => {
+            if (q.messages.some((m) => /old tool output cleared/.test(m.content ?? ''))) sawCleared = true;
+            if (n < 12) return call('read_file', { path: 'big.c', start_line: (n % 6) * 40 + 1, end_line: (n % 6) * 40 + 40 });
+            const last = q.messages[q.messages.length - 1]?.content ?? '';
+            if (n === 12) rereadContent = /value_0 = 0/.test(last) || /value_/.test(last);
+            return call('finish', { summary: 'done' });
+          },
+        },
+        { id: 'fast', handler: (q) => (/compacting the work log/.test(q.messages[0]?.content ?? '') ? (summaries++, text('## Goal\nx')) : undefined) },
+      ],
+      { 'big.c': big },
+      { small: { contextWindow: 12000 }, fast: { roleScores: { planner: 0, coder: 0, summarizer: 0, reviewer: 0, judge: 0, fast: 1 } } },
+      { orchestrator: { maxStepsPerWorker: 20 }, llm: { microcompactAt: 0.3, compactAt: 0.95 } },
+    );
+    const { w } = make('small');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.ok(sawCleared, 'old outputs were cleared');
+    assert.equal(summaries, 0, 'no summary needed');
+    assert.ok(rereadContent, 'after clearing, a repeated read returns the content, not the cache note');
+  });
+
   it('toolshim turns prose that names a tool into a real call', async () => {
     let shimAsked = 0;
     const { make, bus } = await setup(

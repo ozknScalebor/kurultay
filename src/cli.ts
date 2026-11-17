@@ -35,7 +35,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii']);
+  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -68,8 +68,10 @@ Commands:
                          --resume [session] (continue an interrupted task where it stopped)
   ask "<question>"     Ask about the project: models answer separately, the council merges (--members N)
   eval <suite>         Measure quality: run a task suite and score it with hidden tests
-                         (--modes single,race,council --tasks a,b --repeat N --out <dir> --keep;
-                          --validate: check that tasks fail on the base project and pass with the reference solution)
+                         (--modes single,race,council --tasks a,b --repeat N (pass@k, pass^k) --out <dir> --keep;
+                          --validate: check that tasks fail on the base project and pass with the reference solution;
+                          --score <dir>: score a folder another agent worked on with the same hidden tests;
+                          --history: earlier runs per version, from ~/.kurultay/eval-history.jsonl)
   rewind [session]     Undo what a task applied to the project (default: last task; --yes, --force)
   init                 Create kurultay.config.json and rule/skill templates in the project root
   index                Index the project (symbols, dependency graph, PageRank) – no LLM needed
@@ -372,10 +374,15 @@ ${color.yellow('Warnings:')}`);
 }
 
 async function cmdEval(args: Args) {
+  const { runEval, validateSuite, scoreFolder, readHistory, renderHistory } = await import('./eval/eval.js');
+  const historyFile = join(kurultayHome(), 'eval-history.jsonl');
+  if (args.flags.history) {
+    out(renderHistory(readHistory(historyFile)));
+    return;
+  }
   const dir = args.positional[0];
   if (!dir) throw new ConfigError('A suite folder is required: kurultay eval <dir>');
   const list = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
-  const { runEval, validateSuite } = await import('./eval/eval.js');
   const common = {
     suiteDir: resolve(dir),
     tasks: list(args.flags.tasks),
@@ -385,6 +392,14 @@ async function cmdEval(args: Args) {
     onProgress: (l: string) => out(l),
   };
   try {
+    if (typeof args.flags.score === 'string') {
+      // score a folder another agent worked on (Qwen Code, Aider, a person) with the hidden tests
+      const r = await scoreFolder({ ...common, dir: resolve(args.flags.score) });
+      for (const x of r.filter((y) => !y.passed)) out(color.dim(`--- ${x.task}\n${x.output.split('\n').slice(-12).join('\n')}`));
+      out(`${color.bold('Score')}: ${r.filter((x) => x.passed).length}/${r.length} tasks pass – ${r.map((x) => `${x.task} ${x.passed ? '✓' : '✗'}`).join(', ')}`);
+      if (r.some((x) => !x.passed)) process.exitCode = 1;
+      return;
+    }
     if (args.flags.validate) {
       const r = await validateSuite(common);
       const bad = r.filter((x) => !x.baselineFails || x.solutionPasses === false);
@@ -394,9 +409,9 @@ async function cmdEval(args: Args) {
       return;
     }
     const modes = (list(args.flags.modes) ?? ['single']) as RunMode[];
-    const { summary, reportPath, jsonPath } = await runEval({ ...common, modes, repeat: args.flags.repeat !== undefined ? Number(args.flags.repeat) : undefined });
+    const { summary, reportPath, jsonPath } = await runEval({ ...common, modes, repeat: args.flags.repeat !== undefined ? Number(args.flags.repeat) : undefined, version: VERSION, historyFile });
     out('');
-    for (const [m, b] of Object.entries(summary.byMode)) out(`${color.bold(m.padEnd(8))} ${b.passed}/${b.attempts} passed (${Math.round(b.passRate * 100)}%) · avg ${b.avgSeconds.toFixed(1)} s · ${Math.round(b.avgTokens)} tokens · ${b.avgRequests.toFixed(1)} requests`);
+    for (const [m, b] of Object.entries(summary.byMode)) out(`${color.bold(m.padEnd(8))} ${b.passed}/${b.attempts} passed (${Math.round(b.passRate * 100)}%)${b.trials > 1 ? ` · pass@${b.trials} ${Math.round(b.passAtK * 100)}% · pass^${b.trials} ${Math.round(b.passHatK * 100)}%` : ''} · avg ${b.avgSeconds.toFixed(1)} s · ${Math.round(b.avgTokens)} tokens · ${b.avgRequests.toFixed(1)} requests`);
     out(`${color.bold('Report')}: ${reportPath}\n${color.bold('JSON')}:   ${jsonPath}`);
   } catch (e) {
     if (e instanceof Error && !(e instanceof ConfigError)) throw new ConfigError(e.message);

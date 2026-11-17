@@ -67,6 +67,8 @@ export interface RunUsage {
   /** wall-clock seconds spent in this run, across resumes */
   seconds: number;
   byModel: Record<string, ModelUsage>;
+  /** summed token estimates of the coding requests' prompt parts (system, tools, task, history) */
+  prompt?: { requests: number } & Record<string, number>;
 }
 
 /** What is written to session.json after every subtask – enough to resume. */
@@ -418,6 +420,10 @@ export class Orchestrator {
         m.tokensOut += o;
         m.ms += Number(e.data?.ms ?? 0);
         check();
+      } else if (e.type === 'llm.request' && e.data?.parts && typeof e.data.parts === 'object') {
+        const p = (usage.prompt ??= { requests: 0 });
+        p.requests++;
+        for (const [k, v] of Object.entries(e.data.parts as Record<string, number>)) p[k] = (p[k] ?? 0) + Number(v || 0);
       } else if (e.type === 'llm.error') model(e.source ?? '?').errors++;
       else if (e.type === 'llm.truncated') model(e.source ?? '?').truncated++;
       else if (e.type === 'worker.issue') {
@@ -1110,8 +1116,23 @@ export function renderReport(r: RunReport, diff: string): string {
     lines.push('');
   }
   if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model usage', '', ...renderUsageTable(r.usage), '');
+  if (r.usage?.prompt?.requests) lines.push(...renderPromptMakeup(r.usage.prompt), '');
   lines.push('## Changes', '', `Full diff: \`${r.diffPath}\``, '');
   return lines.join('\n');
+}
+
+/** Average size of each part of a coding request's prompt – what to trim first. */
+export function renderPromptMakeup(p: { requests: number } & Record<string, number>): string[] {
+  const parts = ['system', 'tools', 'task', 'history'].filter((k) => p[k] !== undefined);
+  const total = parts.reduce((a, k) => a + p[k], 0) || 1;
+  const label: Record<string, string> = { system: 'System prompt', tools: 'Tool declarations', task: 'Task + project context', history: 'Conversation so far' };
+  return [
+    `## Prompt makeup (${plural(p.requests, 'coding request')})`,
+    '',
+    '| Part | Avg. tokens per request | Share |',
+    '|---|---:|---:|',
+    ...parts.map((k) => `| ${label[k]} | ${Math.round(p[k] / p.requests)} | ${Math.round((p[k] / total) * 100)}% |`),
+  ];
 }
 
 /** Usage of the last `n` runs from session.json files, newest first. */
