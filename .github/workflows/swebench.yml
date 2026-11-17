@@ -54,21 +54,32 @@ jobs:
       - name: Smoke test with the reference patches
         if: steps.runs.outputs.list == ''
         run: |
-          python -m swebench.harness.run_evaluation --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path gold \
-            --instance_ids ${{ inputs.instances }} --max_workers 2 --run_id gold --cache_level base --clean True
+          python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --predictions_path gold \
+            --instance_ids ${{ inputs.instances }} --max_workers 2 --run_id gold
           cat logs/evaluation/gold/results.json | head -40 >> "$GITHUB_STEP_SUMMARY" || true
       - name: Grade
         if: steps.runs.outputs.list != ''
         run: |
           for run in ${{ steps.runs.outputs.list }}; do
             dir="benchmarks/swebench/$run"
-            dataset=$(node -e "const f='$dir/meta.json';const fs=require('fs');console.log(fs.existsSync(f)&&JSON.parse(fs.readFileSync(f,'utf8')).dataset||'princeton-nlp/SWE-bench_Verified')")
+            dataset=$(node -e "const f='$dir/meta.json';const fs=require('fs');console.log(fs.existsSync(f)&&JSON.parse(fs.readFileSync(f,'utf8')).dataset||'SWE-bench/SWE-bench_Verified')")
             for preds in "$dir"/predictions-*.jsonl; do
               agent=$(basename "$preds" .jsonl); agent=${agent#predictions-}
               id="$run-$agent"
               echo "::group::$id ($dataset)"
-              python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" \
-                --max_workers 2 --run_id "$id" --cache_level base --clean True --timeout 1800 || echo "::warning::harness exited with an error for $id"
+              # batches of 10 instances with the images removed in between: the runner has limited disk
+              python - "$preds" > batches.txt <<'PY'
+          import json, sys
+          ids = [json.loads(l)["instance_id"] for l in open(sys.argv[1]) if l.strip()]
+          for i in range(0, len(ids), 10): print(" ".join(ids[i:i + 10]))
+          PY
+              while read -r batch; do
+                python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" \
+                  --instance_ids $batch --max_workers 2 --run_id "$id" --timeout 1800 || echo "::warning::harness error in a batch of $id"
+                docker system prune -af >/dev/null
+              done < batches.txt
+              # one report over every batch of this run
+              python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" --run_id "$id" --rewrite_reports True || true
               cp "logs/evaluation/$id/results.json" "$dir/results-$agent.json" || echo "::warning::no results for $id"
               docker system prune -af >/dev/null
               echo "::endgroup::"

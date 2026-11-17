@@ -6,9 +6,9 @@ the `swebench` workflow grades them with the official harness and commits `resul
 
 ```
 benchmarks/swebench/<run>/
-  meta.json                     optional: {"dataset": "princeton-nlp/SWE-bench_Verified", "note": "50 instances, seed 42"}
+  meta.json                     optional: {"dataset": "SWE-bench/SWE-bench_Verified", "note": "50 instances, seed 42"}
   predictions-<agent>.jsonl     kurultay swebench run / collect
   runs-<agent>.jsonl            optional: time and requests per instance (check it holds nothing internal)
 ```
 
-Dataset names: `princeton-nlp/SWE-bench_Verified`, `princeton-nlp/SWE-bench_Lite`, `SWE-bench/SWE-bench_Multilingual`.
+Dataset names: `SWE-bench/SWE-bench_Verified`, `SWE-bench/SWE-bench_Lite`, `SWE-bench/SWE-bench_Multilingual`.
