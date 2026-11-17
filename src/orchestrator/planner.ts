@@ -41,6 +41,7 @@ Return ONLY JSON:
     {"id": "T1", "title": "...", "description": "precise instructions incl. files, functions, edge cases", "files": ["paths likely touched"], "depends_on": [], "critical": true, "skills": []}
   ]
 }
+Keep the plan as small as the task: a bug fix or a change in one or two files is ONE subtask. The subtask that changes the code also writes its tests – never create separate subtasks only for testing, verifying or checking edge cases. Subtasks that edit the same file must list each other in "depends_on". Fill "files" with the paths each subtask edits.
 Mark "critical": true for subtasks with tricky logic where comparing several independent implementations is valuable.
 Acceptance criteria must be checkable: prefer criteria a test or a command can verify (e.g. "unit test X covers empty input and passes").
 If project skills are listed below, put the names of the skills a subtask needs in its "skills" array (only names from the list; [] when none apply).`;
@@ -54,6 +55,61 @@ export function cleanTitle(t: unknown): string {
     .replace(/\s+/g, ' ')
     .replace(/^[\s'"`,;[\]{}]+|[\s'"`,;[\]{}]+$/g, '')
     .trim();
+}
+
+/** A subtask that only tests or checks what another one builds. */
+const CHECK_ONLY = /^(verify|validate|validation|test(s|ing)?|write tests|add tests|unit tests?|edge[- ]cases?|regression|check|review|run (the )?(tests|demo))\b/i;
+
+/** Project files a subtask names: its `files` plus paths / file names mentioned in its text. */
+export function filesOf(s: SubTask, projectFiles: string[]): Set<string> {
+  const out = new Set(s.files);
+  const text = `${s.title}\n${s.description}`;
+  for (const p of projectFiles) {
+    const name = p.split('/').pop()!;
+    const stem = name.replace(/\.[^.]+$/, '');
+    const word = (w: string) => new RegExp(`(^|[^\\w])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w])`).test(text);
+    // a path, a file name, or a class-like stem ("PricingService") – not short generic words
+    if (text.includes(p) || (name.length > 4 && word(name)) || (stem.length >= 6 && /[A-Z]/.test(stem.slice(1)) && word(stem))) out.add(p);
+  }
+  return out;
+}
+
+/**
+ * Make a plan safe to run in parallel (weak planners split small fixes into "implement",
+ * "write tests", "check edge cases" that all edit the same file from the same base):
+ *  - a test-only / check-only subtask is folded into the subtask whose code it tests
+ *    (the coder writes its own tests – Agentless, SWE-agent);
+ *  - subtasks that still share a file run one after the other (dependsOn), never in parallel.
+ */
+export function consolidatePlan(plan: Pick<Plan, 'subtasks'>, projectFiles: string[], bus?: EventBus): void {
+  const subs = plan.subtasks;
+  if (subs.length < 2) return;
+  const before = subs.length;
+  const files = new Map(subs.map((s) => [s.id, filesOf(s, projectFiles)]));
+  const merge = (into: SubTask, from: SubTask) => {
+    into.description = `${into.description}\n\nAlso (${from.title}):\n${from.description}`;
+    for (const f of files.get(from.id)!) files.get(into.id)!.add(f);
+    into.files = [...new Set([...into.files, ...from.files])];
+    into.critical ||= from.critical;
+    into.skills = [...new Set([...(into.skills ?? []), ...(from.skills ?? [])])];
+    into.dependsOn = [...new Set([...into.dependsOn, ...from.dependsOn])].filter((d) => d !== into.id && d !== from.id);
+    for (const s of subs) s.dependsOn = [...new Set(s.dependsOn.map((d) => (d === from.id ? into.id : d)))].filter((d) => d !== s.id);
+    subs.splice(subs.indexOf(from), 1);
+  };
+  for (const s of [...subs]) {
+    if (subs.length < 2 || !CHECK_ONLY.test(s.title.trim())) continue;
+    const mine = files.get(s.id)!;
+    const target = subs.find((o) => o !== s && !CHECK_ONLY.test(o.title.trim()) && [...mine].some((f) => files.get(o.id)!.has(f))) ?? subs.find((o) => o !== s && !CHECK_ONLY.test(o.title.trim()));
+    if (target) merge(target, s);
+  }
+  // shared files → one after the other
+  for (let i = 1; i < subs.length; i++) {
+    for (let j = 0; j < i; j++) {
+      const shared = [...files.get(subs[i].id)!].some((f) => files.get(subs[j].id)!.has(f));
+      if (shared && !subs[i].dependsOn.includes(subs[j].id) && !subs[j].dependsOn.includes(subs[i].id)) subs[i].dependsOn.push(subs[j].id);
+    }
+  }
+  if (subs.length < before) bus?.info('planner', `merged ${before} subtasks into ${subs.length}: they change the same code`);
 }
 
 function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'authors'> | undefined {

@@ -127,7 +127,7 @@ function format(e: KEvent, verbose: boolean, state: FormatState): string | undef
 
     // ---- task run
     case 'run.start':
-      return `${color.dim(`  ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}`)}${section('Planning', 'the planner models draft plans independently; the best draft becomes the plan', state.width())}`;
+      return `${color.dim(`  ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}`)}${section('Planning', 'small tasks go straight to a coder; larger ones get plan drafts from the planner models and the best one is used', state.width())}`;
     case 'run.plan': {
       const subtasks = list(d.subtasks);
       const mode = String(d.mode ?? '');

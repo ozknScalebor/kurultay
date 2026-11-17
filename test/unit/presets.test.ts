@@ -59,3 +59,47 @@ describe('edit formats', () => {
     assert.equal(bestEditFormat({ search_replace: 0.5, whole: 0.5 }), 'search_replace');
   });
 });
+
+describe('quick structured answers: thinking off for plans and localisation', () => {
+  it('sends the switch only where it is safe and useful', () => {
+    const cfg = config({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1' }], models: { 'qwen3-32b-keep@e': { thinking: true } } });
+    const r = routerFor(cfg, [caps('Qwen3.8-Flash-Next-FP8', 'e'), caps('gpt-oss-120b', 'e'), caps('llama3', 'e'), caps('mystery', 'e', { thinking: true }), caps('qwen3-32b-keep', 'e'), caps('qwen3:14b', 'e')]);
+    const g = (k: string) => r.get(k)!;
+    assert.deepEqual(r.quickThinking(g('Qwen3.8-Flash-Next-FP8@e'), { messages: [], purpose: 'plan.draft' }), { chat_template_kwargs: { enable_thinking: false } });
+    assert.deepEqual(r.quickThinking(g('mystery@e'), { messages: [], purpose: 'localize.files' }), { chat_template_kwargs: { enable_thinking: false } }, 'probe saw reasoning output');
+    assert.deepEqual(r.quickThinking(g('gpt-oss-120b@e'), { messages: [], purpose: 'summary.file' }), { reasoning_effort: 'low' });
+    assert.equal(r.quickThinking(g('llama3@e'), { messages: [], purpose: 'plan.draft' }), undefined, 'not a reasoning model');
+    assert.equal(r.quickThinking(g('Qwen3.8-Flash-Next-FP8@e'), { messages: [], purpose: 'council.review' }), undefined, 'reviews keep thinking');
+    assert.equal(r.quickThinking(g('Qwen3.8-Flash-Next-FP8@e'), { messages: [], purpose: 'worker:T1-1', agentic: true }), undefined, 'coding keeps thinking');
+    assert.equal(r.quickThinking(g('qwen3-32b-keep@e'), { messages: [], purpose: 'plan.draft' }), undefined, 'thinking: true in the config');
+    assert.deepEqual(r.samplingFor(g('qwen3:14b@e'), { messages: [], purpose: 'plan.judge' }).body, { chat_template_kwargs: { enable_thinking: false } });
+    const off = routerFor(config({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1' }], llm: { quickStructured: false } }), [caps('qwen3-coder', 'e')]);
+    assert.equal(off.quickThinking(off.get('qwen3-coder@e')!, { messages: [], purpose: 'plan.draft' }), undefined);
+  });
+
+  it('a server that rejects the switch is asked again without it, once', async () => {
+    const { startMockServer } = await import('../../src/mock/server.js');
+    const s = await startMockServer([{ id: 'qwen3-32b', quality: 'good', tools: true, ctx: 32768, rejectTemplateKwargs: true, handler: () => ({ content: '{"files":[]}' }) }]);
+    try {
+      const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), [caps('qwen3-32b', 'e')]);
+      const res = await r.chat({ messages: [{ role: 'user', content: 'x' }], purpose: 'localize.files', maxTokens: 50 });
+      assert.equal(res.content, '{"files":[]}');
+      assert.equal(r.get('qwen3-32b@e')!.thinkOffRejected, true);
+      await r.chat({ messages: [{ role: 'user', content: 'y' }], purpose: 'plan.draft', maxTokens: 50 });
+      assert.equal(s.log.filter((l) => 'chat_template_kwargs' in l.body).length, 1, 'not sent again');
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+describe('helpers do not stand in for excluded models', () => {
+  it('rolesOnly: reviewers exclude the authors without falling back to the helper', () => {
+    const cfg = config({ endpoints: [{ name: 'e', baseUrl: 'http://e/v1' }], models: { 'tiny@e': { roles: ['fast', 'summarizer'], rolesOnly: true } } });
+    const r = routerFor(cfg, [caps('big', 'e'), caps('mid', 'e'), caps('tiny', 'e')]);
+    assert.deepEqual(r.pick('reviewer', 3, ['big@e', 'mid@e']).map((h) => h.caps.key), []);
+    assert.deepEqual(r.pick('reviewer', 3, ['big@e']).map((h) => h.caps.key), ['mid@e']);
+    const solo = routerFor(cfg, [caps('tiny', 'e')]);
+    assert.deepEqual(solo.pick('reviewer', 1).map((h) => h.caps.key), ['tiny@e'], 'the only model left still works');
+  });
+});

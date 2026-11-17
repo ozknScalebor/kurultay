@@ -75,7 +75,9 @@
     "testFirst": true,
     "repeatModels": true,
     "crossTest": true,
-    "localize": true
+    "localize": true,
+    "fastPath": true,
+    "raceGrace": 0.5
   },
   "index": {
     "include": [],
@@ -119,7 +121,8 @@
     "timeoutRetries": 0,
     "timeoutCooldownMs": 120000,
     "stickyFailover": true,
-    "samplingPresets": true
+    "samplingPresets": true,
+    "quickStructured": true
   },
   "embeddings": {
     "mode": "auto",

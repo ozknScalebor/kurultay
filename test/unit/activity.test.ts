@@ -136,3 +136,49 @@ describe('terminal renderer: sections and plain-language lines', () => {
     assert.equal(cleanTitle(undefined), '');
   });
 });
+
+describe('plan consolidation', () => {
+  it('folds test-only and check-only subtasks into the code subtask (the B2 plan)', async () => {
+    const { consolidatePlan, filesOf } = await import('../../src/orchestrator/planner.js');
+    const files = ['src/main/java/com/x/io/CsvProductLoader.java', 'src/test/java/com/x/CsvProductLoaderTest.java', 'src/main/java/com/x/util/Validation.java'];
+    const sub = (id: string, title: string, description: string, f: string[] = []) => ({ id, title, description, files: f, dependsOn: [] as string[], critical: false });
+    const plan = {
+      subtasks: [
+        sub('T1', 'Implement Quoted CSV Parsing Logic in CsvProductLoader', 'Analyze CsvProductLoader.java and implement a quote-aware parser.'),
+        sub('T2', 'Verify CSV Parsing with Unit Tests and Demo Run', 'Create new test cases in CsvProductLoaderTest.java.'),
+        sub('T3', 'Edge Case Validation and Regression Check', 'Check Validation.requireNonBlank with the new parser.'),
+      ],
+    };
+    const bus = new EventBus();
+    const infos: string[] = [];
+    bus.on('event', (e) => e.type === 'log.info' && infos.push(e.message ?? ''));
+    consolidatePlan(plan, files, bus);
+    assert.equal(plan.subtasks.length, 1);
+    assert.match(plan.subtasks[0].description, /Also \(Verify CSV Parsing[\s\S]*Also \(Edge Case/);
+    assert.match(infos.join(), /merged 3 subtasks into 1/);
+    assert.deepEqual([...filesOf(sub('X', 'touch CsvProductLoader', ''), files)], ['src/main/java/com/x/io/CsvProductLoader.java'], 'class-like stem');
+    assert.deepEqual([...filesOf(sub('X', 'fix the loader', ''), files)], []);
+  });
+
+  it('subtasks that share a file run one after the other; independent ones stay parallel', async () => {
+    const { consolidatePlan } = await import('../../src/orchestrator/planner.js');
+    const sub = (id: string, f: string[], dependsOn: string[] = []) => ({ id, title: `change ${id}`, description: '', files: f, dependsOn, critical: false });
+    const plan = { subtasks: [sub('T1', ['a.c']), sub('T2', ['b.c']), sub('T3', ['a.c', 'c.c']), sub('T4', ['c.c'], ['T3'])] };
+    consolidatePlan(plan, ['a.c', 'b.c', 'c.c']);
+    assert.deepEqual(plan.subtasks.map((s) => [s.id, s.dependsOn]), [['T1', []], ['T2', []], ['T3', ['T1']], ['T4', ['T3']]]);
+    const one = { subtasks: [sub('T1', ['a.c'])] };
+    consolidatePlan(one, ['a.c']);
+    assert.equal(one.subtasks.length, 1);
+    // a test-only subtask without shared files goes to the first code subtask; deps are rewired
+    const t = { subtasks: [sub('T1', ['a.c']), { ...sub('T2', ['b.c']), title: 'Add tests for the parser' }, sub('T3', ['d.c'], ['T2'])] };
+    consolidatePlan(t, []);
+    assert.deepEqual(t.subtasks.map((s) => [s.id, s.dependsOn]), [['T1', []], ['T3', ['T1']]]);
+  });
+
+  it('recognises a repeated review finding despite rephrasing', async () => {
+    const { sameFinding } = await import('../../src/orchestrator/orchestrator.js');
+    assert.ok(sameFinding('The candidate provided only the test suite and no implementation changes for CsvProductLoader', '[P0] Only the test suite was provided; the implementation changes for CsvProductLoader are missing'));
+    assert.ok(!sameFinding('null pointer in parseLine', 'price column is not validated'));
+    assert.ok(sameFinding('!!', '!!'));
+  });
+});

@@ -354,4 +354,83 @@ describe('Orchestrator', () => {
     assert.equal(read(root, 'a.txt'), 'orig');
     assert.ok(!existsSync(join(root, '.kurultay', 'journal.json')));
   });
+
+  it('fast path: a small task skips the plan council and reuses the localisation', async () => {
+    let plans = 0;
+    const prompts: string[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/uart.c'], locations: [{ file: 'src/uart.c', symbol: 'uart_send' }] },
+      agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'src/uart.c', old_text: 'return n + 1;', new_text: 'return n;' }) : undefined),
+      record: (kind, prompt) => {
+        if (kind === 'plan') plans++;
+        if (kind === 'agent') prompts.push(prompt);
+      },
+    };
+    const files: Record<string, string> = { 'src/uart.c': 'int uart_send(int n) {\n  return n + 1;\n}\n' };
+    for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run, s, bus, root } = await setup(brain, files);
+    const report = await run('uart_send writes one byte too many');
+    assert.equal(plans, 0, 'no plan drafts');
+    assert.equal(report.mode, 'single', 'no build/test commands: one coder and a reviewer, no race');
+    assert.equal(report.subtasks.length, 1);
+    assert.equal(report.subtasks[0].candidates.length, 1);
+    assert.deepEqual(report.subtasks[0].localized, ['src/uart.c:uart_send']);
+    assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1, 'localised once');
+    assert.ok(prompts.some((p) => /Files likely involved: src\/uart\.c/.test(p)));
+    assert.ok(bus.ofType('log.info').some((e) => /small task/.test(e.message ?? '')));
+    assert.match(read(root, 'src/uart.c'), /return n;/);
+    // a task that touches more files, a forced mode or plan approval go through the planners
+    brain.locate = { files: ['src/f1.c', 'src/f2.c', 'src/f3.c'], locations: [] };
+    await run('change f1, f2 and f3');
+    assert.ok(plans > 0);
+    const after = plans;
+    await run('x', { mode: 'race' });
+    assert.ok(plans > after);
+  });
+
+  it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
+    let judgePrompt = '';
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'write a.txt' }] },
+      agent: (_id, step, q) => {
+        if (step !== 0) return undefined;
+        const first = q.messages.find((m) => m.role === 'user')?.content ?? '';
+        return /Blocking review findings/.test(first) ? call('edit_file', { path: 'out.txt', old_text: 'v', new_text: 'v2' }) : call('write_file', { path: 'out.txt', content: 'v' });
+      },
+      review: () => ({ content: JSON.stringify({ ranking: ['A'], scores: { A: 3 }, issues: { A: [{ text: 'the parser still drops quoted commas in field two', priority: 0, confidence: 0.9 }] } }) }),
+      record: (kind, prompt) => kind === 'judge' && (judgePrompt = prompt),
+    };
+    const { run, bus } = await setup(brain, { 'a.txt': 'orig' }, { cfg: { orchestrator: { maxIterations: 1, fastPath: false } } });
+    const report = await run('write a.txt', { mode: 'single' });
+    assert.equal(report.subtasks[0].fixes, 1, 'one round, not two');
+    assert.ok(bus.ofType('log.warn').some((e) => /made no progress/.test(e.message ?? '')));
+    assert.deepEqual(report.subtasks[0].openIssues, ['[P0] the parser still drops quoted commas in field two']);
+    assert.match(judgePrompt, /OPEN REVIEW FINDINGS[\s\S]*quoted commas/);
+  });
+
+  it('race: slower candidates are stopped a while after the first one is done', async () => {
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'write a.txt' }] },
+      agent: (_id, step, _q, model) => {
+        if (model === 'slow') return step === 0 ? { hangMs: 4000 } : undefined;
+        return step === 0 ? call('write_file', { path: 'out.txt', content: 'fast' }) : undefined;
+      },
+    };
+    const { run, bus, root } = await setup(brain, { 'a.txt': 'orig' }, { models: ['fast', 'slow'], cfg: { orchestrator: { raceWidth: 2, repeatModels: false, raceGraceMinSeconds: 0, raceGrace: 0.01, maxIterations: 1 }, llm: { timeoutRetries: 0 } } });
+    const t0 = Date.now();
+    const report = await run('write a.txt', { mode: 'race' });
+    assert.ok(Date.now() - t0 < 3500, `did not wait for the slow model (${Date.now() - t0} ms)`);
+    assert.ok(bus.ofType('log.info').some((e) => /stopping the slower ones/.test(e.message ?? '')));
+    assert.equal(read(root, 'out.txt'), 'fast');
+    assert.ok(!report.subtasks[0].candidates.some((c) => c.status === 'done' && c.models.includes('slow@e')));
+  });
+
+  it('auto mode without build/test commands runs one candidate', async () => {
+    const brain: Brain = { plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] }, agent: (_id, step) => (step === 0 ? call('write_file', { path: 'out.txt', content: 'y' }) : undefined) };
+    const { run } = await setup(brain, { 'a.txt': 'x' }, { cfg: { orchestrator: { fastPath: false, maxIterations: 1 } } });
+    const report = await run('x');
+    assert.equal(report.mode, 'single');
+    assert.equal(report.subtasks[0].candidates.length, 1);
+  });
 });
