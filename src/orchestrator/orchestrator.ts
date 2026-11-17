@@ -15,9 +15,9 @@ import { errorMessage, settle } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
 import { crossTest } from './cross-test.js';
-import { localize } from './localize.js';
+import { localize, type Localization } from './localize.js';
 import { councilReview, type Candidate, type CouncilVerdict } from './council.js';
-import { makePlan, type Plan, type SubTask } from './planner.js';
+import { cleanTitle, consolidatePlan, filesOf, makePlan, type Plan, type SubTask } from './planner.js';
 import { renderVerify, verifyFailureText, verifyOverlay, type VerifyResult } from './verify.js';
 
 export interface RunOptions {
@@ -100,6 +100,17 @@ export interface SkillUsage {
   reason?: string;
 }
 
+/** Two review findings about the same problem (word overlap; reviewers rephrase). */
+export function sameFinding(a: string, b: string): boolean {
+  const words = (t: string) => new Set(t.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? []);
+  const x = words(a);
+  const y = words(b);
+  if (!x.size || !y.size) return a.trim() === b.trim();
+  let common = 0;
+  for (const w of x) if (y.has(w)) common++;
+  return common / Math.min(x.size, y.size) >= 0.6;
+}
+
 export interface SubtaskReport {
   subtask: SubTask;
   iteration: number;
@@ -111,6 +122,8 @@ export interface SubtaskReport {
   fixReviews?: Array<{ round: number; reviewers: string[]; blocking: number; independent: boolean }>;
   /** edit locations found by the localisation step */
   localized?: string[];
+  /** blocking review findings the fix rounds did not resolve */
+  openIssues?: string[];
   /** worker model switches (a model stopped answering) */
   failovers?: Array<{ worker: string; from: string; to: string; step: number; reason: string }>;
   status: 'done' | 'failed';
@@ -215,7 +228,15 @@ export class Orchestrator {
   private resolveMode(requested: RunMode, plan: Plan): RunMode {
     if (requested !== 'auto') return requested;
     if (this.router.size <= 1) return 'single';
-    return plan.subtasks.length === 1 ? 'race' : 'split';
+    if (plan.subtasks.length > 1) return 'split';
+    // several candidates only pay off when build/tests can tell them apart; without them one
+    // coder plus an independent reviewer gives the same quality for a fraction of the time
+    return this.hasChecks() ? 'race' : 'single';
+  }
+
+  /** Are there build or test commands that can tell candidates apart? */
+  private hasChecks(): boolean {
+    return !!(this.cfg.verify.build?.trim() || this.cfg.verify.test?.trim());
   }
 
   /** Coders for a race: distinct models first, then the best ones again (repeated sampling). */
@@ -230,7 +251,7 @@ export class Orchestrator {
   private widthFor(mode: RunMode, st: SubTask): number {
     const live = this.router.size;
     if (mode === 'race' || mode === 'council') return Math.max(1, this.cfg.orchestrator.repeatModels === false ? Math.min(this.cfg.orchestrator.raceWidth, live) : this.cfg.orchestrator.raceWidth);
-    if (mode === 'split') return st.critical ? Math.min(2, live) : 1;
+    if (mode === 'split') return st.critical && this.hasChecks() ? Math.min(2, live) : 1;
     return 1;
   }
 
@@ -421,8 +442,40 @@ export class Orchestrator {
     };
   }
 
+  /** localisation done while triaging the task, reused by the first subtask */
+  private preLocalized: { id: string; loc: Localization } | undefined;
+
+  /**
+   * Small task → no plan council. A short task whose localisation names one or two files
+   * goes straight to the coders as a single subtask (what single-agent tools like Qwen Code
+   * or Aider do). Saves the plan drafts and the plan judge: several minutes with reasoning models.
+   */
+  private async fastPlan(fullTask: string, opts: RunOptions, signal: AbortSignal | undefined): Promise<Plan | undefined> {
+    const o = this.cfg.orchestrator;
+    if (o.fastPath === false || opts.requirements || (opts.mode && opts.mode !== 'auto') || (!opts.mode && o.defaultMode !== 'auto')) return undefined;
+    if (fullTask.length > 1500 || !this.index) return undefined;
+    const title = cleanTitle(fullTask.split('\n').find((l) => l.trim()) ?? '').slice(0, 90) || 'Task';
+    let files: string[] = [];
+    if (this.index.files.length >= 8 && o.localize !== false) {
+      const coders = this.router.pick('coder', 1).map((h) => h.caps.key);
+      const loc = await localize(this.index, this.router, fullTask, { retrieved: await this.retrieve(fullTask, signal) }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' });
+      if (!loc || !loc.files.length || loc.files.length > 2) return undefined;
+      files = loc.files;
+      this.preLocalized = { id: 'T1', loc };
+    } else if (this.index.files.length >= 8) return undefined;
+    else files = [...filesOf({ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }, this.index.files.map((f) => f.path))].slice(0, 4);
+    this.bus.info('planner', `small task${files.length ? ` (${files.join(', ')})` : ''}: no plan council, straight to the coders`);
+    return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title, description: fullTask, files, dependsOn: [], critical: false }], authors: [] };
+  }
+
   /** Plan with the council of planners; with approvePlan the user may revise it before any code is written. */
   private async planWithApproval(fullTask: string, opts: RunOptions, signal: AbortSignal | undefined): Promise<{ plan: Plan; mode: RunMode } | undefined> {
+    const fast = opts.approvePlan ? undefined : await this.fastPlan(fullTask, opts, signal);
+    if (fast) {
+      const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, fast);
+      this.bus.emitEvent('run.plan', { data: { mode, subtasks: fast.subtasks.map((s) => s.title), acceptance: fast.acceptance, round: 1, fast: true } });
+      return { plan: fast, mode };
+    }
     let feedback = '';
     let prev: Plan | undefined;
     for (let round = 1; round <= 10; round++) {
@@ -440,6 +493,7 @@ export class Orchestrator {
         skillCatalogue: this.skills.catalogue(),
       });
       plan.authors.forEach((a) => this.used.add(a.replace(/ \(.*$/, '')));
+      consolidatePlan(plan, this.index?.files.map((f) => f.path) ?? [], this.bus);
       const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, plan);
       this.bus.emitEvent('run.plan', { data: { mode, subtasks: plan.subtasks.map((s) => s.title), acceptance: plan.acceptance, round } });
       if (!opts.approvePlan) return { plan, mode };
@@ -678,10 +732,13 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     const contexts = new Map<number, string>();
     const retrieved = await this.retrieve(`${st.title}\n${st.description}`, signal);
     // Agentless-style localisation: files → functions → their code, shared by all candidates
+    const pre = this.preLocalized?.id === st.id && iteration === 1 ? this.preLocalized.loc : undefined;
+    if (pre) this.preLocalized = undefined;
     const loc =
-      this.index && this.cfg.orchestrator.localize !== false && this.index.files.length >= 8
+      pre ??
+      (this.index && this.cfg.orchestrator.localize !== false && this.index.files.length >= 8
         ? await localize(this.index, this.router, `${st.title}\n${st.description}`, { files: st.files, retrieved }, { budgetTokens: this.contextBudget(0.15, models.map((m) => m.caps.key)), signal, bus: this.bus, source: st.id })
-        : undefined;
+        : undefined);
     const contextFor = (mk: string) => {
       const budget = this.contextBudget(0.3, [mk]);
       if (!contexts.has(budget)) contexts.set(budget, [this.buildContext(`${st.title}\n${st.description}`, [...new Set([...st.files, ...(loc?.files ?? [])])], budget, retrieved), loc?.context].filter(Boolean).join('\n\n'));
@@ -690,8 +747,33 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     const workerSkills = this.skillsFor(st, fullTask);
     const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed', ...(loc?.locations.length ? { localized: loc.locations.map((l) => (l.symbol === '(file)' ? l.path : `${l.path}:${l.symbol}`)) } : {}) };
 
-    const launch = (modelKeys: string[], suffix: string) =>
-      settle(
+    // candidates stopped because a faster one was done (not a failure of their model)
+    const stopped = new Set<string>();
+    /** verification already run while the race was on */
+    const early = new Map<string, VerifyResult>();
+    const launch = (modelKeys: string[], suffix: string) => {
+      // race: once one candidate is done, the others get a grace period, then they are stopped
+      const race = new AbortController();
+      const grace = this.cfg.orchestrator.raceGrace ?? 0.5;
+      const t0 = Date.now();
+      let timer: NodeJS.Timeout | undefined;
+      const workerSignal = modelKeys.length > 1 && grace > 0 ? anySignal(signal, race.signal) : signal;
+      const firstDone = async (overlay: Overlay) => {
+        if (timer || modelKeys.length < 2 || grace <= 0) return;
+        // with build/tests the grace period starts only for a candidate that passes them
+        if (this.hasChecks()) {
+          const v = await verifyOverlay(overlay, this.materializer, this.cfg, signal);
+          early.set(overlay.id, v);
+          if (!v.ok || timer) return;
+        }
+        const ms = Math.max((this.cfg.orchestrator.raceGraceMinSeconds ?? 90) * 1000, (Date.now() - t0) * grace);
+        timer = setTimeout(() => {
+          this.bus.info(st.id, `the other candidates had ${Math.round(ms / 1000)} s more; stopping the slower ones`);
+          race.abort(new Error('slower candidate stopped'));
+        }, ms);
+        timer.unref?.();
+      };
+      return settle(
         modelKeys.map(async (mk, i) => {
           const overlay = integration.fork(`${st.id}${suffix}-${i + 1}`);
           // a repeated model samples more freely so its candidates differ
@@ -700,15 +782,24 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
             { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined },
             this.router,
             this.cfg,
-            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external },
+            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal: workerSignal, external: this.external },
           );
-          const result = await w.run();
+          let result: WorkerResult;
+          try {
+            result = await w.run();
+          } catch (e) {
+            if (race.signal.aborted && !signal?.aborted) stopped.add(overlay.id);
+            throw e;
+          }
+          if (race.signal.aborted && !signal?.aborted && result.status !== 'done') stopped.add(overlay.id);
+          if (result.status === 'done' && overlay.ownChanges().length) await firstDone(overlay);
           result.models.forEach((m) => this.used.add(m));
           for (const f of result.failovers) (report.failovers ??= []).push({ worker: overlay.id, ...f });
           this.recordSkills(overlay.id, result, workerSkills.reasons);
           return { overlay, result } as Winner;
         }),
-      );
+      ).finally(() => clearTimeout(timer));
+    };
 
     let runs = (await launch(models.map((m) => m.caps.key), '')).filter((r): r is { ok: true; value: Winner } => r.ok).map((r) => r.value);
     let usable = runs.filter((r) => r.result.status !== 'failed' && r.overlay.ownChanges().length > 0);
@@ -724,7 +815,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       }
     }
     for (const r of runs) {
-      report.candidates.push({ worker: r.overlay.id, models: r.result.models, status: r.result.status, files: r.overlay.ownChanges().length, summary: r.result.summary.slice(0, 500) });
+      report.candidates.push({ worker: r.overlay.id, models: r.result.models, status: stopped.has(r.overlay.id) ? 'stopped (slower)' : r.result.status, files: r.overlay.ownChanges().length, summary: r.result.summary.slice(0, 500) });
     }
     if (!usable.length) {
       // a subtask may legitimately need no change (e.g. "verify X") – accept a clean 'done'
@@ -737,7 +828,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     // ---- verify every candidate (objective evidence)
     const verifies = new Map<string, VerifyResult>();
     for (const r of usable) {
-      const v = await verifyOverlay(r.overlay, this.materializer, this.cfg, signal);
+      const v = early.get(r.overlay.id) ?? (await verifyOverlay(r.overlay, this.materializer, this.cfg, signal));
       verifies.set(r.overlay.id, v);
       const c = report.candidates.find((x) => x.worker === r.overlay.id);
       if (c) c.verify = v.skipped ? 'none' : v.ok ? 'passed' : `failed (${v.score.toFixed(2)})`;
@@ -785,6 +876,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     if (winner.result.transcript?.length) this.winners.push({ subtask: st.id, worker: winner.overlay.id, model: winner.result.finalModel, verified: verifies.get(winner.overlay.id)?.ok === true && !verifies.get(winner.overlay.id)?.skipped, result: winner.result });
     // learn from the outcome: verified code (or, without tests, the council's pick) counts as a coder success
     for (const r of runs) {
+      if (stopped.has(r.overlay.id)) continue;
       const v = verifies.get(r.overlay.id);
       const ok = !!v && r.result.status !== 'failed' && (v.skipped ? r === winner : v.ok);
       for (const m of new Set([...r.result.models, ...r.result.failovers.map((f) => f.from)])) this.router.recordOutcome(m, 'coder', r.result.failovers.some((f) => f.from === m) ? false : ok);
@@ -794,6 +886,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     let wv = verifies.get(winner.overlay.id)!;
     let blocking = (verdict?.winnerIssues ?? []).filter((i) => i.blocking);
     for (let round = 1; round <= 2 && ((!wv.skipped && !wv.ok) || blocking.length); round++) {
+      const before = { blocking: blocking.map((b) => b.text), score: wv.skipped ? undefined : wv.score };
       const fixOverlay = winner.overlay.fork(`${winner.overlay.id}-fix${round}`);
       const problems = [
         !wv.skipped && !wv.ok ? `Verification failures:\n${verifyFailureText(wv)}` : '',
@@ -851,8 +944,17 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
           }
         }
       } else break;
+      // another round only when this one got somewhere: a fixer that ran out of steps, or a
+      // fix that left as many blocking findings / an equal test score, would just repeat itself
+      const repeated = blocking.length > 0 && blocking.every((b) => before.blocking.some((t) => sameFinding(t, b.text)));
+      const progressed = (!wv.skipped && !wv.ok ? before.score === undefined || wv.score > before.score : true) && !repeated;
+      if (fr.status === 'max_steps' || !progressed) {
+        if ((!wv.skipped && !wv.ok) || blocking.length) this.bus.warn(st.id, `fix round ${round} made no progress${fr.status === 'max_steps' ? ' (step limit)' : ''}; no further rounds – the open findings are in the report`);
+        break;
+      }
     }
 
+    if (blocking.length) report.openIssues = blocking.map((b) => b.text);
     const absorbed = integration.absorb(winner.overlay);
     if (absorbed.conflicts.length) this.bus.warn(st.id, `merge conflict: ${absorbed.conflicts.join(', ')} (conflict markers added)`);
     report.winner = { worker: winner.overlay.id, models: winner.result.models };
@@ -881,7 +983,7 @@ ${!verify.skipped && !verify.ok ? truncateTokens(verifyFailureText(verify), 1200
 
 # WORK LOG
 ${reports.map((r) => `- ${r.subtask.id} ${r.subtask.title}: ${r.status}`).join('\n')}
-
+${reports.some((r) => r.openIssues?.length) ? `\n# OPEN REVIEW FINDINGS (blocking, not fixed – check whether the diff still has them)\n${reports.flatMap((r) => (r.openIssues ?? []).map((t) => `- ${r.subtask.id}: ${truncateTokens(t, 120)}`)).join('\n')}\n` : ''}
 # COMBINED DIFF
 \`\`\`diff
 ${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}

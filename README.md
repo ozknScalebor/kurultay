@@ -124,6 +124,21 @@ Each measure below comes from an open-source project that measured it; none of t
 | **Failure counters** | Failed edits, replies without a tool call and loop-guard stops are counted per model (`/stats` "Problems", REPORT.md) – this shows which model fights the tool interface | aider's "well-formed edits" metric |
 | **Fine-tuning data** | Every verified task saves the winning conversation (`sessions/<id>/trajectories.jsonl`, OpenAI chat format with tools); `kurultay trajectories` collects them into one file for LoRA training with LLaMA-Factory, axolotl or Unsloth (`orchestrator.saveTrajectories: false`) | SWE-Gym: 491 trajectories took Qwen2.5-Coder-32B from 7.0% to 20.6%; SWE-smith: SWE-agent-LM-32B 40.2% |
 
+
+### Speed: no ceremony for small tasks
+
+A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurultay keeps the council for work where it pays off and skips it where it does not:
+
+| Rule | What happens | Setting |
+|---|---|---|
+| **Fast path** | A short task whose localisation names one or two files skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval) | `orchestrator.fastPath` |
+| **Race only with checks** | Several candidates only help when build/tests can tell them apart. Without build/test commands auto mode runs one coder plus an independent reviewer | `verify.build`, `verify.test` |
+| **Small plans** | Test-only and check-only subtasks ("verify…", "edge cases…") are folded into the subtask whose code they test; subtasks that edit the same file run one after the other instead of in parallel | – |
+| **Fix rounds with progress only** | A second fix round runs only if the first one resolved something: a fixer that hit its step limit, or a re-review with the same blocking findings, ends the loop. Open findings go to the requirement check | – |
+| **Race deadline** | Once one candidate is done (and passes build/tests, if there are any), the others get half of that time, at least 90 s; slower ones are stopped and not counted as failures | `orchestrator.raceGrace`, `raceGraceMinSeconds` |
+| **No hidden thinking for short JSON** | Plans, localisation and summaries ask reasoning models to answer without thinking (`chat_template_kwargs.enable_thinking: false` for Qwen3/GLM templates in vLLM, SGLang and llama.cpp; `reasoning_effort: low` for gpt-oss). Coding, reviews and the requirement check keep thinking. A server that rejects the field is asked again without it | `llm.quickStructured`, `"thinking": true` per model |
+| **Helpers stay helpers** | A `rolesOnly` helper is never picked as a reviewer just because the real models wrote the code under review | – |
+
 ---
 
 ## Installation (air-gapped)
@@ -157,7 +172,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.7.0 · all your local LLMs in one council · offline
+ v0.8.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint

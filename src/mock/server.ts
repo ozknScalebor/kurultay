@@ -30,6 +30,8 @@ export interface MockModel {
   editStyle?: 'any' | 'whole-only';
   /** reject non-OpenAI sampling fields (top_k, min_p…) with HTTP 400, like strict OpenAI-compatible proxies */
   rejectSampling?: boolean;
+  /** reject chat_template_kwargs (servers without that extension) */
+  rejectTemplateKwargs?: boolean;
   /** like Ollama's /v1 endpoint: silently drop the start of a prompt longer than ctx instead of failing */
   truncateCtx?: boolean;
   /** an embedding model: served on POST /embeddings (deterministic vectors), not a chat model */
@@ -354,6 +356,10 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     }
     if (model.rejectSampling && ('top_k' in body || 'min_p' in body)) {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Unrecognized request argument supplied: top_k' } }));
+      return;
+    }
+    if (model.rejectTemplateKwargs && 'chat_template_kwargs' in body) {
+      res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Extra inputs are not permitted: chat_template_kwargs' } }));
       return;
     }
     if (model.rejectSchema && (body as { response_format?: { type?: string } }).response_format?.type === 'json_schema') {

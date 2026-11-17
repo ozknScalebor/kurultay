@@ -81,6 +81,12 @@ export interface LlmConfig {
   stickyFailover: boolean;
   /** apply the publishers' recommended sampling settings to known model families (default true) */
   samplingPresets: boolean;
+  /**
+   * Switch a reasoning model's hidden thinking off for short structured answers (plans,
+   * localisation, summaries) – they then come back in seconds instead of minutes. Coding,
+   * reviews and the requirement check keep thinking. Default true.
+   */
+  quickStructured?: boolean;
 }
 
 export interface VerifyConfig {
@@ -108,6 +114,18 @@ export interface OrchestratorConfig {
   localize?: boolean;
   /** save the winning, verified conversations as fine-tuning data (sessions/<id>/trajectories.jsonl; default true) */
   saveTrajectories?: boolean;
+  /**
+   * Small tasks (short description, 1–2 files to change) skip the plan council and go
+   * straight to the coders (default true; only in auto mode without plan approval).
+   */
+  fastPath?: boolean;
+  /**
+   * In a race, once one candidate is done the others get this share of the time it took
+   * (at least 90 s) to finish; slower ones are stopped. 0 = wait for all (default 0.5).
+   */
+  raceGrace?: number;
+  /** the grace period is never shorter than this (default 90 s) */
+  raceGraceMinSeconds?: number;
   /** how many reviewers in council */
   councilSize: number;
   /** plan → execute → verify → requirement-check loops */

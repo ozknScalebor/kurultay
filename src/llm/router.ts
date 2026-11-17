@@ -22,6 +22,9 @@ interface Health {
   lastError?: string;
 }
 
+/** Short structured answers that do not need hidden reasoning (see Router.quickThinking). */
+const QUICK_PURPOSE = /^(plan\.(draft|judge)|localize\.|summary\.|analyze\.|condense$|ask\.chair$|toolshim$)/;
+
 export interface ModelHandle {
   caps: ModelCapabilities;
   client: OpenAICompatClient;
@@ -37,6 +40,8 @@ export interface ModelHandle {
    * this multiple of the requested max_tokens instead of being cut and asked again.
    */
   outputBoost?: number;
+  /** the server rejected chat_template_kwargs / reasoning_effort */
+  thinkOffRejected?: boolean;
 }
 
 export interface RouteOptions {
@@ -237,7 +242,11 @@ export class Router {
     // rolesOnly models (helpers) only do their own roles – unless nothing else is left
     if (!role) return list;
     const allowed = list.filter((h) => this.allows(h, role));
-    return allowed.length ? allowed : list;
+    if (allowed.length) return allowed;
+    // the proper models were excluded on purpose (e.g. the authors of the code under review):
+    // a helper must not step in for them
+    if (opts.exclude?.length && this.list().some((h) => opts.exclude!.includes(h.caps.key) && this.allows(h, role))) return [];
+    return list;
   }
 
   /** May this model take work of this role? (rolesOnly restricts it to its pinned roles) */
@@ -280,8 +289,26 @@ export class Router {
     const p = h.preset;
     const usePreset = !!p && !!req.agentic;
     const temperature = h.override.temperature ?? (usePreset && p!.temperature !== undefined ? p!.temperature : req.temperature);
-    const body = usePreset && !h.presetRejected ? presetBody(p!) : undefined;
-    return { temperature, body: body && Object.keys(body).length ? body : undefined, noThink: !!p?.hybridThinking && h.override.thinking !== true };
+    let body = usePreset && !h.presetRejected ? presetBody(p!) : undefined;
+    const quick = this.quickThinking(h, req);
+    if (quick) body = { ...body, ...quick };
+    return { temperature, body: body && Object.keys(body).length ? body : undefined, noThink: (!!p?.hybridThinking && h.override.thinking !== true) || (!!quick && !!p?.hybridThinking) };
+  }
+
+  /**
+   * Request fields that switch hidden reasoning off for a short structured answer.
+   * `chat_template_kwargs.enable_thinking` is read by the Qwen3 / GLM chat templates in
+   * vLLM, SGLang and llama.cpp (llama-server); `reasoning_effort` by gpt-oss. Servers or
+   * templates that do not know them ignore them; a server that rejects them is
+   * remembered and asked without them.
+   */
+  quickThinking(h: ModelHandle, req: ChatRequest): Record<string, unknown> | undefined {
+    if (req.agentic || h.thinkOffRejected || h.override.thinking === true || this.llm.quickStructured === false) return undefined;
+    if (!QUICK_PURPOSE.test(req.purpose ?? '')) return undefined;
+    const id = h.caps.model.toLowerCase();
+    if (/gpt-?oss/.test(id)) return { reasoning_effort: 'low' };
+    if (!h.caps.thinking && !/qwen-?3|qwq|glm-?4\.[5-9]|deepseek-?(r1|v3\.[1-9])|thinking|reason/.test(id)) return undefined;
+    return { chat_template_kwargs: { enable_thinking: false } };
   }
 
   /** Timeouts for one model: model override > endpoint > llm defaults; first-token grows with the prompt. */
@@ -433,6 +460,13 @@ export class Router {
         if (err.kind === 'bad_request' && h.preset && !h.presetRejected && req.agentic && /top_k|top_p|min_p|repetition|repeat_penalty|unrecognized|unknown|extra/i.test(err.message)) {
           h.presetRejected = true;
           this.bus?.info('router', `${h.caps.key} rejects extra sampling fields; using the server defaults`);
+          attempt--;
+          continue;
+        }
+        // server rejected the switch that turns thinking off → remember and retry with thinking
+        if (err.kind === 'bad_request' && !h.thinkOffRejected && this.quickThinking(h, req) && /chat_template_kwargs|enable_thinking|reasoning_effort|unrecognized|unknown|extra/i.test(err.message)) {
+          h.thinkOffRejected = true;
+          this.bus?.info('router', `${h.caps.key} rejects chat_template_kwargs; structured answers keep thinking`);
           attempt--;
           continue;
         }
