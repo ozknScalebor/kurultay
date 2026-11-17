@@ -1,0 +1,101 @@
+name: swebench
+
+# Grades predictions produced offline (kurultay swebench run / collect) with the official
+# SWE-bench harness, commits the results next to them and adds the table to the latest release.
+on:
+  push:
+    branches: [main]
+    paths: ['benchmarks/swebench/**/predictions-*.jsonl']
+  workflow_dispatch:
+    inputs:
+      run:
+        description: 'benchmark folder under benchmarks/swebench (empty: smoke test with the reference patches)'
+        required: false
+        default: ''
+      instances:
+        description: 'smoke test: instance ids (space separated)'
+        required: false
+        default: 'astropy__astropy-12907 django__django-11099'
+
+concurrency:
+  group: swebench
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 2 }
+      - name: Make room for the Docker images
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af >/dev/null
+          df -h /
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.11' }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - name: Install the SWE-bench harness
+        run: pip install --quiet swebench && pip show swebench | head -2
+      - name: Which runs
+        id: runs
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "list=${{ inputs.run }}" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only HEAD~1 HEAD -- 'benchmarks/swebench/**/predictions-*.jsonl' | cut -d/ -f3 | sort -u | tr '\n' ' ' > runs.txt
+            echo "list=$(cat runs.txt)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Smoke test with the reference patches
+        if: steps.runs.outputs.list == ''
+        run: |
+          python -m swebench.harness.run_evaluation --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path gold \
+            --instance_ids ${{ inputs.instances }} --max_workers 2 --run_id gold --cache_level base --clean True
+          cat logs/evaluation/gold/results.json | head -40 >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Grade
+        if: steps.runs.outputs.list != ''
+        run: |
+          for run in ${{ steps.runs.outputs.list }}; do
+            dir="benchmarks/swebench/$run"
+            dataset=$(node -e "const f='$dir/meta.json';const fs=require('fs');console.log(fs.existsSync(f)&&JSON.parse(fs.readFileSync(f,'utf8')).dataset||'princeton-nlp/SWE-bench_Verified')")
+            for preds in "$dir"/predictions-*.jsonl; do
+              agent=$(basename "$preds" .jsonl); agent=${agent#predictions-}
+              id="$run-$agent"
+              echo "::group::$id ($dataset)"
+              python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" \
+                --max_workers 2 --run_id "$id" --cache_level base --clean True --timeout 1800 || echo "::warning::harness exited with an error for $id"
+              cp "logs/evaluation/$id/results.json" "$dir/results-$agent.json" || echo "::warning::no results for $id"
+              docker system prune -af >/dev/null
+              echo "::endgroup::"
+            done
+            node scripts/swebench-summary.mjs "$dir" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swebench-logs
+          path: logs/
+          if-no-files-found: ignore
+      - name: Commit the results and add them to the latest release
+        if: steps.runs.outputs.list != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/swebench
+          git commit -m "chore(bench): SWE-bench results for ${{ steps.runs.outputs.list }}" || exit 0
+          git pull --rebase --quiet && git push
+          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
+          [ -n "$tag" ] || exit 0
+          gh release view "$tag" --json body --jq .body > notes.md
+          for run in ${{ steps.runs.outputs.list }}; do
+            node scripts/swebench-summary.mjs --merge-notes notes.md "benchmarks/swebench/$run"
+          done
+          gh release edit "$tag" --notes-file notes.md
