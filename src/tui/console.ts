@@ -17,7 +17,8 @@ import type { Plan } from '../orchestrator/planner.js';
 import { unprofiledModels, writeCapabilities } from '../probe/probe.js';
 import { loadProfile, profilePath, runProbe } from '../probe/profile.js';
 import { SkillRegistry } from '../skills/skills.js';
-import { attachTerminal, color, fmtSeconds } from '../ui/terminal.js';
+import { attachTerminal, color, fmtSeconds, section } from '../ui/terminal.js';
+import { ActivityTracker } from './activity.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus } from '../util/events.js';
 import { truncateTokens, plural } from '../util/text.js';
@@ -223,6 +224,7 @@ export class KurultayConsole {
 
   shutdown(): void {
     this.mcp?.close();
+    this.tracker?.dispose();
     void closeLspServers();
     this.detachLog?.();
     this.dashboard?.close();
@@ -235,7 +237,7 @@ export class KurultayConsole {
     while (!this.exitRequested) {
       const name = basename(this.workspace ?? '') || 'kurultay';
       const flags = [this.settings.mode ?? '', this.settings.dryRun ? 'dry-run' : ''].filter(Boolean).join(' ');
-      const line = await this.screen.readLine(`${color.cyan(name)}${flags ? color.dim(` [${flags}]`) : ''} ${color.bold('❯')} `, (t, c) => this.complete(t, c), () => this.footer());
+      const line = await this.screen.readLine(`${color.cyan(name)}${flags ? color.dim(` [${flags}]`) : ''} ${color.bold('❯')} `, (t, c) => this.complete(t, c), () => this.footer(), { rule: true });
       if (line === null) break;
       await this.handle(line);
       this.state.history = this.screen.history;
@@ -456,7 +458,7 @@ export class KurultayConsole {
     this.configPath = this.app.configPath;
     this.router = this.app.router;
     this.probed = this.app.probed;
-    this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l) });
+    this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l), width: () => this.screen.columns });
     if (!o.keepConversation) {
       this.askHistory = [];
       this.conversation = undefined;
@@ -527,7 +529,14 @@ export class KurultayConsole {
     const release = this.screen.busy(stop);
     const mark = this.usage.begin();
     this.lastOp = mark;
-    const endActivity = this.screen.activity(label, () => [this.activityNote, this.usage.activityText(mark)].filter(Boolean).join(' · '));
+    this.tracker ??= new ActivityTracker(this.bus);
+    this.tracker.reset();
+    const tracker = this.tracker;
+    const endActivity = this.screen.activity(
+      label,
+      () => [this.activityNote, this.usage.activityText(mark)].filter(Boolean).join(' · '),
+      () => tracker.lines(this.screen.columns - 1),
+    );
     // in line mode (no raw terminal) Ctrl+C arrives as SIGINT
     if (!this.screen.interactive) process.once('SIGINT', stop);
     try {
@@ -580,6 +589,8 @@ export class KurultayConsole {
 
   /** shown in the spinner line next to the elapsed time (e.g. the current probe step) */
   activityNote = '';
+  /** what each model is doing right now (the rows under the spinner) */
+  tracker: ActivityTracker | undefined;
 
   /** Embedding vectors for semantic search (incremental); quiet = only report problems / new vectors. */
   async semantic(quiet: boolean): Promise<void> {
@@ -638,14 +649,17 @@ export class KurultayConsole {
       mode: this.settings.mode,
       skills: this.settings.skills.length ? this.settings.skills : undefined,
       dryRun: this.settings.dryRun,
-      confirm: (q: string) => this.screen.confirm(q),
+      confirm: (q: string) => {
+        this.out(section('Apply', 'nothing has been written to the project yet – answer y to apply the changes (/diff shows them afterwards, /rewind undoes them)', this.screen.columns));
+        return this.screen.confirm(q);
+      },
       approvePlan: this.settings.planApproval || app.config.orchestrator.approvePlan ? (plan: Plan, info: { mode: RunMode; round: number }) => this.approvePlan(plan, info) : undefined,
     };
     const report = await this.withAbort('Task', (signal) => (resumeId ? orch.resume(resumeId === true ? undefined : resumeId, { ...opts, signal }) : orch.run(text, { ...opts, signal })));
     if (!report) return;
     this.lastReport = report;
     const st = report.status === 'completed' ? color.green(report.status) : color.yellow(report.status);
-    this.out('');
+    this.out(section('Summary', undefined, this.screen.columns));
     this.out(`${color.bold('Result')}: ${st} · ${report.changedFiles.length} file${report.changedFiles.length === 1 ? '' : 's'} · ${report.iterations} iteration${report.iterations === 1 ? '' : 's'} · models: ${report.modelsUsed.join(', ')}`);
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
     if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} more files`));

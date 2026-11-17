@@ -257,6 +257,7 @@ export class Orchestrator {
     this.begin(sessionId, opts, task);
     const fullTask = opts.requirements ? `${task}\n\n# REQUIREMENTS DOCUMENT\n${opts.requirements}` : task;
     this.bus.emitEvent('run.start', { message: task, data: { sessionId, models: this.router.size } });
+    this.warnUnverified();
     const meter = this.startMeter(emptyUsage(), opts);
     try {
       const signal = anySignal(opts.signal, meter.signal);
@@ -314,6 +315,7 @@ export class Orchestrator {
     const left = st.inProgress ? st.queue.filter((t) => !st.doneIds.includes(t.id)).length : st.queue.length;
     this.bus.info('orchestrator', `continuing ${id}: iteration ${st.iteration}, ${plural(left, 'subtask')} left`);
     this.bus.emitEvent('run.start', { message: st.task, data: { sessionId: id, models: this.router.size, resumed: true } });
+    this.warnUnverified();
     const meter = this.startMeter(st.usage ?? emptyUsage(), opts);
     try {
       return await this.drive(st, { ...opts, dryRun: opts.dryRun ?? st.options.dryRun }, meter, true);
@@ -340,6 +342,25 @@ export class Orchestrator {
   }
 
   private stopReason: string | undefined;
+  /** time spent waiting for the user (plan approval, apply confirmation): not part of the run time */
+  private waitedMs = 0;
+
+  private async waitForUser<T>(fn: () => Promise<T>): Promise<T> {
+    const t = Date.now();
+    try {
+      return await fn();
+    } finally {
+      this.waitedMs += Date.now() - t;
+    }
+  }
+
+  /** Without build/test commands nothing is compiled or tested – say so before the work starts. */
+  private warnUnverified(): void {
+    const v = this.cfg.verify;
+    if (!v.build?.trim() && !v.test?.trim()) {
+      this.bus.warn('verify', 'no build/test commands: the code will not be compiled or tested (kurultay init, or "verify" in kurultay.config.json)');
+    }
+  }
   /** winning workers of this run – exported as fine-tuning data when the run is verified */
   private readonly winners: Array<{ subtask: string; worker: string; model: string; verified: boolean; result: WorkerResult }> = [];
 
@@ -350,9 +371,10 @@ export class Orchestrator {
     const ctrl = new AbortController();
     const base = usage.seconds;
     const t0 = Date.now();
+    const w0 = this.waitedMs;
     const model = (k: string) => (usage.byModel[k] ??= { requests: 0, tokensIn: 0, tokensOut: 0, ms: 0, errors: 0, truncated: 0 });
     const check = () => {
-      usage.seconds = Math.round((base + (Date.now() - t0) / 1000) * 10) / 10;
+      usage.seconds = Math.round((base + (Date.now() - t0 - (this.waitedMs - w0)) / 1000) * 10) / 10;
       if (this.stopReason) return;
       const used = usage.tokensIn + usage.tokensOut;
       if (tokens > 0 && used >= tokens) this.stopReason = `token budget used up (${used} / ${tokens})`;
@@ -394,7 +416,7 @@ export class Orchestrator {
       dispose: () => {
         if (timer) clearInterval(timer);
         this.bus.off('event', onEvent);
-        usage.seconds = Math.round((base + (Date.now() - t0) / 1000) * 10) / 10;
+        usage.seconds = Math.round((base + (Date.now() - t0 - (this.waitedMs - w0)) / 1000) * 10) / 10;
       },
     };
   }
@@ -421,7 +443,8 @@ export class Orchestrator {
       const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, plan);
       this.bus.emitEvent('run.plan', { data: { mode, subtasks: plan.subtasks.map((s) => s.title), acceptance: plan.acceptance, round } });
       if (!opts.approvePlan) return { plan, mode };
-      const answer = await opts.approvePlan(plan, { mode, round });
+      const approve = opts.approvePlan;
+      const answer = await this.waitForUser(() => approve(plan, { mode, round }));
       if (answer === false) {
         this.bus.info('orchestrator', 'plan rejected; task cancelled');
         return undefined;
@@ -521,7 +544,8 @@ export class Orchestrator {
       let go = true;
       if (this.cfg.orchestrator.confirmMerge && opts.confirm) {
         const ds = diffStat(diff);
-        go = await opts.confirm(`${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}, +${ds.added}/-${ds.removed} lines. Apply to the project?`);
+        const confirm = opts.confirm;
+        go = await this.waitForUser(() => confirm(`${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}, +${ds.added}/-${ds.removed} lines. Apply to the project?`));
       }
       if (go) {
         // everything applied is recorded so it can be rewound later (/rewind, kurultay rewind)
@@ -531,7 +555,7 @@ export class Orchestrator {
           checkpointPath = join(this.sessionDir, 'checkpoint.json');
           recorder.save(checkpointPath, `${st.sessionId}: ${st.task.split('\n')[0].slice(0, 120)}`);
         }
-        this.bus.emitEvent('run.merge', { data: { ...merge } });
+        this.bus.emitEvent('run.merge', { data: { ...merge, root: this.root } });
       } else status = 'dry-run';
     }
     if (!(forced === 'incomplete' && st.phase === 'stopped')) st.phase = 'finished';

@@ -23,9 +23,9 @@ function time(ts: number): string {
  *
  * Tool calls, shell commands, individual LLM requests and timestamps only appear with --verbose.
  */
-export function attachTerminal(bus: EventBus, opts: { verbose?: boolean; write?: (line: string) => void } = {}): () => void {
+export function attachTerminal(bus: EventBus, opts: { verbose?: boolean; write?: (line: string) => void; width?: () => number } = {}): () => void {
   const write = opts.write ?? ((line: string) => process.stderr.write(forTerminal(line) + '\n'));
-  const state = { lastProgress: -1 };
+  const state: FormatState = { lastProgress: -1, width: opts.width ?? (() => process.stderr.columns || 100) };
   const handler = (e: KEvent) => {
     const line = format(e, !!opts.verbose, state);
     if (line === undefined) return;
@@ -37,15 +37,59 @@ export function attachTerminal(bus: EventBus, opts: { verbose?: boolean; write?:
 
 const list = (v: unknown): string[] => (Array.isArray(v) ? (v as unknown[]).map(String) : []);
 
-function format(e: KEvent, verbose: boolean, state: { lastProgress: number }): string | undefined {
+interface FormatState {
+  lastProgress: number;
+  width: () => number;
+}
+
+/**
+ * A phase heading: a blank line, then "── Planning ───────…" across the terminal and a dim
+ * line explaining what happens in this phase.
+ */
+export function section(title: string, note: string | undefined, width: number): string {
+  const w = Math.max(30, Math.min(width, 120) - 1);
+  const head = `── ${title} `;
+  return `\n${color.bold(head)}${color.dim('─'.repeat(Math.max(3, w - head.length)))}${note ? `\n${color.dim(note)}` : ''}`;
+}
+
+const MODE_NOTE: Record<string, string> = {
+  single: 'one model codes the task, another reviews it',
+  split: 'the task is split into subtasks; independent subtasks run in parallel',
+  race: 'several models solve the same task in separate sandboxes; tests and reviewers pick the best',
+  council: 'several candidates per subtask, ranked by a council of reviewers',
+};
+
+/** "src/a/Foo.java:Foo, bar" → "Foo.java (Foo, bar)" for the localisation line. */
+function shortLocations(message: string): string {
+  return message
+    .replace(/^localised:\s*/, '')
+    .split(/,\s*(?=[\w./\\-]+\.[A-Za-z0-9]+(?::|,|$))/)
+    .map((part) => {
+      const [path, ...names] = part.split(':');
+      const file = path.split(/[\\/]/).pop() ?? path;
+      const n = names.join(':').trim();
+      return n ? `${file} (${n})` : file;
+    })
+    .join(' · ');
+}
+
+function format(e: KEvent, verbose: boolean, state: FormatState): string | undefined {
   const d = e.data ?? {};
   const src = e.source ? color.dim(`${e.source}: `) : '';
   switch (e.type) {
     // ---- messages from components
     case 'log.debug':
       return verbose ? `  ${src}${color.dim(e.message ?? '')}` : undefined;
-    case 'log.info':
-      return `  ${src}${e.message ?? ''}`;
+    case 'log.info': {
+      const m = e.message ?? '';
+      if (!verbose && /^T\d+$/.test(e.source ?? '') && m.startsWith('localised:')) return `  ${color.cyan('⌖')} ${e.source} code to change: ${shortLocations(m)}`;
+      if (!verbose && e.source === 'council') {
+        const r = /^(\d+) candidates?, (\d+) reviewers?: (.*)$/.exec(m);
+        if (r) return `    ${color.cyan('⚖')} review: ${r[1] === '1' ? '1 candidate' : `${r[1]} candidates`} · reviewers: ${r[3]}`;
+      }
+      if (!verbose && e.source === 'planner' && m.startsWith('plan drafts:')) return `  ${color.dim('plan drafts by')} ${m.slice(12).trim()}`;
+      return `  ${src}${m}`;
+    }
     case 'log.warn':
       return `  ${color.yellow(`⚠ ${e.source ? `${e.source}: ` : ''}${e.message ?? ''}`)}`;
     case 'log.error':
@@ -57,7 +101,10 @@ function format(e: KEvent, verbose: boolean, state: { lastProgress: number }): s
     case 'llm.response':
       return verbose ? `  ${src}${color.dim(`← ${d.purpose ?? ''} ${d.ms} ms, ${d.in} in / ${d.out} out tokens`)}` : undefined;
     case 'llm.error':
-      return verbose ? `  ${src}${color.yellow(`LLM error [${d.kind}] ${e.message?.slice(0, 200) ?? ''}`)}` : `  ${color.yellow(`⚠ ${e.source ?? 'model'}: ${d.kind === 'timeout' ? 'no answer (timeout)' : `request failed (${String(d.kind)})`}`)}`;
+      if (verbose) return `  ${src}${color.yellow(`LLM error [${d.kind}] ${e.message?.slice(0, 200) ?? ''}`)}`;
+      // a request that is retried is not a failure yet – keep it quiet
+      if (d.retry) return `  ${color.dim(`↻ ${e.source ?? 'model'}: ${d.kind === 'timeout' ? 'no answer (timeout)' : /ECONNRESET|socket|closed/i.test(e.message ?? '') ? 'connection dropped' : `request failed (${String(d.kind)})`}, retrying`)}`;
+      return `  ${color.yellow(`⚠ ${e.source ?? 'model'}: ${d.kind === 'timeout' ? 'no answer (timeout)' : `request failed (${String(d.kind)})`}`)}`;
     case 'model.quarantine':
       return `  ${color.yellow(`⚠ ${e.source}: paused for ${Math.round(Number(d.ms) / 1000)} s after a timeout`)}`;
 
@@ -69,7 +116,7 @@ function format(e: KEvent, verbose: boolean, state: { lastProgress: number }): s
 
     // ---- analysis
     case 'analyze.start':
-      return `\n${color.bold('Analysis')} – ${e.message}`;
+      return section('Analysis', `${e.message ?? ''} – file summaries, module overviews and the architecture document`, state.width());
     case 'analyze.progress': {
       if (d.phase !== 'files') return verbose ? `  ${color.dim(`module: ${d.module}`)}` : undefined;
       const pct = Math.floor((Number(d.done) / Math.max(1, Number(d.total))) * 10);
@@ -80,17 +127,26 @@ function format(e: KEvent, verbose: boolean, state: { lastProgress: number }): s
 
     // ---- task run
     case 'run.start':
-      return `\n${color.bold('Kurultay')} – ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}\n${color.dim('Planning…')}`;
+      return `${color.dim(`  ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}`)}${section('Planning', 'the planner models draft plans independently; the best draft becomes the plan', state.width())}`;
     case 'run.plan': {
       const subtasks = list(d.subtasks);
-      return `\n${color.bold(`Plan (${d.mode})`)} – ${subtasks.length} subtask${subtasks.length === 1 ? '' : 's'}\n${subtasks.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`;
+      const mode = String(d.mode ?? '');
+      return `${section(`Plan · ${mode} · ${subtasks.length} subtask${subtasks.length === 1 ? '' : 's'}`, MODE_NOTE[mode], state.width())}\n${subtasks.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`;
     }
     case 'run.replan':
       return `\n${color.dim(`Revising the plan with your feedback…`)}`;
     case 'run.iteration':
-      return Number(d.iteration) > 1 ? `\n${color.bold(`Iteration ${d.iteration}`)} – ${d.subtasks} follow-up subtask${Number(d.subtasks) === 1 ? '' : 's'}` : undefined;
-    case 'subtask.start':
-      return `\n${color.bold(`▸ ${e.source}`)}  ${d.title}  ${color.dim(`[${list(d.models).join(', ')}]`)}`;
+      return Number(d.iteration) > 1
+        ? section(`Iteration ${d.iteration}`, `${d.subtasks} follow-up subtask${Number(d.subtasks) === 1 ? '' : 's'} for what the checks found missing`, state.width())
+        : section('Coding', 'each model works in its own sandbox copy; the project is only changed at the end, after you confirm', state.width());
+    case 'subtask.start': {
+      const models = list(d.models);
+      const counted = [...new Set(models)].map((m) => {
+        const n = models.filter((x) => x === m).length;
+        return n > 1 ? `${m} ×${n}` : m;
+      });
+      return `\n${color.bold(`▸ ${e.source}  ${d.title}`)}\n  ${color.dim(`${models.length > 1 ? `${models.length} candidates` : 'coder'}: ${counted.join(', ')}`)}`;
+    }
     case 'worker.start':
       return verbose ? `    ${src}started on ${d.model}` : undefined;
     case 'worker.tool':
@@ -107,13 +163,15 @@ function format(e: KEvent, verbose: boolean, state: { lastProgress: number }): s
     case 'subtask.winner':
       return `    ${color.green('→')} chosen: ${d.worker} ${color.dim(`(${list(d.models).join(', ')})`)}`;
     case 'run.verify':
-      return `\n${color.bold('Verification')}: ${d.skipped ? color.dim('no build/test commands configured') : d.ok ? color.green('passed') : color.red('failed')}`;
+      return `${section('Checks', 'build and tests on the combined result, then judges compare it with the task', state.width())}\n  ${d.skipped ? color.yellow('⚠ verification: no build/test commands configured – the code was not compiled or tested (kurultay init)') : d.ok ? `${color.green('✓')} verification: build and tests passed` : `${color.red('✗')} verification: failed`}`;
     case 'run.requirements': {
       const r = d as { complete?: boolean; missing?: string[] };
-      return `${color.bold('Requirement check')}: ${r.complete ? color.green('complete') : color.yellow(`missing:\n${(r.missing ?? []).map((m) => `  - ${m}`).join('\n')}`)}`;
+      return `  ${r.complete ? `${color.green('✓')} requirement check: complete` : color.yellow(`⚠ requirement check – missing:\n${(r.missing ?? []).map((m) => `    - ${m}`).join('\n')}`)}`;
     }
-    case 'run.merge':
-      return `${color.bold('Applied to the project')}: ${list(d.written).length} file${list(d.written).length === 1 ? '' : 's'} written${list(d.conflicts).length ? color.yellow(`, ${list(d.conflicts).length} conflicts`) : ''}`;
+    case 'run.merge': {
+      const written = list(d.written);
+      return `\n${color.bold('Applied to the project')}${d.root ? color.dim(` (${d.root})`) : ''}: ${written.length} file${written.length === 1 ? '' : 's'} written${list(d.conflicts).length ? color.yellow(`, ${list(d.conflicts).length} conflicts`) : ''}`;
+    }
     default:
       return undefined;
   }

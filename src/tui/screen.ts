@@ -35,7 +35,9 @@ export class Screen {
   private footer: (() => string) | undefined;
   private showFooter = true;
   /** long-running operation indicator */
-  private activityState: { label: string; info?: () => string; started: number; frame: number; timer: NodeJS.Timeout; drawn: boolean } | undefined;
+  private activityState: { label: string; info?: () => string; details?: () => string[]; started: number; frame: number; timer: NodeJS.Timeout; drawn: number } | undefined;
+  /** draw a full-width rule above the prompt (separates the output from the input) */
+  private rule = false;
 
   constructor(
     private readonly io: TermIO,
@@ -84,9 +86,10 @@ export class Screen {
 
   /**
    * Show a spinner line ("⠹ Task · 12s · 3 LLM requests running") until the returned
-   * function is called. Log lines printed meanwhile appear above it.
+   * function is called, optionally followed by detail rows (what each model is doing).
+   * Log lines printed meanwhile appear above it.
    */
-  activity(label: string, info?: () => string): () => void {
+  activity(label: string, info?: () => string, details?: () => string[]): () => void {
     if (!this.interactive) return () => undefined;
     this.endActivity();
     const timer = setInterval(() => {
@@ -96,7 +99,7 @@ export class Screen {
       this.drawActivity();
     }, 120);
     timer.unref?.();
-    this.activityState = { label, info, started: Date.now(), frame: 0, timer, drawn: false };
+    this.activityState = { label, info, details, started: Date.now(), frame: 0, timer, drawn: 0 };
     this.drawActivity();
     return () => this.endActivity();
   }
@@ -109,9 +112,10 @@ export class Screen {
   }
 
   private clearActivity(): void {
-    if (this.activityState?.drawn) {
-      this.write('\r\x1b[2K');
-      this.activityState.drawn = false;
+    const a = this.activityState;
+    if (a?.drawn) {
+      this.write(`\r${a.drawn > 1 ? `\x1b[${a.drawn - 1}A` : ''}\x1b[J`);
+      a.drawn = 0;
     }
   }
 
@@ -121,14 +125,19 @@ export class Screen {
     const secs = Math.floor((Date.now() - a.started) / 1000);
     const extra = a.info?.() ?? '';
     const line = `${SPINNER[a.frame % SPINNER.length]} ${a.label} · ${secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`}${extra ? ` · ${extra}` : ''} · Ctrl+C to cancel`;
-    this.write(`\x1b[36m${fitWidth(line, this.columns - 1)}\x1b[39m`);
-    a.drawn = true;
+    // keep the block small enough to redraw without scrolling the terminal
+    const maxRows = Math.max(0, Math.min(8, (this.io.output.rows || 24) - 4));
+    const rows = (a.details?.() ?? []).slice(0, maxRows);
+    const out = [`\x1b[36m${fitWidth(line, this.columns - 1)}\x1b[39m`, ...rows.map((r) => fitWidth(r, this.columns - 1))];
+    this.write(out.join('\r\n'));
+    a.drawn = out.length;
   }
 
   /** Read one line. Resolves null on EOF / Ctrl+D. `footer` is a status line drawn under the input. */
-  readLine(prompt: string, completer?: Completer, footer?: () => string): Promise<string | null> {
+  readLine(prompt: string, completer?: Completer, footer?: () => string, opts: { rule?: boolean } = {}): Promise<string | null> {
     this.prompt = prompt;
     this.footer = footer;
+    this.rule = !!opts.rule;
     this.showFooter = true;
     this.clearActivity();
     if (!this.interactive) {
@@ -239,7 +248,7 @@ export class Screen {
     this.showFooter = false;
     this.render();
     const v = this.editor.view(this.prompt, this.columns);
-    const down = v.rows.length - 1 - this.renderedCursorRow;
+    const down = v.rows.length - 1 + (this.rule ? 1 : 0) - this.renderedCursorRow;
     if (down > 0) this.write(`\x1b[${down}B`);
     this.write('\r\n');
     this.finish(action.text);
@@ -266,17 +275,18 @@ export class Screen {
   private render(): void {
     if (!this.editor) return;
     const v = this.editor.view(this.prompt, this.columns);
-    const rows = [...v.rows];
+    const top = this.rule ? 1 : 0;
+    const rows = [...(top ? [`\x1b[2m${'─'.repeat(Math.max(10, this.columns - 1))}\x1b[22m`] : []), ...v.rows];
     if (this.footer && this.showFooter) {
       const f = this.footer();
       if (f) rows.push(`\x1b[2m${fitWidth(f, this.columns - 1)}\x1b[22m`);
     }
     this.clearInput();
     this.write(rows.join('\r\n'));
-    const up = rows.length - 1 - v.cursorRow;
+    const up = rows.length - 1 - (v.cursorRow + top);
     if (up > 0) this.write(`\x1b[${up}A`);
     this.write('\r');
     if (v.cursorCol > 0) this.write(`\x1b[${v.cursorCol}C`);
-    this.renderedCursorRow = v.cursorRow;
+    this.renderedCursorRow = v.cursorRow + top;
   }
 }

@@ -350,7 +350,7 @@ describe('Kurultay console', () => {
     };
     await waitFor(/❯ $/m);
     input.write('/run Implement clamp in src/mathutil.js\r');
-    await waitFor(/Kurultay – \d+ models/);
+    await waitFor(/\d+ models · session/);
     input.write('\x03');
     // typed while the task is still stopping: replayed at the next prompt
     input.write('/exit\r');

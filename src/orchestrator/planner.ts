@@ -45,11 +45,22 @@ Mark "critical": true for subtasks with tricky logic where comparing several ind
 Acceptance criteria must be checkable: prefer criteria a test or a command can verify (e.g. "unit test X covers empty input and passes").
 If project skills are listed below, put the names of the skills a subtask needs in its "skills" array (only names from the list; [] when none apply).`;
 
+/**
+ * Weak models leak JSON/Python syntax into strings ("Fix the parser',", "\"Add tests\"").
+ * Strip quotes, commas and brackets around a title.
+ */
+export function cleanTitle(t: unknown): string {
+  return String(t ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s'"`,;[\]{}]+|[\s'"`,;[\]{}]+$/g, '')
+    .trim();
+}
+
 function normalizePlan(raw: RawPlan | undefined, task: string): Omit<Plan, 'authors'> | undefined {
   if (!raw || !Array.isArray(raw.subtasks) || raw.subtasks.length === 0) return undefined;
   const subtasks: SubTask[] = raw.subtasks.slice(0, 8).map((s, i) => ({
     id: (s.id && String(s.id)) || `T${i + 1}`,
-    title: s.title || `Subtask ${i + 1}`,
+    title: cleanTitle(s.title) || `Subtask ${i + 1}`,
     description: s.description || s.title || task,
     files: Array.isArray(s.files) ? s.files.filter((f) => typeof f === 'string') : [],
     dependsOn: (s.depends_on ?? s.dependsOn ?? []).map(String),

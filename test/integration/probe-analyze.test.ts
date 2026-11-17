@@ -208,7 +208,7 @@ describe('UI', () => {
       (process.stderr as unknown as { write: typeof orig }).write = orig;
     }
     const out = lines.join('');
-    for (const want of ['Kurultay – 3 models', '1. one', 'read_file', 'done', 'attempt 2', 'LLM error [server]', 'failed', 'missing:', '- m1', 'Applied to the project']) assert.ok(out.includes(want), want);
+    for (const want of ['3 models · session', '1. one', 'read_file', 'done', 'attempt 2', 'LLM error [server]', 'failed', 'missing:', '- m1', 'Applied to the project']) assert.ok(out.includes(want), want);
     assert.ok(!out.includes('after-detach'));
   });
 });

@@ -163,7 +163,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(real.stdout, /Result: completed/);
     assert.match(real.stdout, /Report: .*REPORT\.md/);
     assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/);
-    assert.match(real.stderr, /Kurultay – \d+ models/, 'live log on stderr');
+    assert.match(real.stderr, /\d+ models · session/, 'live log on stderr');
   });
 
   it('run --req injects a requirements file', async () => {

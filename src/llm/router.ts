@@ -31,6 +31,12 @@ export interface ModelHandle {
   preset?: SamplingPreset;
   /** the server rejected the preset's extra sampling fields once */
   presetRejected?: boolean;
+  /**
+   * Learned output headroom: a model whose structured answers were cut off (typically a
+   * reasoning model spending the budget on hidden thinking) starts later requests with
+   * this multiple of the requested max_tokens instead of being cut and asked again.
+   */
+  outputBoost?: number;
 }
 
 export interface RouteOptions {
@@ -353,7 +359,8 @@ export class Router {
       if (structured) {
         const bigger = Math.min(ceiling, maxTokens * 2);
         if (bigger <= maxTokens * 1.2) return first;
-        this.bus?.info('router', `${h.caps.key} answer was cut at ${maxTokens} tokens; asking again with ${bigger}`);
+        this.bus?.debug('router', `${h.caps.key} answer was cut at ${maxTokens} tokens; asking again with ${bigger}`);
+        h.outputBoost = Math.min(4, (h.outputBoost ?? 1) * 2);
         const again = await send(bigger);
         return { ...again, usage: { promptTokens: first.usage.promptTokens + again.usage.promptTokens, completionTokens: first.usage.completionTokens + again.usage.completionTokens } };
       }
@@ -385,7 +392,8 @@ export class Router {
       }
       await slots.acquire(req.signal);
       // reasoning models spend part of the output budget on thinking – give them more room
-      const maxTokens = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
+      const asked = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
+      const maxTokens = h.outputBoost && req.maxTokens ? Math.round(Math.min(asked * h.outputBoost, Math.max(asked, h.caps.contextWindow - promptEstimate - 256))) : asked;
       try {
         const send = async (tokens: number, messages = req.messages): Promise<ChatResult> => {
           // prompt estimate + window: the console shows how full each model's context is while it works
@@ -437,13 +445,16 @@ export class Router {
         }
         lastErr = err;
         this.onFailure(h, err);
-        this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt } });
+        const final = !err.retryable || attempt === attempts || (err.kind === 'timeout' && timeouts + 1 > this.llm.timeoutRetries);
+        this.bus?.emitEvent('llm.error', { source: h.caps.key, message: err.message, data: { kind: err.kind, attempt, purpose: req.purpose, retry: !final } });
         if (!err.retryable || attempt === attempts) throw err;
         // a hung model is not retried by default – fail over immediately (llm.timeoutRetries)
         if (err.kind === 'timeout' && ++timeouts > this.llm.timeoutRetries) throw err;
         const backoff = Math.min(30_000, retryBaseMs * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
         // honour Retry-After (OpenCode model-retry), but never wait more than 5 minutes per attempt
-        const wait = err.retryAfterMs !== undefined ? Math.min(5 * 60_000, Math.max(backoff, err.retryAfterMs)) : err.kind === 'rate_limit' ? backoff * 2 : backoff;
+        // a reused keep-alive connection the server (or a proxy) already closed: retry at once
+        const dropped = err.kind === 'network' && attempt === 1 && /ECONNRESET|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i.test(err.message);
+        const wait = dropped ? 0 : err.retryAfterMs !== undefined ? Math.min(5 * 60_000, Math.max(backoff, err.retryAfterMs)) : err.kind === 'rate_limit' ? backoff * 2 : backoff;
         await sleep(wait, req.signal);
       } finally {
         slots.release();

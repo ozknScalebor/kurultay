@@ -187,11 +187,19 @@ describe('screen: status line and activity indicator', () => {
     stop();
     assert.match(stripAnsi(text), /⠋ Görev · 0s · 2 LLM isteği sürüyor · Ctrl\+C to cancel/);
     assert.match(stripAnsi(text), /log satırı/);
-    assert.match(text, /\x1b\[2K/, 'spinner line is cleared before printing');
-    const p = s.readLine('❯ ', undefined, () => '~/proje · ⎇ main');
+    assert.match(text, /\r\x1b\[J/, 'spinner line is cleared before printing');
+    // detail rows under the spinner: the block is cleared as a whole (cursor up, clear to end)
+    const rows = ['  now: planning', '  T1-1  qwen  editing a.c · step 2'];
+    const stop2 = s.activity('Görev', undefined, () => rows);
+    s.print('ikinci satır');
+    stop2();
+    assert.match(stripAnsi(text), /T1-1 {2}qwen {2}editing a\.c · step 2/);
+    assert.match(text, /\x1b\[2A\x1b\[J/);
+    const p = s.readLine('❯ ', undefined, () => '~/proje · ⎇ main', { rule: true });
     input.write('x\r');
     assert.equal(await p, 'x');
     assert.match(stripAnsi(text), /~\/proje · ⎇ main/);
+    assert.match(stripAnsi(text), /─{40,}/, 'a rule separates the output from the prompt');
     const line = new Screen({ input: new PassThrough(), output: new PassThrough() });
     line.activity('x')();
     s.close();
