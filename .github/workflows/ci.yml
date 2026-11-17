@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # benchmark results do not need the code pipeline (the swebench workflow grades them)
+    paths-ignore: ['benchmarks/**']
   pull_request:
   workflow_dispatch:
 
