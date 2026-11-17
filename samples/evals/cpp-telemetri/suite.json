@@ -103,6 +103,42 @@
         "c++"
       ],
       "timeoutSec": 900
+    },
+    {
+      "id": "K1-cerceve-cozucu",
+      "title": "Seri hattan gelen bayt akışını paketlere ayır",
+      "tags": [
+        "özellik",
+        "c++",
+        "orta",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 1800,
+      "prompt": "Seri hattan gelen bayt akışını paketlere ayıran bir çözücü ekle: yeni başlık telemetri/frame_decoder.hpp içinde class FrameDecoder. Metotlar: std::vector<Packet> feed(const std::uint8_t* data, std::size_t len) ve std::vector<Packet> feed(const std::vector<std::uint8_t>& bytes) – gelen baytları ekler ve tamamlanan paketleri geliş sırasıyla döndürür; std::size_t buffered() const – bir çerçevenin devamını bekleyen bayt sayısı; std::size_t crc_errors() const; std::size_t skipped_bytes() const – atılan toplam bayt sayısı. Çerçeve biçimi packet.hpp'deki gibidir. Baytlar keyfi parçalar halinde gelir (bir çerçeve birçok feed çağrısına bölünebilir). Kurallar: 0xAA'dan önceki gürültü baytları atlanır; uzunluk baytı 3'ten küçükse yalnızca o 0xAA atılır ve aramaya sonraki bayttan devam edilir; CRC hatalı çerçevede crc_errors artar, yalnızca o 0xAA atılır ve sonraki bayttan yeniden senkronize olunur (böylece hatalı bir başlangıç baytının ardındaki gerçek çerçeveler kaybolmaz); CRC'si doğru ama tipi bilinmeyen çerçeve bütünüyle atlanır. Atılan her bayt skipped_bytes'a eklenir. Yarım çerçeve hiçbir zaman tampon dışı okumaya yol açmamalı (ASan/UBSan temiz). Mevcut testler geçmeli; yeni davranış için test yaz."
+    },
+    {
+      "id": "K2-zaman-penceresi",
+      "title": "Son N milisaniyenin istatistiği",
+      "tags": [
+        "özellik",
+        "c++",
+        "zor",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 1800,
+      "prompt": "Son N milisaniyenin istatistiğini veren bir sınıf ekle: yeni başlık telemetri/windowed_stats.hpp içinde class WindowedStats. Kurucu: explicit WindowedStats(std::uint64_t window_ms), 0 için std::invalid_argument. void add(std::uint64_t t_ms, double value) – zaman damgaları azalmaz (eşit olabilir), geri giden zaman veya NaN değer std::invalid_argument; void advance(std::uint64_t now_ms) – ölçüm eklemeden zamanı ilerletir (geri gidemez). Pencere: şimdiye kadar görülen en büyük zaman 'now' ise, t > now - window_ms olan ölçümler pencerededir (t = now - window_ms olan ölçüm artık dışarıdadır). std::size_t count() const, double mean() const, double min() const, double max() const; pencere boşsa mean/min/max std::logic_error. Her çağrı ortalama (amortized) O(1) olmalı: pencerede binlerce ölçüm varken yüz binlerce add çağrısı saniyeler içinde bitmeli; pencereyi her seferinde baştan taramak kabul edilmez. Mevcut testler geçmeli, ASan/UBSan temiz olmalı; yeni davranış için test yaz."
+    },
+    {
+      "id": "K3-alarm-hatti",
+      "title": "Ayar dosyasından alarm kuralları ve çerçeve işleme hattı",
+      "tags": [
+        "özellik",
+        "c++",
+        "karmaşık",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 2700,
+      "prompt": "Sahada kullanılacak işleme hattını ekle: yeni başlık telemetri/pipeline.hpp içinde struct AlarmEvent { std::uint16_t sensor_id; std::string kind; bool active; double value; std::size_t frame; } ve class Pipeline. explicit Pipeline(std::istream& ayar) ayar dosyasını okur; bool process(const std::vector<std::uint8_t>& cerceve) tek bir çerçeveyi işler; const std::vector<AlarmEvent>& events() const; const SensorRegistry& registry() const; std::size_t rejected() const.\n\nAyar dosyası örneği (sahadaki dosyalar böyle; boşluklar ve satır sonu yorumları olabilir):\n# Kazan dairesi\nsensor.7.name = Kazan dairesi    # ana kazan\nsensor.7.unit = C\nalarm.7.high  = 80\nalarm.7.hysteresis = 2.5\nsensor.12.name=Soğuk oda\n  alarm.12.low = -18\nalarm.12.high = 4\n\nAnahtarlar: sensor.<id>.name (zorunlu), sensor.<id>.unit (yoksa boş), alarm.<id>.high, alarm.<id>.low, alarm.<id>.hysteresis (yoksa 0). Tanımlı sensörler registry'ye kaydedilir. Şunlar std::runtime_error: tanımsız sensöre alarm, sayı olmayan değer, negatif histerezis, 0..65535 dışında sensör no, bilinmeyen anahtar, '=' içermeyen satır.\n\nprocess: çerçeve çözülemezse (eksik/yarım, CRC hatası vb.), sensör tanımlı değilse veya sıcaklık ölçümü değilse false döner ve rejected() artar; aksi halde sıcaklık registry'ye kaydedilir ve true döner. Alarm: high varsa değer high'ı aşınca (value > high) açılır, ancak high - hysteresis'in altına inince (value < high - hysteresis) kapanır; low varsa değer low'un altına inince açılır, low + hysteresis'in üstüne çıkınca kapanır; eşik etrafında titreme olmamalı. Her açılma/kapanma bir AlarmEvent üretir: kind \"high\" veya \"low\", value o ölçüm, frame o process çağrısının 0'dan başlayan sırası (reddedilen çağrılar dahil). Alarm kuralı olmayan sensör yalnızca istatistik toplar.\n\nSahadaki cihazlar packet.hpp'de tarif edilen CRC-16/CCITT-FALSE'u kullanır; cihazdan gelen gerçek çerçeveler kabul edilmeli – örnek: sensör 7, 3,00 °C = AA 05 07 00 01 2C 01 5F 4E (CRC düşük bayt önce). Hatta yarım gelen çerçeveler programı çökertmemeli (ASan/UBSan temiz). Mevcut testler geçmeli; yeni davranış için test yaz."
     }
   ]
 }
