@@ -44,7 +44,7 @@ export function summarise(dir) {
   const lines = [
     `### SWE-bench – ${run}`,
     '',
-    `${meta.dataset ?? 'princeton-nlp/SWE-bench_Verified'} · ${ids.length} instances${meta.note ? ` · ${meta.note}` : ''}`,
+    `${meta.dataset ?? 'SWE-bench/SWE-bench_Verified'} · ${ids.length} instances${meta.note ? ` · ${meta.note}` : ''}`,
     '',
     '| Agent | Resolved | Rate | Empty patches | Errors | Avg. time | Avg. requests |',
     '|---|---:|---:|---:|---:|---:|---:|',
