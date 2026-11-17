@@ -157,7 +157,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.6.0 · all your local LLMs in one council · offline
+ v0.7.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -206,7 +206,15 @@ Applied to the project: 3 files written
 - **Token and context tracking**: during long jobs the spinner shows elapsed time, LLM requests in flight, input/output tokens spent on this job and **the fullest context right now** (e.g. `context 62% (80K/128K)`). When the job ends a one-line summary is printed (`⟡ 18 requests · 16K in / 829 out tokens · peak context 11% (1.8K/16K) (model)`). `/stats` (or `/context`, `/tokens`) shows the session totals, the last answer's context as a bar, and a per-model table of requests / tokens / mean latency / **peak context fill** / errors; `/stats reset` clears the counters.
 - **Plan mode** (`/plan on`): the plan is shown before any code is written; Enter or `y` approves, `n` cancels, anything else you type makes the planners revise the plan with your feedback.
 - **Budget and resume**: when `orchestrator.maxTokens` / `maxMinutes` runs out, the job stops without touching the project. An interrupted task (budget, Ctrl+C, crash) continues from the subtask where it stopped with `/continue-run`; finished subtasks are not run again.
-- **Output** is one idea per line, grouped by phase (plan → subtasks → verification → apply). Tool calls, shell commands and single LLM requests only appear with `/verbose on`.
+- **Output** is grouped by phase. Each phase starts with a heading line (`── Planning ────`, `── Coding`, `── Checks`, `── Apply`, `── Summary`) and one dim line saying what happens in it. A rule separates the output from the prompt. Retried requests (a dropped connection, a timeout that is retried) show as a dim `↻ … retrying` line instead of a warning. Tool calls, shell commands and single LLM requests only appear with `/verbose on`.
+- **Live activity**: while a job runs, the rows under the spinner say what is happening now and which model does what:
+  ```
+  ⠧ Task · 2m 13s · 3 LLM requests running · 120K↑ 8K↓ tokens · Ctrl+C to cancel
+    now: T1: 2 candidates are coding in separate sandboxes
+    T1-1  qwen3-coder-30b     editing CsvProductLoader.java · step 7
+    T1-2  gemma-4-31B-it      thinking (after reading CsvProductLoaderTest.java) · step 3
+          gpt-oss-120b        reviewing the candidates
+  ```
 - **Old Windows consoles** (cmd.exe / PowerShell in conhost) cannot draw some symbols; Kurultay detects them and prints plain ASCII instead (`+` for ✓, `>` for →, …). Windows Terminal, VS Code and Git Bash get the Unicode version. Force it with `--ascii` or `KURULTAY_ASCII=1` (`=0` forces Unicode).
 - Main commands: `/models`, `/model add|remove`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
 

@@ -312,7 +312,7 @@ export function buildCommands(con: KurultayConsole): Command[] {
           con.settings.verbose = con.onOff(a, con.settings.verbose);
           if (con.app) {
             con.detachLog?.();
-            con.detachLog = attachTerminal(con.bus, { verbose: con.settings.verbose, write: (l) => con.out(l) });
+            con.detachLog = attachTerminal(con.bus, { verbose: con.settings.verbose, write: (l) => con.out(l), width: () => con.screen.columns });
           }
           con.out(`verbose log: ${con.settings.verbose ? 'on' : 'off'}`);
         },

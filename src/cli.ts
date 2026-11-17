@@ -82,7 +82,7 @@ Commands:
   status               Models, index and recent sessions
   stats                Per-model requests/tokens/time of recent tasks and learned success rates (--runs N)
   trajectories         Collect the verified task conversations into one JSONL file for fine-tuning (--out <file>)
-  mock                 Start a fake OpenAI-compatible LLM server for testing (--port 9100)
+  mock                 Start a fake OpenAI-compatible LLM server for testing (--port 9100, --latency <ms>)
 
 Options:
   --root <dir>         Project root (default: current directory)
@@ -539,8 +539,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         return await cmdEval(args);
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
-        const { url } = await startMockServer(DEFAULT_MOCK_MODELS, port);
-        out(`Mock LLM server running: ${url}\nModels: ${DEFAULT_MOCK_MODELS.map((m) => m.id).join(', ')}\nPress Ctrl+C to stop.`);
+        // --latency <ms>: answer slowly, to watch the live progress display
+        const latency = Number(args.flags.latency ?? 0);
+        const models = latency > 0 ? DEFAULT_MOCK_MODELS.map((m) => ({ ...m, latencyMs: latency })) : DEFAULT_MOCK_MODELS;
+        const { url } = await startMockServer(models, port);
+        out(`Mock LLM server running: ${url}\nModels: ${models.map((m) => m.id).join(', ')}\nPress Ctrl+C to stop.`);
         return await new Promise(() => undefined);
       }
     }
