@@ -54,37 +54,25 @@ jobs:
       - name: Smoke test with the reference patches
         if: steps.runs.outputs.list == ''
         run: |
-          python -m swebench.harness.run_evaluation --dataset_name SWE-bench/SWE-bench_Verified --predictions_path gold \
-            --instance_ids ${{ inputs.instances }} --max_workers 2 --run_id gold
-          cat logs/evaluation/gold/results.json | head -40 >> "$GITHUB_STEP_SUMMARY" || true
+          # the same path as a real run, with the dataset's reference patches as the "agent"
+          mkdir -p benchmarks/swebench/_smoke
+          python -c "
+          import json, sys
+          from datasets import load_dataset
+          want = set(sys.argv[1].split())
+          ds = load_dataset('SWE-bench/SWE-bench_Verified', split='test')
+          with open('benchmarks/swebench/_smoke/predictions-gold.jsonl', 'w') as f:
+              for r in ds:
+                  if r['instance_id'] in want:
+                      f.write(json.dumps({'instance_id': r['instance_id'], 'model_name_or_path': 'gold', 'model_patch': r['patch']}) + '\\n')
+          " "${{ inputs.instances }}"
+          scripts/swebench-grade.sh benchmarks/swebench/_smoke >> "$GITHUB_STEP_SUMMARY"
+          node -e "const r=require('./benchmarks/swebench/_smoke/results-gold.json');if(r.resolved_instances!==r.submitted_instances){console.error('reference patches did not all resolve',r);process.exit(1)}"
       - name: Grade
         if: steps.runs.outputs.list != ''
         run: |
           for run in ${{ steps.runs.outputs.list }}; do
-            dir="benchmarks/swebench/$run"
-            dataset=$(node -e "const f='$dir/meta.json';const fs=require('fs');console.log(fs.existsSync(f)&&JSON.parse(fs.readFileSync(f,'utf8')).dataset||'SWE-bench/SWE-bench_Verified')")
-            for preds in "$dir"/predictions-*.jsonl; do
-              agent=$(basename "$preds" .jsonl); agent=${agent#predictions-}
-              id="$run-$agent"
-              echo "::group::$id ($dataset)"
-              # batches of 10 instances with the images removed in between: the runner has limited disk
-              python - "$preds" > batches.txt <<'PY'
-          import json, sys
-          ids = [json.loads(l)["instance_id"] for l in open(sys.argv[1]) if l.strip()]
-          for i in range(0, len(ids), 10): print(" ".join(ids[i:i + 10]))
-          PY
-              while read -r batch; do
-                python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" \
-                  --instance_ids $batch --max_workers 2 --run_id "$id" --timeout 1800 || echo "::warning::harness error in a batch of $id"
-                docker system prune -af >/dev/null
-              done < batches.txt
-              # one report over every batch of this run
-              python -m swebench.harness.run_evaluation --dataset_name "$dataset" --predictions_path "$preds" --run_id "$id" --rewrite_reports True || true
-              cp "logs/evaluation/$id/results.json" "$dir/results-$agent.json" || echo "::warning::no results for $id"
-              docker system prune -af >/dev/null
-              echo "::endgroup::"
-            done
-            node scripts/swebench-summary.mjs "$dir" >> "$GITHUB_STEP_SUMMARY"
+            scripts/swebench-grade.sh "benchmarks/swebench/$run" >> "$GITHUB_STEP_SUMMARY"
           done
       - name: Keep the logs
         if: always()
