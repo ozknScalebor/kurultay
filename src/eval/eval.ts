@@ -1,6 +1,6 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex } from '../app.js';
 import type { RunMode } from '../config.js';
@@ -71,7 +71,46 @@ export interface EvalSummary {
   startedAt: string;
   finishedAt: string;
   attempts: EvalAttempt[];
-  byMode: Record<string, { attempts: number; passed: number; passRate: number; avgSeconds: number; avgTokens: number; avgRequests: number }>;
+  byMode: Record<string, ModeStats>;
+  /** Kurultay version that ran the suite */
+  version?: string;
+}
+
+/**
+ * Per mode. With several trials per task (Qwen Code's SWE-bench table):
+ *  - passRate: share of all attempts that passed (= the average score)
+ *  - passAtK: share of tasks solved in at least one of the k trials
+ *  - passHatK: share of tasks solved in EVERY trial – reliability, the number a user feels
+ */
+export interface ModeStats {
+  attempts: number;
+  passed: number;
+  passRate: number;
+  avgSeconds: number;
+  avgTokens: number;
+  avgRequests: number;
+  trials: number;
+  passAtK: number;
+  passHatK: number;
+}
+
+/** Aggregate attempts of one mode. */
+export function modeStats(xs: EvalAttempt[]): ModeStats {
+  const avg = (f: (a: EvalAttempt) => number) => (xs.length ? xs.reduce((s, a) => s + f(a), 0) / xs.length : 0);
+  const byTask = new Map<string, boolean[]>();
+  for (const a of xs) byTask.set(a.task, [...(byTask.get(a.task) ?? []), a.passed]);
+  const tasks = [...byTask.values()];
+  return {
+    attempts: xs.length,
+    passed: xs.filter((a) => a.passed).length,
+    passRate: xs.length ? xs.filter((a) => a.passed).length / xs.length : 0,
+    avgSeconds: avg((a) => a.seconds),
+    avgTokens: avg((a) => a.tokensIn + a.tokensOut),
+    avgRequests: avg((a) => a.requests),
+    trials: tasks.length ? Math.max(...tasks.map((t) => t.length)) : 0,
+    passAtK: tasks.length ? tasks.filter((t) => t.some(Boolean)).length / tasks.length : 0,
+    passHatK: tasks.length ? tasks.filter((t) => t.every(Boolean)).length / tasks.length : 0,
+  };
 }
 
 export function loadSuite(dir: string): EvalSuite {
@@ -125,6 +164,77 @@ export interface EvalOptions {
   keepWork?: boolean;
   onProgress?: (line: string) => void;
   signal?: AbortSignal;
+  /** Kurultay version, recorded with the results */
+  version?: string;
+  /** JSONL file every run appends its per-mode numbers to (compare versions over time) */
+  historyFile?: string;
+}
+
+export interface HistoryEntry {
+  at: string;
+  version?: string;
+  suite: string;
+  tasks: string[];
+  mode: string;
+  stats: ModeStats;
+}
+
+export function appendHistory(file: string, s: EvalSummary, tasks: string[]): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const rows = Object.entries(s.byMode).map(([mode, stats]) => JSON.stringify({ at: s.finishedAt, version: s.version, suite: s.suite, tasks, mode, stats } satisfies HistoryEntry));
+  appendFileSync(file, rows.join('\n') + '\n');
+}
+
+export function readHistory(file: string): HistoryEntry[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .flatMap((l) => {
+      try {
+        return [JSON.parse(l) as HistoryEntry];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** Markdown table of past runs: one row per version, suite and mode (latest run of each). */
+export function renderHistory(entries: HistoryEntry[]): string {
+  const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+  const rows = [...new Map(entries.map((e) => [`${e.version ?? '?'}|${e.suite}|${e.mode}|${e.tasks.join(',')}`, e])).values()];
+  if (!rows.length) return 'No evaluation runs recorded yet.';
+  return [
+    '| Version | Suite | Mode | Tasks | Trials | Avg. score | pass@k | pass^k | Avg. time (s) | Avg. requests |',
+    '|---|---|---|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows.map((e) => `| ${e.version ?? '?'} | ${e.suite} | ${e.mode} | ${e.tasks.length} | ${e.stats.trials} | ${pct(e.stats.passRate)} | ${pct(e.stats.passAtK)} | ${pct(e.stats.passHatK)} | ${e.stats.avgSeconds.toFixed(0)} | ${e.stats.avgRequests.toFixed(1)} |`),
+  ].join('\n');
+}
+
+/**
+ * Score a folder another agent (or a person) worked on: each task's hidden tests are added to
+ * a fresh copy of that folder and the check runs – the same yardstick for Kurultay, Qwen Code,
+ * Aider… Tasks are scored one at a time, so a failure is attributed to its task.
+ */
+export async function scoreFolder(opts: { suiteDir: string; dir: string; tasks?: string[]; outDir?: string; keepWork?: boolean; onProgress?: (l: string) => void }): Promise<Array<{ task: string; passed: boolean; output: string }>> {
+  const suite = loadSuite(opts.suiteDir);
+  const tasks = suite.tasks.filter((t) => !opts.tasks?.length || opts.tasks.includes(t.id));
+  if (!tasks.length) throw new Error('no task selected');
+  if (!existsSync(opts.dir)) throw new Error(`folder not found: ${opts.dir}`);
+  const root = opts.outDir ?? join(tmpdir(), `kurultay-score-${Date.now()}`);
+  const out: Array<{ task: string; passed: boolean; output: string }> = [];
+  for (const t of tasks) {
+    const work = join(root, t.id);
+    rmSync(work, { recursive: true, force: true });
+    copyProject(opts.dir, work);
+    if (suite.setup) await runShell(suite.setup, work, 600_000);
+    addHidden(opts.suiteDir, t, work);
+    const c = await check(t.check ?? suite.check!, work, t.timeoutSec ?? 1800);
+    out.push({ task: t.id, passed: c.ok, output: c.output });
+    opts.onProgress?.(`${c.ok ? '✓' : '✗'} ${t.id}`);
+  }
+  if (!opts.keepWork) rmSync(root, { recursive: true, force: true });
+  return out;
 }
 
 /** Check the suite itself: hidden tests must fail on the base project and pass with solutions/<id>. */
@@ -182,21 +292,11 @@ export async function runEval(opts: EvalOptions): Promise<{ summary: EvalSummary
     }
   }
   const byMode: EvalSummary['byMode'] = {};
-  for (const m of modes) {
-    const xs = attempts.filter((a) => a.mode === m);
-    const avg = (f: (a: EvalAttempt) => number) => (xs.length ? xs.reduce((s, a) => s + f(a), 0) / xs.length : 0);
-    byMode[m] = {
-      attempts: xs.length,
-      passed: xs.filter((a) => a.passed).length,
-      passRate: xs.length ? xs.filter((a) => a.passed).length / xs.length : 0,
-      avgSeconds: avg((a) => a.seconds),
-      avgTokens: avg((a) => a.tokensIn + a.tokensOut),
-      avgRequests: avg((a) => a.requests),
-    };
-  }
-  const summary: EvalSummary = { suite: suite.name, startedAt, finishedAt: new Date().toISOString(), attempts, byMode };
+  for (const m of modes) byMode[m] = modeStats(attempts.filter((a) => a.mode === m));
+  const summary: EvalSummary = { suite: suite.name, startedAt, finishedAt: new Date().toISOString(), attempts, byMode, version: opts.version };
   const jsonPath = join(outDir, 'results.json');
   writeFileSync(jsonPath, JSON.stringify(summary, null, 1));
+  if (opts.historyFile) appendHistory(opts.historyFile, summary, tasks.map((t) => t.id));
   const reportPath = join(outDir, 'EVAL.md');
   writeFileSync(reportPath, renderEval(summary));
   return { summary, reportPath, jsonPath };
@@ -263,9 +363,11 @@ export function renderEval(s: EvalSummary): string {
     '',
     '## By mode',
     '',
-    '| Mode | Attempts | Passed | Pass rate | Avg. time (s) | Avg. tokens | Avg. requests |',
-    '|---|---:|---:|---:|---:|---:|---:|',
-    ...Object.entries(s.byMode).map(([m, b]) => `| ${m} | ${b.attempts} | ${b.passed} | ${pct(b.passRate)} | ${b.avgSeconds.toFixed(1)} | ${Math.round(b.avgTokens)} | ${b.avgRequests.toFixed(1)} |`),
+    '| Mode | Attempts | Passed | Avg. score | pass@k | pass^k | Avg. time (s) | Avg. tokens | Avg. requests |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ...Object.entries(s.byMode).map(([m, b]) => `| ${m} | ${b.attempts} | ${b.passed} | ${pct(b.passRate)} | ${b.trials > 1 ? pct(b.passAtK) : '-'} | ${b.trials > 1 ? pct(b.passHatK) : '-'} | ${b.avgSeconds.toFixed(1)} | ${Math.round(b.avgTokens)} | ${b.avgRequests.toFixed(1)} |`),
+    '',
+    'pass@k: tasks solved in at least one of the k trials · pass^k: tasks solved in every trial (reliability).',
     '',
     '## Tasks',
     '',

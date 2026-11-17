@@ -139,6 +139,17 @@ A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurulta
 | **No hidden thinking for short JSON** | Plans, localisation and summaries ask reasoning models to answer without thinking (`chat_template_kwargs.enable_thinking: false` for Qwen3/GLM templates in vLLM, SGLang and llama.cpp; `reasoning_effort: low` for gpt-oss). Coding, reviews and the requirement check keep thinking. A server that rejects the field is asked again without it | `llm.quickStructured`, `"thinking": true` per model |
 | **Helpers stay helpers** | A `rolesOnly` helper is never picked as a reviewer just because the real models wrote the code under review | – |
 
+
+### Context and measurement (adopted from Qwen Code)
+
+| Measure | What Kurultay does | Setting |
+|---|---|---|
+| **Long tool output to a file** | Output longer than 8000 characters is saved in full under `.kurultay/tool-output/`; the model sees the start, the end, the file path and a sha256 of the whole output, and reads the part it needs with `read_file` (never part of the change) | `tools.maxToolOutputChars`, `tools.toolOutputPreviewChars` |
+| **Read cache** | Reading the same lines of an unchanged file again returns a one-line note pointing to the earlier output instead of the content; an edit, or an output removed by compaction, makes the next read show the content again | `tools.readCache` |
+| **Context ladder** | At 60% of the usable window old tool outputs are cleared (no model call); at 85% the middle of the conversation becomes a hand-off summary; above 100% the summary keeps fewer recent turns | `llm.microcompactAt`, `llm.compactAt` |
+| **Tool declarations measured and trimmed** | REPORT.md shows the average prompt makeup of a coding request (system prompt, tool declarations, task + project context, conversation). When MCP tools would take more than 1500 tokens per request, the model gets `mcp_describe` and `mcp_call` with a one-line list instead | `tools.mcpToolBudgetTokens` |
+| **Measurement discipline** | `kurultay eval --repeat N` reports the average score, pass@k (solved at least once) and pass^k (solved every time) per mode; every run is appended to `~/.kurultay/eval-history.jsonl` and `kurultay eval --history` compares versions. `kurultay eval <suite> --score <folder>` grades a folder another agent (Qwen Code, Aider, a person) worked on with the same hidden tests | – |
+
 ---
 
 ## Installation (air-gapped)
@@ -172,7 +183,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.8.0 · all your local LLMs in one council · offline
+ v0.9.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint

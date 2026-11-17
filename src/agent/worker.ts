@@ -10,7 +10,7 @@ import { LoopGuard } from './loop-guard.js';
 import { TOOLSHIM_SCHEMA } from '../llm/schemas.js';
 import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
 import type { ExternalTools } from '../mcp/manager.js';
-import { executeTool, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
+import { executeTool, toolTokens, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
 
 export interface WorkerSkills {
@@ -145,6 +145,7 @@ export class AgentWorker {
       writtenFiles: this.touched.modified,
       staleFiles: this.staleFiles,
       external: deps.external,
+      readCache: new Map(),
     };
     this.applyEditFormat();
     this.guard = new LoopGuard({ maxConsecutiveErrors: cfg.orchestrator.maxConsecutiveErrors ?? 6 });
@@ -155,8 +156,8 @@ export class AgentWorker {
     return this.cfg.tools.editFormat ?? this.handle()?.caps.editFormat ?? 'tool';
   }
 
-  private toolOpts(): { skills: boolean; external?: ExternalTools; hidden?: Set<string> } {
-    return { skills: this.hasSkills, external: this.toolCtx.external, hidden: this.toolCtx.hidden };
+  private toolOpts(): { skills: boolean; external?: ExternalTools; hidden?: Set<string>; mcpBudget?: number } {
+    return { skills: this.hasSkills, external: this.toolCtx.external, hidden: this.toolCtx.hidden, mcpBudget: this.cfg.tools.mcpToolBudgetTokens };
   }
 
   /** Hide edit_file for models that edit whole files; re-evaluated after a failover. */
@@ -223,21 +224,47 @@ export class AgentWorker {
     return `\n[Kurultay] Skills for ${path} are available: ${fresh.map((s) => `${s.name} – ${s.description}`).join('; ')}. Load one with the skill tool if needed.`;
   }
 
-  /** Pi/Codex style condenser: shrink old tool outputs first, then replace the middle with a structured hand-off summary. */
+  /**
+   * Context ladder (Qwen Code / Claude Code auto-compaction, Pi/Codex hand-off summary):
+   *  1. above `microcompactAt` of the usable window: clear old tool outputs, oldest first,
+   *     keeping the last turns – cheap, no model call;
+   *  2. above `compactAt`: replace the middle of the conversation with a structured summary;
+   *  3. still over the window: summarise again keeping fewer recent turns.
+   * Cleared outputs are forgotten by the read cache, so a re-read returns the content again.
+   */
   private async condense(): Promise<void> {
     const window = this.contextWindow();
     const reserve = Math.max(1024, Math.min(16_384, Math.floor(window * 0.3)));
-    const budget = window - reserve;
+    const usable = window - reserve;
+    const llm = this.cfg.llm ?? {};
+    const microAt = usable * (llm.microcompactAt ?? 0.6);
+    const autoAt = usable * (llm.compactAt ?? 0.85);
     const size = () => estimateTokens(this.messages.map((m) => (m.content ?? '') + JSON.stringify(m.tool_calls ?? '')).join('\n'));
-    if (size() <= budget) return;
+    if (size() <= microAt) return;
+    // 1) microcompaction: shrink to well below the mark so it does not run on every step
     const keepTail = 8;
-    for (let i = 2; i < this.messages.length - keepTail && size() > budget; i++) {
+    let cleared = 0;
+    for (let i = 2; i < this.messages.length - keepTail && size() > microAt * 0.8; i++) {
       const m = this.messages[i];
-      if ((m.role === 'tool' || (m.role === 'user' && m.content?.startsWith('<tool_result'))) && (m.content?.length ?? 0) > 400) {
-        m.content = `${m.content!.slice(0, 300)}\n…[old tool output shortened]`;
+      if ((m.role === 'tool' || (m.role === 'user' && m.content?.startsWith('<tool_result'))) && (m.content?.length ?? 0) > 400 && !m.content!.includes('[old tool output cleared')) {
+        const first = m.content!.replace(/^<tool_result[^>]*>\n?/, '').split('\n')[0].slice(0, 160);
+        m.content = `${m.content!.startsWith('<tool_result') ? m.content!.match(/^<tool_result[^>]*>/)![0] + '\n' : ''}${first}\n[old tool output cleared to save context – run the tool again if you still need it]`;
+        cleared++;
       }
     }
-    if (size() <= budget || this.messages.length <= keepTail + 3) return;
+    if (cleared) {
+      this.toolCtx.readCache?.clear();
+      this.interventions.push('microcompact');
+      this.bus?.debug(this.spec.id, `cleared ${cleared} old tool outputs (context above ${Math.round((llm.microcompactAt ?? 0.6) * 100)}%)`);
+    }
+    if (size() <= autoAt) return;
+    await this.summarize(keepTail);
+    if (size() > usable) await this.summarize(3);
+  }
+
+  /** Replace the middle of the conversation with a hand-off summary, keeping the last `keepTail` messages. */
+  private async summarize(keepTail: number): Promise<void> {
+    if (this.messages.length <= keepTail + 3) return;
     let cut = this.messages.length - keepTail;
     while (cut < this.messages.length && this.messages[cut].role === 'tool') cut++;
     const middle = this.messages.slice(2, cut).filter((m) => !(m.role === 'user' && m.content?.startsWith('<progress_notes>')));
@@ -268,20 +295,31 @@ export class AgentWorker {
     this.previousSummary = notes;
     this.messages = [this.messages[0], this.messages[1], { role: 'user', content: `<progress_notes>\n${notes}\n</progress_notes>\nContinue the task from these notes.` }, ...this.messages.slice(cut)];
     while (this.messages[3]?.role === 'tool') this.messages.splice(3, 1);
+    this.toolCtx.readCache?.clear();
     this.interventions.push('condense');
     this.bus?.info(this.spec.id, 'context compacted');
   }
 
   private async callModel(): Promise<ChatResult> {
-    const req = () => ({
+    const req = () => {
+      const tools = this.nativeTools ? toolSpecs(this.toolCtx.allowed, this.toolOpts()) : undefined;
+      return {
       messages: this.messages,
-      tools: this.nativeTools ? toolSpecs(this.toolCtx.allowed, this.toolOpts()) : undefined,
+      tools,
+      // what the prompt is made of, for the report (Qwen Code: measure before trimming)
+      promptParts: {
+        system: estimateTokens(this.messages[0]?.content ?? ''),
+        tools: tools ? toolTokens(tools) : 0,
+        task: estimateTokens(this.messages[1]?.content ?? ''),
+        history: estimateTokens(this.messages.slice(2).map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n')),
+      },
       temperature: this.spec.temperature ?? 0.2,
       agentic: true,
       purpose: `worker:${this.spec.id}`,
       signal: this.signal,
       onToken: (t: string) => this.bus?.emitEvent('worker.token', { source: this.spec.id, data: { t } }),
-    });
+      };
+    };
     const toolsRejected = (e: unknown) => this.nativeTools && e instanceof LlmError && e.kind === 'bad_request' && /tool|function/i.test(e.message);
 
     if (this.cfg.llm?.stickyFailover === false) {
@@ -400,6 +438,7 @@ export class AgentWorker {
 
     for (let step = 1; step <= maxSteps; step++) {
       this.step = step;
+      this.toolCtx.step = step;
       if (this.signal?.aborted) return this.result('failed', 'cancelled', step, finalText, 'aborted');
       await this.condense();
       let r: ChatResult;

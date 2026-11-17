@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { SkillRegistry } from '../skills/skills.js';
@@ -38,6 +41,57 @@ export interface ToolContext {
   external?: ExternalTools;
   /** tools this worker's model should not use (e.g. edit_file for models that edit whole files) */
   hidden?: Set<string>;
+  /**
+   * What this worker has already been shown: "path#start-end" → sha256 of the file and the
+   * step it was read at. A repeated read of an unchanged range gets a short note (Qwen Code
+   * fileReadCache). The worker clears entries whose output it removed from the history.
+   */
+  readCache?: Map<string, { hash: string; step: number }>;
+  /** current agent step (for the read cache note) */
+  step?: number;
+  /** outputs spilled to disk by this worker so far */
+  spills?: number;
+}
+
+/** Where spilled tool outputs live, relative to the project root. */
+export const TOOL_OUTPUT_DIR = 'tool-output';
+
+/** "<stateDir>/tool-output/<name>" (only a plain file name, no traversal) → that relative path. */
+function spilledFile(raw: string, ctx: Pick<ToolContext, 'config'>): string | undefined {
+  const p = raw.trim().replace(/^["'`]|["'`]$/g, '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const prefix = `${ctx.config.stateDir.replace(/\\/g, '/')}/${TOOL_OUTPUT_DIR}/`;
+  if (!p.startsWith(prefix)) return undefined;
+  const name = p.slice(prefix.length);
+  return /^[\w.-]+$/.test(name) && !name.startsWith('.') ? `${prefix}${name}` : undefined;
+}
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/**
+ * Long output → full text on disk, the start and the end in the conversation (Qwen Code
+ * tools/truncation.ts). The model can read the rest with read_file; the digest tells two
+ * long outputs apart even when their previews are identical.
+ */
+export function spillOutput(output: string, ctx: Pick<ToolContext, 'root' | 'config' | 'workerId' | 'spills'>, tool: string): { text: string; path?: string } {
+  const max = ctx.config.tools.maxToolOutputChars ?? 8000;
+  if (max <= 0 || output.length <= max) return { text: output };
+  const preview = Math.max(400, Math.min(ctx.config.tools.toolOutputPreviewChars ?? 4000, max));
+  const rel = `${ctx.config.stateDir}/${TOOL_OUTPUT_DIR}/${ctx.workerId.replace(/[^\w.-]/g, '_')}-${(ctx.spills ?? 0) + 1}-${tool}.txt`.replace(/\\/g, '/');
+  let saved: string | undefined = rel;
+  try {
+    mkdirSync(join(ctx.root, ctx.config.stateDir, TOOL_OUTPUT_DIR), { recursive: true });
+    writeFileSync(join(ctx.root, rel), output);
+  } catch {
+    saved = undefined;
+  }
+  const head = output.slice(0, Math.floor(preview / 2));
+  const tail = output.slice(-Math.floor(preview / 2));
+  const lines = output.split('\n').length;
+  const where = saved ? `The full output (${output.length} characters, ${lines} lines) is saved in ${saved} – read_file it with start_line/end_line for the part you need.` : `The full output (${output.length} characters) could not be saved; only this excerpt is available.`;
+  return {
+    text: `${head}\n\n… [${output.length - head.length - tail.length} characters not shown] …\n\n${tail}\n\n[${where} Full output sha256: ${sha256(output).slice(0, 16)}]`,
+    path: saved,
+  };
 }
 
 /** Read-before-edit: an existing file may only be modified after the worker read it. */
@@ -157,9 +211,13 @@ const TOOLS: Record<string, ToolDef> = {
       },
     },
     async run(a, ctx) {
-      const r = resolveExisting(ctx, safeRelPath(ctx.root, str(a.path, 'path')));
+      const raw = str(a.path, 'path');
+      // spilled tool outputs live in the state folder (never part of the change)
+      const spill = spilledFile(raw, ctx);
+      const spilled = spill && existsSync(join(ctx.root, spill)) ? readFileSync(join(ctx.root, spill), 'utf8') : undefined;
+      const r = spilled !== undefined ? { path: spill!, note: '' } : resolveExisting(ctx, safeRelPath(ctx.root, raw));
       const path = r.path;
-      const content = ctx.overlay.read(path);
+      const content = spilled ?? ctx.overlay.read(path);
       if (content === undefined) {
         const near = ctx.index?.files.map((f) => f.path).filter((f) => f.includes(path.split('/').pop()!.replace(/\.[^.]+$/, ''))).slice(0, 5) ?? [];
         return { output: `No such file: ${path}${near.length ? `. Similar files: ${near.join(', ')}` : ''}`, isError: true };
@@ -170,6 +228,13 @@ const TOOLS: Record<string, ToolDef> = {
       const start = optNum(a.start_line) ?? 1;
       // a 100-line window by default (SWE-agent's ACI study: the viewer size that worked best)
       const end = optNum(a.end_line) ?? Math.min(total, start + Math.max(20, ctx.config.tools.readWindow ?? 100) - 1);
+      const key = `${path}#${start}-${end}`;
+      const hash = sha256(content);
+      const seen = ctx.config.tools.readCache === false ? undefined : ctx.readCache?.get(key);
+      if (seen && seen.hash === hash) {
+        return { output: `${path} lines ${start}-${end} are unchanged since you read them at step ${seen.step}; that output is still in this conversation above – use it instead of reading again.` };
+      }
+      ctx.readCache?.set(key, { hash, step: ctx.step ?? 0 });
       const body = numbered(content, start, end);
       const more = end < total ? `\n… (showing lines ${start}-${end} of ${total}; continue with start_line=${end + 1})` : '';
       return { output: `${r.note}${path} (${total} lines)\n${body}${more}` };
@@ -411,7 +476,8 @@ const TOOLS: Record<string, ToolDef> = {
       };
       const r = await ctx.materializer.execute(ctx.overlay, (cwd) => runShell(cmd, cwd, timeout, ctx.signal, shellOpts), ctx.signal);
       const status = r.timedOut ? 'TIMED OUT' : `exit code ${r.code}`;
-      const text = truncateMiddle(ctx.materializer.rewriteOutput(r.output), 12_000);
+      // long output is spilled to a file by executeTool; keep a hard ceiling for memory only
+      const text = truncateMiddle(ctx.materializer.rewriteOutput(r.output), 2_000_000);
       // SWE-agent: an explicit message for silent commands keeps weak models from re-running them
       const body = text.trim() ? text : r.code === 0 ? '(the command ran successfully and printed nothing)' : '(no output)';
       return { output: `$ ${cmd}\n[${status}]\n${body}`, isError: r.code !== 0 };
@@ -476,34 +542,85 @@ const TOOLS: Record<string, ToolDef> = {
 export const READ_ONLY_TOOLS = Object.entries(TOOLS).filter(([, t]) => t.readOnly).map(([n]) => n);
 export const ALL_TOOLS = Object.keys(TOOLS);
 
-export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string> } = {}): ToolSpec[] {
+export function toolSpecs(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string>; mcpBudget?: number } = {}): ToolSpec[] {
   const own = Object.entries(TOOLS)
     .filter(([n]) => !allowed || allowed.has(n))
     .filter(([n]) => !opts.hidden?.has(n))
     .filter(([n]) => opts.skills !== false || (n !== 'skill' && n !== 'skill_file'))
     .map(([, t]) => t.spec);
   // read-only workers (reviewers) only get MCP tools that declare themselves read-only
-  return opts.external ? [...own, ...opts.external.specs(!!allowed)] : own;
+  if (!opts.external) return own;
+  const ext = opts.external.specs(!!allowed);
+  if (!ext.length) return own;
+  const budget = opts.mcpBudget ?? 1500;
+  return budget > 0 && toolTokens(ext) > budget ? [...own, ...deferredMcpSpecs(ext)] : [...own, ...ext];
+}
+
+/** Rough token cost of tool declarations as they are sent (JSON). */
+export function toolTokens(specs: ToolSpec[]): number {
+  return Math.ceil(JSON.stringify(specs).length / 3.5);
+}
+
+/**
+ * Many MCP tools → two small ones (Qwen Code measured 21K tokens of tool schemas per turn
+ * before closing the list). The model reads a schema only when it needs that tool.
+ */
+function deferredMcpSpecs(ext: ToolSpec[]): ToolSpec[] {
+  const list = ext.map((t) => `${t.function.name}: ${(t.function.description ?? '').split(/(?<=\.)\s/)[0].slice(0, 90)}`).join('\n');
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'mcp_describe',
+        description: `Show the parameters of an external (MCP) tool before calling it with mcp_call. Available tools:\n${list}`,
+        parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'mcp_call',
+        description: 'Call an external (MCP) tool by name; arguments as described by mcp_describe.',
+        parameters: { type: 'object', properties: { name: { type: 'string' }, arguments: { type: 'object' } }, required: ['name'] },
+      },
+    },
+  ];
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome> {
   const def = TOOLS[name];
+  if (!def && (name === 'mcp_describe' || name === 'mcp_call') && ctx.external) {
+    const target = typeof args.name === 'string' ? args.name : '';
+    const spec = ctx.external.specs(!!ctx.allowed).find((t) => t.function.name === target);
+    if (!spec) return { output: `Unknown external tool: ${target || '(no name)'}. mcp_describe lists the available ones.`, isError: true };
+    if (name === 'mcp_describe') return { output: `${target}: ${spec.function.description ?? ''}\nparameters: ${JSON.stringify(spec.function.parameters)}` };
+    const inner = args.arguments && typeof args.arguments === 'object' ? (args.arguments as Record<string, unknown>) : {};
+    return executeTool(target, inner, ctx);
+  }
   if (!def && ctx.external?.has(name)) {
     if (ctx.allowed && !ctx.external.isReadOnly(name)) return { output: `Tool not allowed for this worker: ${name}`, isError: true };
-    return ctx.external.call(name, args, ctx.signal);
+    return spill(await ctx.external.call(name, args, ctx.signal), ctx, name);
   }
   if (!def) return { output: `Unknown tool: ${name}. Available: ${[...(ctx.allowed ?? new Set(ALL_TOOLS))].join(', ')}`, isError: true };
   if (ctx.allowed && !ctx.allowed.has(name)) return { output: `Tool not allowed for this worker: ${name}`, isError: true };
   if (ctx.hidden?.has(name)) return { output: name === 'edit_file' ? 'edit_file is not used with this model: read the file, then write the complete new version with write_file.' : `Tool not available: ${name}`, isError: true };
   try {
-    return await def.run(args, ctx);
+    return spill(await def.run(args, ctx), ctx, name);
   } catch (e) {
     return { output: `Tool error (${name}): ${(e as Error).message}`, isError: true };
   }
 }
 
+function spill(o: ToolOutcome, ctx: ToolContext, tool: string): ToolOutcome {
+  // reading a file is already windowed; reading a spilled output must not spill again
+  if (tool === 'read_file') return o;
+  const r = spillOutput(o.output, ctx, tool);
+  if (r.path) ctx.spills = (ctx.spills ?? 0) + 1;
+  return r.text === o.output ? o : { ...o, output: r.text };
+}
+
 /** Human-readable tool catalogue for prompt-based tool calling. */
-export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string> } = {}): string {
+export function toolCatalogue(allowed?: Set<string>, opts: { skills?: boolean; external?: ExternalTools; hidden?: Set<string>; mcpBudget?: number } = {}): string {
   return toolSpecs(allowed, opts)
     .map((s) => {
       const props = (s.function.parameters as { properties?: Record<string, { type?: string }>; required?: string[] }).properties ?? {};

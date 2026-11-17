@@ -87,6 +87,14 @@ export interface LlmConfig {
    * reviews and the requirement check keep thinking. Default true.
    */
   quickStructured?: boolean;
+  /**
+   * Context ladder of a worker, as shares of (window − output reserve):
+   * at `microcompactAt` old tool outputs are cleared (newest first kept); at `compactAt` the
+   * middle of the conversation becomes a hand-off summary; above 100% the summary keeps fewer
+   * recent turns. Defaults 0.6 and 0.85 (Qwen Code / Claude Code auto-compaction at 85%).
+   */
+  microcompactAt?: number;
+  compactAt?: number;
 }
 
 export interface VerifyConfig {
@@ -157,6 +165,22 @@ export interface IndexConfig {
 export interface ToolsConfig {
   /** lines read_file returns when no range is given (default 100) */
   readWindow?: number;
+  /**
+   * Tool output longer than this (characters) is saved in full to
+   * .kurultay/tool-output/ and the model gets the start and the end, the file's path and a
+   * sha256 of the whole output; it can read_file the rest (default 8000).
+   */
+  maxToolOutputChars?: number;
+  /** characters of a spilled output shown to the model, split between start and end (default 4000) */
+  toolOutputPreviewChars?: number;
+  /** a re-read of an unchanged file range returns a short note instead of the content again (default true) */
+  readCache?: boolean;
+  /**
+   * MCP tool declarations are sent with every request. When they would take more than this
+   * many tokens, the model gets two small tools instead – mcp_describe(name) and
+   * mcp_call(name, arguments) – plus a one-line list of the tools (default 1500).
+   */
+  mcpToolBudgetTokens?: number;
   /** force one edit format for every model (default: the format the probe measured best per model) */
   editFormat?: 'tool' | 'search_replace' | 'whole';
   allowCommands: boolean;

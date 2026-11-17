@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { ALL_TOOLS, READ_ONLY_TOOLS, executeTool, runShell, toolCatalogue, toolSpecs, type ToolContext } from '../../src/agent/tools.js';
+import { ALL_TOOLS, READ_ONLY_TOOLS, executeTool, runShell, spillOutput, toolCatalogue, toolSpecs, toolTokens, type ToolContext } from '../../src/agent/tools.js';
 import { Materializer, Overlay, safeRelPath } from '../../src/agent/workspace.js';
 import { ProjectIndex } from '../../src/index/project-index.js';
 import { config, tmpProject } from '../helpers.js';
@@ -161,5 +161,78 @@ describe('agent tools', () => {
     assert.equal(toolSpecs(new Set(READ_ONLY_TOOLS)).length, READ_ONLY_TOOLS.length);
     const cat = toolCatalogue();
     assert.match(cat, /- read_file\(path: string, start_line\?: integer, end_line\?: integer\)/);
+  });
+});
+
+describe('context savers (from Qwen Code)', () => {
+  it('long output is spilled to a file: start, end, path and digest in the conversation', async () => {
+    const root = tmpProject({ 'a.txt': 'x' });
+    const c = ctx(root);
+    c.config.tools.maxToolOutputChars = 1000;
+    c.config.tools.toolOutputPreviewChars = 400;
+    const long = Array.from({ length: 300 }, (_, i) => `line ${i} ${'.'.repeat(20)}`).join('\n');
+    const r = spillOutput(long, c, 'run_command');
+    assert.ok(r.path && r.path.startsWith('.kurultay/tool-output/w-1-run_command'));
+    assert.ok(r.text.startsWith('line 0 '));
+    assert.match(r.text, /line 299/);
+    assert.doesNotMatch(r.text, /line 150 /);
+    assert.match(r.text, /Full output sha256: [0-9a-f]{16}/);
+    assert.equal(readFileSync(join(root, r.path!), 'utf8'), long);
+    assert.equal(spillOutput('short', c, 'x').text, 'short');
+    // the model reads the rest through read_file; it is not part of the change
+    const page = await executeTool('read_file', { path: r.path!, start_line: 150, end_line: 151 }, c);
+    assert.match(page.output, /150│ line 149/);
+    assert.deepEqual(c.overlay.ownChanges(), []);
+    assert.match((await executeTool('read_file', { path: '.kurultay/tool-output/../index/x' }, c)).output, /protected folder/);
+    // executeTool spills every tool's long output, but never read_file's
+    const many = Array.from({ length: 2000 }, (_, i) => `f${i}.txt`);
+    for (const f of many.slice(0, 400)) c.overlay.write(f, '');
+    const listing = await executeTool('list_dir', { path: '.' }, c);
+    assert.ok(listing.output.length < 1000 || /saved in/.test(listing.output));
+    c.config.tools.maxToolOutputChars = 0;
+    assert.equal(spillOutput(long, c, 'x').text, long, '0 turns spilling off');
+  });
+
+  it('a re-read of an unchanged range returns a note; a change or a cleared cache shows the content again', async () => {
+    const root = tmpProject({ 'src/a.c': 'int a = 1;\nint b = 2;\n' });
+    const c = ctx(root, { readCache: new Map(), readFiles: new Set(), step: 3 });
+    const first = await executeTool('read_file', { path: 'src/a.c' }, c);
+    assert.match(first.output, /int a = 1/);
+    c.step = 5;
+    const again = await executeTool('read_file', { path: 'src/a.c' }, c);
+    assert.match(again.output, /unchanged since you read them at step 3/);
+    assert.match((await executeTool('read_file', { path: 'src/a.c', start_line: 2, end_line: 2 }, c)).output, /int b = 2/, 'another range is new');
+    await executeTool('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 3;' }, c);
+    assert.match((await executeTool('read_file', { path: 'src/a.c' }, c)).output, /int a = 3/);
+    c.readCache!.clear();
+    assert.match((await executeTool('read_file', { path: 'src/a.c' }, c)).output, /int a = 3/);
+    c.config.tools.readCache = false;
+    assert.match((await executeTool('read_file', { path: 'src/a.c' }, c)).output, /int a = 3/);
+  });
+
+  it('many MCP tools become mcp_describe + mcp_call', async () => {
+    const calls: string[] = [];
+    const specs = Array.from({ length: 30 }, (_, i) => ({ type: 'function' as const, function: { name: `mcp__srv__tool${i}`, description: `Does thing ${i}. ${'Long text. '.repeat(20)}`, parameters: { type: 'object', properties: { q: { type: 'string' } } } } }));
+    const external = {
+      specs: (ro?: boolean) => (ro ? specs.slice(0, 2) : specs),
+      has: (n: string) => specs.some((s) => s.function.name === n),
+      isReadOnly: (n: string) => n === 'mcp__srv__tool0',
+      call: async (n: string, a: Record<string, unknown>) => (calls.push(`${n}:${JSON.stringify(a)}`), { output: 'ok' }),
+    };
+    const full = toolSpecs(undefined, { external, mcpBudget: 0 });
+    assert.equal(full.filter((s) => s.function.name.startsWith('mcp__')).length, 30);
+    const small = toolSpecs(undefined, { external });
+    assert.deepEqual(small.filter((s) => s.function.name.startsWith('mcp')).map((s) => s.function.name), ['mcp_describe', 'mcp_call']);
+    assert.ok(toolTokens(small) < toolTokens(full) / 2);
+    assert.match(small.find((s) => s.function.name === 'mcp_describe')!.function.description!, /mcp__srv__tool29: Does thing 29\./);
+    const root = tmpProject({ 'a.txt': 'x' });
+    const c = ctx(root, { external });
+    assert.match((await executeTool('mcp_describe', { name: 'mcp__srv__tool3' }, c)).output, /parameters: \{"type":"object"/);
+    assert.equal((await executeTool('mcp_call', { name: 'mcp__srv__tool3', arguments: { q: 'x' } }, c)).output, 'ok');
+    assert.deepEqual(calls, ['mcp__srv__tool3:{"q":"x"}']);
+    assert.ok((await executeTool('mcp_call', { name: 'nope' }, c)).isError);
+    // read-only workers only see (and may only call) read-only MCP tools
+    const ro = ctx(root, { external, allowed: new Set(READ_ONLY_TOOLS) });
+    assert.ok((await executeTool('mcp_call', { name: 'mcp__srv__tool5', arguments: {} }, ro)).isError);
   });
 });
