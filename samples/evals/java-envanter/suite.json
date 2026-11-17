@@ -103,6 +103,42 @@
         "java"
       ],
       "timeoutSec": 900
+    },
+    {
+      "id": "K1-depo-transfer",
+      "title": "Depolar arası stok transferi",
+      "tags": [
+        "özellik",
+        "java",
+        "orta",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 1500,
+      "prompt": "Depolar arası stok transferi ekle: InventoryService.transfer(String sku, String kaynakDepo, String hedefDepo, int adet). Yalnızca kaynak depodaki rezerve edilmemiş (available) birimler taşınabilir; rezervasyonlar bulundukları depoda kalır. Kaynakta yeterli serbest stok yoksa (kaynak depoda hiç kayıt olmaması dahil) InsufficientStockException fırlatılmalı ve hiçbir şey değişmemeli. Aynı depo, boş depo adı veya pozitif olmayan adet IllegalArgumentException vermeli. Hedef depoda kayıt yoksa oluşturulmalı. Transfer toplam eldeki stoğu değiştirmez. Depo bazında sorgu için InventoryService.onHand(String sku, String depo) ve available(String sku, String depo) eklensin (deposu olmayan ürün için 0). Mevcut testler geçmeye devam etmeli, Java 8 ile derlenmeli; yeni davranış için test yaz."
+    },
+    {
+      "id": "K2-siparis-guncelleme",
+      "title": "Açık siparişte miktar değiştirme",
+      "tags": [
+        "özellik",
+        "java",
+        "zor",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 1800,
+      "prompt": "Müşteri açık siparişindeki miktarları değiştirebilmeli: OrderService.changeQuantity(String siparisId, String sku, int yeniAdet). Kurallar: yalnızca NEW veya CONFIRMED siparişlerde çalışır, diğer durumlarda IllegalStateException. Adet artarsa fark rezerve edilir; stok yetmezse InsufficientStockException ve sipariş de stok da değişmez. Adet azalırsa fark serbest bırakılır. yeniAdet 0 ise satır siparişten çıkar ve rezervasyonu serbest kalır; siparişin son satırı silinemez (IllegalArgumentException, hiçbir şey değişmez); siparişte olmayan bir ürünü 0 yapmak da IllegalArgumentException. Negatif adet, olmayan sipariş veya katalogda olmayan ürün IllegalArgumentException. Siparişte olmayan bir ürün için yeniAdet > 0 ise satır sona eklenir ve rezerve edilir. Satır sırası korunur; Order.getLines() güncel satırları döndürür ve dışarıdan değiştirilemez olmaya devam eder; PricingService hesapları güncel satırlarla yapılır. Mevcut testler geçmeye devam etmeli, Java 8 ile derlenmeli; yeni davranış için test yaz."
+    },
+    {
+      "id": "K3-iade",
+      "title": "Sevk edilmiş siparişlerde ürün iadesi",
+      "tags": [
+        "özellik",
+        "java",
+        "karmaşık",
+        "karşılaştırma"
+      ],
+      "timeoutSec": 2400,
+      "prompt": "Sevk edilmiş siparişler için ürün iadesi ekle. OrderService.returnItems(String siparisId, String depo, Map<String,Integer> adetler) iade tutarını BigDecimal olarak döndürür. Yalnızca SHIPPED veya kısmen iade edilmiş siparişler iade alabilir, diğerleri IllegalStateException. Bir ürünün toplam iadesi (önceki iadeler dahil) sevk edilen adedi aşamaz; siparişte olmayan ürün, pozitif olmayan adet, boş depo adı veya boş iade IllegalArgumentException verir ve hata durumunda hiçbir şey değişmez (iade ya tamamen uygulanır ya hiç). İade edilen birimler verilen depoya eldeki stok olarak girer. Yeni sipariş durumları: kısmi iadede PARTIALLY_RETURNED, sevk edilen her şey iade edilince RETURNED. Order.getReturnedQuantity(String sku) o ürünün şimdiye kadar iade edilen adedini verir. İade edilmiş veya kısmen iade edilmiş sipariş iptal edilemez ve yeniden sevk edilemez (IllegalStateException). İade tutarı müşterinin o birimler için ödediği tutardır: birim fiyat × adet, siparişin indirim oranı uygulanmış, üzerine ürün kategorisinin KDV'si, toplam kuruşa HALF_UP yuvarlanır; aynı hesap PricingService.refund(Order, Map<String,Integer>) ile de yapılabilmeli (yalnızca hesaplar, siparişi değiştirmez). Tüm ürünler iade edilirse iade tutarı sipariş toplamına eşit olmalı. ReportService.salesByCategory iade edilen birimleri satıştan düşmeli; tamamen iade edilen kategori raporda görünmemeli. Mevcut testler geçmeye devam etmeli, Java 8 ile derlenmeli; yeni davranış için test yaz."
     }
   ]
 }
