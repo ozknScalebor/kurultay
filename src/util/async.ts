@@ -1,5 +1,29 @@
 /** Small async primitives with no external dependencies. */
 
+/**
+ * Requests-per-minute limiter (sliding 60 s window). `take` resolves when one more request fits
+ * and reports how long it waited. Shared by every endpoint behind the same key (a provider's
+ * limit is per key, not per model).
+ */
+export class RateLimiter {
+  private readonly stamps: number[] = [];
+
+  constructor(readonly perMinute: number) {}
+
+  async take(signal?: AbortSignal): Promise<number> {
+    const t0 = Date.now();
+    for (;;) {
+      const now = Date.now();
+      while (this.stamps.length && now - this.stamps[0] >= 60_000) this.stamps.shift();
+      if (this.stamps.length < this.perMinute) {
+        this.stamps.push(now);
+        return now - t0;
+      }
+      await sleep(Math.max(50, 60_000 - (now - this.stamps[0]) + 5), signal);
+    }
+  }
+}
+
 export class Semaphore {
   private active = 0;
   private readonly waiters: Array<() => void> = [];

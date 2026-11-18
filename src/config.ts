@@ -29,9 +29,19 @@ export interface EndpointConfig {
   roles?: Role[];
   /** models of this endpoint only take their roles (set for the `helper` section) */
   rolesOnly?: boolean;
+  /**
+   * Provider request limit (free tiers: e.g. NVIDIA NIM 40). Requests are spaced so the limit is
+   * never hit; endpoints with the same base URL and key share it. 0/unset = no limit.
+   */
+  requestsPerMinute?: number;
 }
 
 export interface ModelOverride {
+  /**
+   * The main model: preferred for coding and planning; the other models add candidates,
+   * reviews and the light work around it (`orchestrator.primaryModel` is the short form).
+   */
+  primary?: boolean;
   /** API key for this model only (default: the endpoint's key) */
   apiKey?: string;
   contextWindow?: number;
@@ -127,6 +137,8 @@ export interface OrchestratorConfig {
    * straight to the coders (default true; only in auto mode without plan approval).
    */
   fastPath?: boolean;
+  /** model id or key of the main model (see ModelOverride.primary) */
+  primaryModel?: string;
   /**
    * In a race, once one candidate is done the others get this share of the time it took
    * (at least 90 s) to finish; slower ones are stopped. 0 = wait for all (default 0.5).

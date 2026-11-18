@@ -12,7 +12,8 @@ import { JUDGE_SCHEMA } from '../llm/schemas.js';
 import type { ExternalTools } from '../mcp/manager.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
 import { errorMessage, settle } from '../util/async.js';
-import type { EventBus } from '../util/events.js';
+import type { EventBus, KEvent } from '../util/events.js';
+import { TimingTracker, renderTiming, type RunTiming } from './timing.js';
 import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
 import { crossTest } from './cross-test.js';
 import { localize, type Localization } from './localize.js';
@@ -152,6 +153,8 @@ export interface RunReport {
   stopReason?: string;
   resumed?: boolean;
   usage?: RunUsage;
+  /** where the time went; multi-model work separately */
+  timing?: RunTiming;
   modelsUsed: string[];
   skills: { available: number; used: SkillUsage[]; diagnostics: SkillDiagnostic[] };
 }
@@ -365,6 +368,8 @@ export class Orchestrator {
   }
 
   private stopReason: string | undefined;
+  /** where the run's time went (multi-model work reported separately) */
+  private readonly timing = new TimingTracker();
   /** time spent waiting for the user (plan approval, apply confirmation): not part of the run time */
   private waitedMs = 0;
 
@@ -407,7 +412,8 @@ export class Orchestrator {
         ctrl.abort(new Error(this.stopReason));
       }
     };
-    const onEvent = (e: { type: string; source?: string; data?: Record<string, unknown> }) => {
+    const onEvent = (e: { type: string; source?: string; data?: Record<string, unknown>; ts?: number }) => {
+      this.timing.onEvent(e as KEvent);
       if (e.type === 'llm.response') {
         const m = model(e.source ?? '?');
         const i = Number(e.data?.in ?? 0);
@@ -639,6 +645,7 @@ export class Orchestrator {
       stopReason: st.stopReason,
       resumed: resumed || undefined,
       usage: st.usage,
+      timing: this.timing.result(Date.now(), this.waitedMs),
       modelsUsed: [...this.used],
       skills: { available: this.skills.size, used: [...this.skillUsage], diagnostics: this.skills.diagnostics },
     };
@@ -650,7 +657,7 @@ export class Orchestrator {
       const lines = this.winners.filter((w) => w.verified).map((w) => JSON.stringify(trajectoryRecord(st, w)));
       if (lines.length) writeFileSync(join(this.sessionDir, 'trajectories.jsonl'), lines.join('\n') + '\n');
     }
-    this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length, stopReason: report.stopReason } });
+    this.bus.emitEvent('run.end', { data: { status, files: changedFiles.length, stopReason: report.stopReason, timing: report.timing } });
     return report;
   }
 
@@ -1117,6 +1124,7 @@ export function renderReport(r: RunReport, diff: string): string {
   }
   if (r.usage && Object.keys(r.usage.byModel).length) lines.push('## Model usage', '', ...renderUsageTable(r.usage), '');
   if (r.usage?.prompt?.requests) lines.push(...renderPromptMakeup(r.usage.prompt), '');
+  if (r.timing) lines.push(...renderTiming(r.timing), '');
   lines.push('## Changes', '', `Full diff: \`${r.diffPath}\``, '');
   return lines.join('\n');
 }

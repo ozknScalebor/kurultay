@@ -12,6 +12,10 @@ on:
         description: 'task ids (comma separated, empty = all K tasks)'
         required: false
         default: ''
+      minutes:
+        description: 'wall-clock budget per agent and task (the same for every agent)'
+        required: false
+        default: '20'
   workflow_call:
     inputs:
       name:
@@ -83,7 +87,8 @@ jobs:
           export OPENAI_API_KEY="${!QWEN_KEY_ENV}"
           name="${{ inputs.name }}"; [ -n "$name" ] || name="manual-$(date -u +%Y%m%d-%H%M)"
           echo "BENCH_NAME=$name" >> "$GITHUB_ENV"
-          node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --qwen qwen --minutes 30 \
+          node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --solo-config "${{ steps.models.outputs.solo_config }}" \
+            --qwen qwen --minutes ${{ inputs.minutes || 20 }} \
             --name "$name" --models "${{ steps.models.outputs.label }}" ${{ inputs.tasks && format('--tasks {0}', inputs.tasks) || '' }}
           cat bench-out/BENCH.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the logs

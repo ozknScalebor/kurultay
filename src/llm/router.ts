@@ -1,6 +1,6 @@
 import { NON_CHAT_MODEL } from '../index/embeddings.js';
 import { ALL_ROLES, DEFAULT_CONFIG, type KurultayConfig, type LlmConfig, type ModelOverride, type Role } from '../config.js';
-import { Semaphore, sleep } from '../util/async.js';
+import { RateLimiter, Semaphore, errorMessage, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens } from '../util/text.js';
 import { OpenAICompatClient, clientFor } from './client.js';
@@ -21,6 +21,9 @@ interface Health {
   timeouts: number;
   lastError?: string;
 }
+
+/** Roles the main model is preferred for; reviews and judging stay with the other models. */
+const PRIMARY_ROLES = new Set<Role>(['coder', 'planner']);
 
 /** Short structured answers that do not need hidden reasoning (see Router.quickThinking). */
 const QUICK_PURPOSE = /^(plan\.(draft|judge)|localize\.|summary\.|analyze\.|condense$|ask\.chair$|toolshim$)/;
@@ -87,6 +90,8 @@ const CIRCUIT_COOLDOWN_MS = 30_000;
 export class Router {
   readonly models = new Map<string, ModelHandle>();
   private readonly endpointSlots = new Map<string, Semaphore>();
+  /** requests-per-minute limiters by endpoint name (endpoints behind one key share one) */
+  private readonly rpm = new Map<string, RateLimiter>();
 
   constructor(
     readonly config: KurultayConfig,
@@ -120,6 +125,11 @@ export class Router {
         preset: override.preset === false || this.config.llm.samplingPresets === false ? undefined : presetFor(c.model),
         health: { consecutiveFailures: 0, circuitOpenUntil: 0, successes: 0, failures: 0, ewmaMsPerToken: 0, consecutiveTimeouts: 0, timeouts: 0 },
       });
+      if (ep.requestsPerMinute && ep.requestsPerMinute > 0 && !this.rpm.has(ep.name)) {
+        // one limiter per provider key: a free tier counts every model of the key together
+        const same = this.config.endpoints.find((o) => o.name !== ep.name && this.rpm.has(o.name) && o.baseUrl === ep.baseUrl && (o.apiKey ?? '') === (ep.apiKey ?? ''));
+        this.rpm.set(ep.name, same ? this.rpm.get(same.name)! : new RateLimiter(ep.requestsPerMinute));
+      }
       if (!this.endpointSlots.has(ep.name)) {
         const limit = ep.maxConcurrency && ep.maxConcurrency > 0 ? ep.maxConcurrency : Math.max(1, c.maxConcurrency || 2);
         this.endpointSlots.set(ep.name, new Semaphore(limit));
@@ -224,7 +234,13 @@ export class Router {
     const s = this.slotsFor(h.caps.endpoint);
     const load = (s.inUse + s.queued) / Math.max(1, s.limit);
     const reliability = (h.health.successes + 1) / (h.health.successes + h.health.failures + 2);
-    return base * (0.55 + 0.45 * reliability) * (1 / (1 + 0.6 * load));
+    return base * (0.55 + 0.45 * reliability) * (1 / (1 + 0.6 * load)) * (this.isPrimary(h) && role && PRIMARY_ROLES.has(role) ? 1.6 : 1);
+  }
+
+  /** The configured main model (ModelOverride.primary or orchestrator.primaryModel). */
+  isPrimary(h: ModelHandle): boolean {
+    const p = this.config.orchestrator?.primaryModel;
+    return !!h.override.primary || (!!p && (h.caps.key === p || h.caps.model === p));
   }
 
   /**
@@ -417,7 +433,21 @@ export class Router {
       if (h.health.circuitOpenUntil > Date.now()) {
         throw new LlmError(`${h.caps.key} circuit breaker open`, 'circuit_open', undefined, h.caps.key);
       }
+      const q0 = Date.now();
       await slots.acquire(req.signal);
+      const queued = Date.now() - q0;
+      if (queued > 250) this.bus?.emitEvent('llm.wait', { source: h.caps.key, data: { reason: 'slot', ms: queued, purpose: req.purpose } });
+      const limiter = this.rpm.get(h.caps.endpoint);
+      if (limiter) {
+        let waited = 0;
+        try {
+          waited = await limiter.take(req.signal);
+        } catch (e) {
+          slots.release();
+          throw new LlmError(errorMessage(e), 'aborted', undefined, h.caps.key);
+        }
+        if (waited > 0) this.bus?.emitEvent('llm.wait', { source: h.caps.key, data: { reason: 'rate_limit', ms: waited, purpose: req.purpose } });
+      }
       // reasoning models spend part of the output budget on thinking – give them more room
       const asked = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
       const maxTokens = h.outputBoost && req.maxTokens ? Math.round(Math.min(asked * h.outputBoost, Math.max(asked, h.caps.contextWindow - promptEstimate - 256))) : asked;
@@ -489,6 +519,7 @@ export class Router {
         // a reused keep-alive connection the server (or a proxy) already closed: retry at once
         const dropped = err.kind === 'network' && attempt === 1 && /ECONNRESET|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i.test(err.message);
         const wait = dropped ? 0 : err.retryAfterMs !== undefined ? Math.min(5 * 60_000, Math.max(backoff, err.retryAfterMs)) : err.kind === 'rate_limit' ? backoff * 2 : backoff;
+        if (err.kind === 'rate_limit') this.bus?.emitEvent('llm.wait', { source: h.caps.key, data: { reason: 'rate_limit', ms: Math.round(wait), purpose: req.purpose } });
         await sleep(wait, req.signal);
       } finally {
         slots.release();

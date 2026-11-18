@@ -11,6 +11,7 @@ import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
 import { DEFAULT_MOCK_MODELS, startMockServer } from './mock/server.js';
+import { multiModelNote } from './orchestrator/timing.js';
 import { Orchestrator, fmtDuration, fmtTokens, loadRunUsage, mergeUsage, renderPlan, renderUsageTable, type RunUsage } from './orchestrator/orchestrator.js';
 import { ModelStats } from './llm/stats.js';
 import type { Plan } from './orchestrator/planner.js';
@@ -322,6 +323,8 @@ async function cmdRun(app: App, args: Args) {
     out(`${color.bold('Report')}: ${report.reportPath}`);
     out(`${color.bold('Diff')}:  ${report.diffPath}`);
     if (report.usage) out(`${color.bold('Usage')}: ${plural(report.usage.requests, 'request')} · ${fmtTokens(report.usage.tokensIn + report.usage.tokensOut)} tokens · ${fmtDuration(report.usage.seconds)}`);
+    const mm = report.timing && multiModelNote(report.timing);
+    if (mm) out(color.yellow(`⚠ ${mm} (REPORT.md "Time")`));
     if (report.stopReason && report.status === 'incomplete') out(color.yellow(`Stopped: ${report.stopReason}. Continue with: kurultay run --resume ${report.sessionId}`));
     if (report.status !== 'completed') process.exitCode = 2;
   } finally {

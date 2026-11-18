@@ -138,6 +138,8 @@ A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurulta
 | **Race deadline** | Once one candidate is done (and passes build/tests, if there are any), the others get half of that time, at least 90 s; slower ones are stopped and not counted as failures | `orchestrator.raceGrace`, `raceGraceMinSeconds` |
 | **No hidden thinking for short JSON** | Plans, localisation and summaries ask reasoning models to answer without thinking (`chat_template_kwargs.enable_thinking: false` for Qwen3/GLM templates in vLLM, SGLang and llama.cpp; `reasoning_effort: low` for gpt-oss). Coding, reviews and the requirement check keep thinking. A server that rejects the field is asked again without it | `llm.quickStructured`, `"thinking": true` per model |
 | **Helpers stay helpers** | A `rolesOnly` helper is never picked as a reviewer just because the real models wrote the code under review | – |
+| **One main model** | The model named as `orchestrator.primaryModel` (or `"primary": true` per model) is preferred for coding and planning; the other models still race, review and judge | `orchestrator.primaryModel` |
+| **Where the time went** | Every REPORT.md has a "Time" table (planning, coding, waiting for slower candidates, cross-checks, fix rounds, judges, rate-limit waits). When the multi-model work takes 25% or more of a run of 30 s or longer, the console and `kurultay run` print a separate warning with the breakdown | – |
 
 
 ### Context and measurement (adopted from Qwen Code)
@@ -183,7 +185,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.10.0 · all your local LLMs in one council · offline
+ v0.11.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -351,7 +353,8 @@ Several servers use the `endpoints` list instead (it can also be added next to `
 ```
 
 - When `models` is empty the list is discovered with `GET /models`. Embedding and reranker models are filtered out automatically.
-- With `maxConcurrency: 0` the probe decides the endpoint's concurrency limit.
+- With `maxConcurrency: 0` (or unset) the probe decides the endpoint's concurrency limit – Kurultay has no fixed cap of its own. Set a number only when the server or the provider plan needs one.
+- `requestsPerMinute` per endpoint: for providers that limit requests per minute (NVIDIA NIM free tier: 40). Requests wait for the limit instead of failing with 429; endpoints with the same `baseUrl` and `apiKey` share one limit. The waits show up in REPORT.md "Time".
 - `apiKey` accepts `${ENV_VAR:-default}`.
 - Timeouts live in the `llm` section; the same fields (`timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs`) can also be set per endpoint or model:
 
@@ -406,13 +409,25 @@ kurultay swebench collect --dir swe-qwen --name qwen-code
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.10.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.11.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 ```
 
 **Grading on GitHub instead:** put the predictions under `benchmarks/swebench/<run>/` (see its README) and push – the `swebench` workflow grades them with the official harness, commits `results-*.json` and `RESULTS.md`, and adds the table to the latest release's notes. Run the workflow by hand without a folder for a smoke test with the reference patches.
 
 Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
+
+## Bench: Kurultay vs Qwen Code (GitHub, free NVIDIA NIM models)
+
+The `bench` workflow (Actions → bench, or after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with three agents and scores them with the same hidden tests. It needs one repository secret, `NVIDIA_API_KEY` (free key from build.nvidia.com).
+
+| Agent | Models |
+|---|---|
+| Kurultay (all models) | main model Kimi K2 (`orchestrator.primaryModel`) + a second NIM model of another family + a small helper |
+| Kurultay (main model only) | Kimi K2 alone – shows what the extra models add or cost |
+| Qwen Code | Kimi K2 |
+
+For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget (`minutes`, default 20), and the run order is rotated per task. The table reports time, requests, tokens, rate-limit waits and Kurultay's multi-model work; if all models were slower than the main model alone, a separate "Multi-model slowdown" line says by how much. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen`.
 
 ## Rules and skills
 

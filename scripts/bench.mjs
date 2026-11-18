@@ -2,8 +2,10 @@
 // Head-to-head bench: Kurultay and Qwen Code on the same tasks, scored with the same hidden tests.
 //
 //   node scripts/bench.mjs --out bench-out [--suites java-envanter,cpp-telemetri] [--tasks K1-depo-transfer,…]
-//                          [--config k.json] [--qwen "qwen"] [--minutes 30] [--name v0.10.0]
+//                          [--config k.json] [--solo-config k-solo.json] [--qwen "qwen"] [--minutes 30] [--name v0.10.0]
 //
+// Per task up to three agents run, in an order rotated per task: Kurultay with all models,
+// Kurultay with the main model only (--solo-config) and Qwen Code (--qwen).
 // Kurultay runs through its own eval harness (fresh copy per task, hidden tests added afterwards).
 // Qwen Code gets a fresh copy of the same project, the same task text, and is run headless
 // (--yolo, a wall-clock budget); its folder is then scored with the same hidden tests.
@@ -39,27 +41,63 @@ export function qwenStats(stdout) {
   }
 }
 
+export const AGENTS = [
+  { key: 'kurultay', label: 'Kurultay (all models)' },
+  { key: 'solo', label: 'Kurultay (main model only)' },
+  { key: 'qwen', label: 'Qwen Code' },
+];
+
+/** Run order for the i-th task: rotated so no agent always goes first (warm caches, quieter API minutes). */
+export function orderFor(i, keys) {
+  const n = keys.length;
+  return keys.map((_, j) => keys[(i + j) % n]);
+}
+
 export function renderBench(b) {
   const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : '-');
-  const k = b.tasks.filter((t) => t.kurultay?.passed).length;
-  const q = b.tasks.filter((t) => t.qwen?.passed).length;
   const sum = (sel) => b.tasks.reduce((s, t) => s + (sel(t) ?? 0), 0);
   const min = (s) => `${(s / 60).toFixed(1)} min`;
+  const tok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} K` : String(n));
+  const ran = AGENTS.filter((a) => b.tasks.some((t) => t[a.key]));
+  const rows = ran.map((a) => {
+    const got = b.tasks.filter((t) => t[a.key]);
+    const passed = got.filter((t) => t[a.key].passed).length;
+    const wait = sum((t) => t[a.key]?.rateLimitWait);
+    const mm = sum((t) => t[a.key]?.multiModelSeconds);
+    return `| ${a.label} | ${passed} / ${got.length} | ${pct(passed, got.length)} | ${min(sum((t) => t[a.key]?.seconds))} | ${sum((t) => t[a.key]?.requests) || '-'} | ${tok(sum((t) => t[a.key]?.tokens))} | ${a.key === 'qwen' ? '-' : min(wait)} | ${a.key === 'kurultay' ? min(mm) : '-'} |`;
+  });
+  const notes = [];
+  // only tasks both Kurultay variants ran
+  const both = b.tasks.filter((t) => t.kurultay && t.solo);
+  const k = both.reduce((s, t) => s + t.kurultay.seconds, 0);
+  const so = both.reduce((s, t) => s + t.solo.seconds, 0);
+  if (k && so) {
+    const d = k - so;
+    notes.push(
+      d > 0
+        ? `⚠ **Multi-model slowdown:** with all models Kurultay took ${min(d)} (${Math.round((d / so) * 100)}%) longer than with the main model alone; ${min(both.reduce((s, t) => s + (t.kurultay.multiModelSeconds ?? 0), 0))} of its time went to multi-model work (plan council, waiting for slower candidates, cross-checks, judges, shared rate limit) – see each run's REPORT.md "Time".`
+        : `The extra models made Kurultay ${min(-d)} (${Math.round((-d / so) * 100)}%) faster than the main model alone.`,
+    );
+  }
   return [
     `### Bench – ${b.name}`,
     '',
-    `Models: ${b.models}. Same task text, a fresh copy of the project for every task, the same hidden tests.`,
+    `Models: ${b.models}. Same task text, a fresh copy of the project for every task and agent, the same hidden tests; the run order is rotated per task.`,
     '',
-    '| Agent | Passed | Rate | Total time | Requests |',
-    '|---|---:|---:|---:|---:|',
-    `| Kurultay | ${k} / ${b.tasks.length} | ${pct(k, b.tasks.length)} | ${min(sum((t) => t.kurultay?.seconds))} | ${sum((t) => t.kurultay?.requests)} |`,
-    ...(b.tasks.some((t) => t.qwen) ? [`| Qwen Code | ${q} / ${b.tasks.length} | ${pct(q, b.tasks.length)} | ${min(sum((t) => t.qwen?.seconds))} | ${sum((t) => t.qwen?.requests) || '-'} |`] : []),
+    '| Agent | Passed | Rate | Total time | Requests | Tokens | Rate-limit wait | Multi-model work |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|',
+    ...rows,
     '',
-    '| Task | Kurultay | Qwen Code | Kurultay time | Qwen time |',
-    '|---|:---:|:---:|---:|---:|',
-    ...b.tasks.map((t) => `| ${t.suite}/${t.id} | ${t.kurultay ? (t.kurultay.passed ? '✅' : '❌') : '-'} | ${t.qwen ? (t.qwen.passed ? '✅' : '❌') : '-'} | ${t.kurultay ? min(t.kurultay.seconds) : '-'} | ${t.qwen ? min(t.qwen.seconds) : '-'} |`),
+    ...(notes.length ? [...notes, ''] : []),
+    `| Task | ${ran.map((a) => a.label).join(' | ')} |`,
+    `|---|${ran.map(() => ':---:').join('|')}|`,
+    ...b.tasks.map((t) => `| ${t.suite}/${t.id} | ${ran.map((a) => (t[a.key] ? `${t[a.key].passed ? '✅' : '❌'} ${min(t[a.key].seconds)}` : '-')).join(' | ')} |`),
     '',
   ].join('\n');
+}
+
+function kurultayResult(a) {
+  return a && { passed: a.passed, seconds: a.seconds, requests: a.requests, tokens: a.tokensIn + a.tokensOut, status: a.status, rateLimitWait: a.rateLimitWait ?? 0, multiModelSeconds: a.multiModelSeconds ?? 0, multiModelShare: a.multiModelShare ?? 0 };
 }
 
 async function main() {
@@ -71,39 +109,44 @@ async function main() {
   const wanted = f.tasks ? new Set(String(f.tasks).split(',').map((s) => s.trim())) : undefined;
   const minutes = Number(f.minutes ?? 30);
   const bench = { name: String(f.name ?? 'bench'), models: String(f.models ?? process.env.BENCH_MODELS ?? '?'), at: new Date().toISOString(), tasks: [] };
+  const keys = ['kurultay', ...(f['solo-config'] ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])];
+  let i = 0;
 
   for (const name of suites) {
     const suiteDir = join(root, 'samples', 'evals', name);
     const suite = evalMod.loadSuite(suiteDir);
     const tasks = suite.tasks.filter((t) => (wanted ? wanted.has(t.id) : t.id.startsWith('K')));
-    if (!tasks.length) continue;
-    // ---- Kurultay
-    console.log(`\n== Kurultay · ${name}: ${tasks.map((t) => t.id).join(', ')}`);
-    const k = await evalMod.runEval({ suiteDir, tasks: tasks.map((t) => t.id), modes: ['auto'], config: f.config, outDir: join(out, `kurultay-${name}`), onProgress: (l) => console.log(l) });
     for (const t of tasks) {
-      const a = k.summary.attempts.find((x) => x.task === t.id);
-      bench.tasks.push({ suite: name, id: t.id, kurultay: a && { passed: a.passed, seconds: a.seconds, requests: a.requests, tokens: a.tokensIn + a.tokensOut, status: a.status } });
-    }
-    // ---- Qwen Code
-    if (!f.qwen) continue;
-    for (const t of tasks) {
-      const work = join(out, `qwen-${name}`, t.id);
-      rmSync(work, { recursive: true, force: true });
-      mkdirSync(dirname(work), { recursive: true });
-      cpSync(join(suiteDir, suite.project), work, { recursive: true, filter: (p) => !/[\\/](\.kurultay|build|\.build)$/.test(p) });
-      // Qwen Code works in a git repository like a developer would
-      execFileSync('git', ['init', '-q'], { cwd: work });
-      console.log(`\n== Qwen Code · ${name}/${t.id}`);
-      const t0 = Date.now();
-      const [cmd, ...pre] = String(f.qwen).split(' ');
-      const r = spawnSync(cmd, [...pre, '-p', t.prompt, '--yolo', '--max-wall-time', `${minutes}m`, '--output-format', 'json'], { cwd: work, encoding: 'utf8', timeout: (minutes + 5) * 60_000, maxBuffer: 256 * 1024 * 1024, env: process.env });
-      const seconds = (Date.now() - t0) / 1000;
-      writeFileSync(join(out, `qwen-${name}-${t.id}.log`), `${r.stdout ?? ''}\n--- stderr\n${r.stderr ?? ''}`);
-      const s = qwenStats(r.stdout ?? '');
-      const score = await evalMod.scoreFolder({ suiteDir, dir: work, tasks: [t.id] });
-      const row = bench.tasks.find((x) => x.suite === name && x.id === t.id);
-      row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };
-      console.log(`${row.qwen.passed ? '✓' : '✗'} ${t.id} · ${seconds.toFixed(0)} s · ${s.requests} requests · exit ${r.status}`);
+      const row = { suite: name, id: t.id };
+      bench.tasks.push(row);
+      for (const key of orderFor(i++, keys)) {
+        if (key === 'kurultay' || key === 'solo') {
+          console.log(`\n== ${key === 'solo' ? 'Kurultay (main model only)' : 'Kurultay'} · ${name}/${t.id}`);
+          const config = key === 'solo' ? String(f['solo-config']) : f.config;
+          const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${t.id}`), onProgress: (l) => console.log(l) });
+          row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
+          continue;
+        }
+        const work = join(out, `qwen-${name}`, t.id);
+        rmSync(work, { recursive: true, force: true });
+        mkdirSync(dirname(work), { recursive: true });
+        cpSync(join(suiteDir, suite.project), work, { recursive: true, filter: (p) => !/[\\/](\.kurultay|build|\.build)$/.test(p) });
+        // Qwen Code works in a git repository like a developer would
+        execFileSync('git', ['init', '-q'], { cwd: work });
+        console.log(`\n== Qwen Code · ${name}/${t.id}`);
+        const t0 = Date.now();
+        const [cmd, ...pre] = String(f.qwen).split(' ');
+        const r = spawnSync(cmd, [...pre, '-p', t.prompt, '--yolo', '--max-wall-time', `${minutes}m`, '--output-format', 'json'], { cwd: work, encoding: 'utf8', timeout: (minutes + 5) * 60_000, maxBuffer: 256 * 1024 * 1024, env: process.env });
+        const seconds = (Date.now() - t0) / 1000;
+        writeFileSync(join(out, `qwen-${name}-${t.id}.log`), `${r.stdout ?? ''}\n--- stderr\n${r.stderr ?? ''}`);
+        const s = qwenStats(r.stdout ?? '');
+        const score = await evalMod.scoreFolder({ suiteDir, dir: work, tasks: [t.id] });
+        row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };
+        console.log(`${row.qwen.passed ? '✓' : '✗'} ${t.id} · ${seconds.toFixed(0)} s · ${s.requests} requests · exit ${r.status}`);
+      }
+      // partial results survive a cancelled job
+      writeFileSync(join(out, 'bench.json'), JSON.stringify(bench, null, 1));
+      writeFileSync(join(out, 'BENCH.md'), renderBench(bench));
     }
   }
   writeFileSync(join(out, 'bench.json'), JSON.stringify(bench, null, 1));
