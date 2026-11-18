@@ -195,6 +195,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.rel.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -202,6 +204,7 @@ jobs:
           pattern: kurultay-offline-*
           path: dist-artifacts
       - name: GitHub Release
+        id: rel
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -212,6 +215,7 @@ jobs:
           else
             tag="v$(node -p "require('./package.json').version")"
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" >/dev/null 2>&1; then
             # the release exists (e.g. created by hand): attach/replace the packages instead of failing
             echo "::notice::$tag already exists – uploading the packages to it"
@@ -220,3 +224,15 @@ jobs:
           fi
           # --target creates the tag on this commit when it does not exist yet
           gh release create "$tag" $files --target "${GITHUB_SHA}" --title "Kurultay $tag" --generate-notes
+
+  # 8) after a release: Kurultay vs Qwen Code on the comparison tasks with free online models
+  #    (skipped when the GROQ_API_KEY secret is not set); results go into the release notes
+  bench:
+    name: Bench (Kurultay vs Qwen Code)
+    needs: [release]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/bench.yml
+    with:
+      name: ${{ needs.release.outputs.tag }}
+    secrets: inherit
