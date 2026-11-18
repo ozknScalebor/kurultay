@@ -21,13 +21,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const PROVIDERS = {
-  nvidia: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/kimi-k2/i, /deepseek-v4/i, /deepseek-v3/i, /glm-5/i, /qwen3-coder/i, /gpt-oss-120b/i], concurrency: 8, rpm: 40 },
+  nvidia: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/kimi-k\d/i, /deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i], concurrency: 8, rpm: 40 },
   // a second NIM model from ANOTHER family than the first (same key; the 40 requests/min are shared)
-  nvidia2: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/deepseek-v4/i, /glm-5/i, /qwen3-coder/i, /deepseek-v3/i, /glm-4\.[5-9]/i, /gpt-oss-120b/i], concurrency: 8, rpm: 40, differentFrom: 'nvidia' },
+  nvidia2: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i, /kimi-k\d/i], concurrency: 8, rpm: 40, differentFrom: 'nvidia' },
   mistral: { env: 'MISTRAL_API_KEY', base: 'https://api.mistral.ai/v1', prefer: [/^devstral-medium/i, /^devstral/i, /^codestral-latest$/i, /^mistral-medium-latest$/i, /^mistral-large-latest$/i], concurrency: 1 },
   groq: { env: 'GROQ_API_KEY', base: 'https://api.groq.com/openai/v1', prefer: [/^openai\/gpt-oss-120b$/i], concurrency: 1 },
 };
-const HELPER = { nvidia: [/gpt-oss-20b/i, /llama-3\.1-8b-instruct/i, /phi-4-mini/i], mistral: [/^mistral-small-latest$/i, /^ministral-8b/i], groq: [/^openai\/gpt-oss-20b$/i] };
+const HELPER = { nvidia: [/gpt-oss-20b/i, /nemotron-3\.5-lightning/i, /nemotron-3\.5-bolt/i, /gemma-3-12b-it/i, /llama-3\.1-8b-instruct/i, /phi-4-mini/i], mistral: [/^mistral-small-latest$/i, /^ministral-8b/i], groq: [/^openai\/gpt-oss-20b$/i] };
 
 /** Model family of an id ("moonshotai/kimi-k2.6" → "kimi"). */
 export function family(id) {
@@ -37,7 +37,7 @@ export function family(id) {
 
 /** First id matching the preferences, in preference order (instruct/chat variants, never base/embedding models). */
 export function pick(ids, prefer) {
-  const usable = ids.filter((id) => !/embed|rerank|guard|vision-only|base$|ocr|moderation|tts|whisper/i.test(id));
+  const usable = ids.filter((id) => !/embed|rerank|guard|safety|vision-only|base$|ocr|moderation|tts|whisper|clip|detector|translate|calibration/i.test(id));
   for (const re of prefer) {
     // newest version first; reasoning-only variants last (slow for an agent loop)
     const slow = (id) => (/thinking|reason/i.test(id) ? 1 : 0);
