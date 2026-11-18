@@ -36,7 +36,7 @@ describe('SWE-bench summary for CI and release notes', () => {
 describe('bench scripts', () => {
   it('reads Qwen Code stats, renders the head-to-head table and picks a Gemini model', async () => {
     const bench = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench.mjs')).href)) as { qwenStats: (s: string) => { requests: number; tokens: number; toolCalls: number }; renderBench: (b: unknown) => string };
-    const cfg = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench-config.mjs')).href)) as { pick: (ids: string[], prefer: RegExp[]) => string | undefined; PROVIDERS: Record<string, { prefer: RegExp[] }> };
+    const cfg = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench-config.mjs')).href)) as { pick: (ids: string[], prefer: RegExp[]) => string | undefined; family: (id: string) => string; PROVIDERS: Record<string, { prefer: RegExp[] }> };
     assert.deepEqual(bench.qwenStats('[{"type":"x"},{"stats":{"models":{"a":{"api":{"totalRequests":3},"tokens":{"total":10}},"b":{"api":{"totalRequests":2},"tokens":{"total":5}}},"tools":{"totalCalls":4}}}]'), { requests: 5, tokens: 15, toolCalls: 4 });
     assert.deepEqual(bench.qwenStats('not json'), { requests: 0, tokens: 0, toolCalls: 0 });
     const md = bench.renderBench({
@@ -56,5 +56,9 @@ describe('bench scripts', () => {
     assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'nvidia/nv-embed-v2'], nv), 'deepseek-ai/deepseek-v4.1-flash');
     assert.equal(cfg.pick(['mistral-small-latest', 'codestral-latest', 'devstral-medium-2507', 'devstral-small-2507'], cfg.PROVIDERS.mistral.prefer), 'devstral-medium-2507');
     assert.equal(cfg.pick(['x'], nv), undefined);
+    assert.equal(cfg.family('moonshotai/kimi-k2.6'), 'kimi');
+    assert.equal(cfg.family('deepseek-ai/deepseek-v4.1-flash'), 'deepseek');
+    // the second NIM slot prefers another family
+    assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash'], cfg.PROVIDERS.nvidia2.prefer), 'deepseek-ai/deepseek-v4.1-flash');
   });
 });

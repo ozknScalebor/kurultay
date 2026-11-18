@@ -2,8 +2,9 @@ name: bench
 
 # Kurultay vs Qwen Code on the comparison tasks (samples/evals, K1–K3 in Java and C++), with free
 # online models, scored with the same hidden tests. Runs after every release (called from ci.yml)
-# and by hand. Repository secrets: NVIDIA_API_KEY and MISTRAL_API_KEY (chosen for their free
-# token volume, see scripts/bench-config.mjs); GROQ_API_KEY is only a fallback.
+# and by hand. Repository secret: NVIDIA_API_KEY (40 requests/min, no daily token cap – two main
+# models from different families + a helper, see scripts/bench-config.mjs); MISTRAL_API_KEY and
+# GROQ_API_KEY are optional fallbacks.
 on:
   workflow_dispatch:
     inputs:
@@ -47,7 +48,7 @@ jobs:
         id: keys
         run: |
           if [ -z "$NVIDIA_API_KEY$MISTRAL_API_KEY$GROQ_API_KEY" ]; then
-            echo "::notice::no model API key set (NVIDIA_API_KEY / MISTRAL_API_KEY in Settings → Secrets and variables → Actions) – bench skipped"
+            echo "::notice::no model API key set (NVIDIA_API_KEY in Settings → Secrets and variables → Actions) – bench skipped"
             echo "skip=1" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v5
