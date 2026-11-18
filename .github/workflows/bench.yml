@@ -16,6 +16,14 @@ on:
         description: 'wall-clock budget per agent and task (the same for every agent)'
         required: false
         default: '20'
+      model:
+        description: 'main model id on NVIDIA NIM (empty = first answering of Kimi K2, DeepSeek, GLM…)'
+        required: false
+        default: ''
+      second:
+        description: 'second model id on NVIDIA NIM (empty = first answering model of another family)'
+        required: false
+        default: ''
   workflow_call:
     inputs:
       name:
@@ -72,6 +80,9 @@ jobs:
       - name: Models
         if: steps.keys.outputs.skip != '1'
         id: models
+        env:
+          BENCH_MODEL: ${{ inputs.model }}
+          BENCH_SECOND: ${{ inputs.second }}
         run: node scripts/bench-config.mjs > "$GITHUB_OUTPUT"
       - name: Capability probe (quick)
         if: steps.keys.outputs.skip != '1'
