@@ -4,9 +4,9 @@
 //
 // Chosen for their FREE TOKEN volume (a Kurultay task sends tens of thousands of prompt tokens
 // per request), not only their request counts:
-//   NVIDIA NIM      40 requests/min, no daily token cap          → main model (Kimi K2 / DeepSeek / GLM)
-//   Mistral         1 B tokens/month, 500 K tokens/min per model → second model (Devstral / Codestral / Medium)
-//                   + helper (Mistral Small, its own per-model budget)
+//   NVIDIA NIM      40 requests/min, no daily token cap → BOTH main models from two different
+//                   families (Kimi K2 and DeepSeek / GLM / Qwen3-Coder) + a small helper; one key
+//   Mistral         used when a key is given (free tier availability varies by account)
 //   Groq            only a fallback: 200 K tokens/day per model is a handful of agent tasks
 // The model ids are read from each provider's /models list, newest preference first.
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -14,10 +14,18 @@ import { join } from 'node:path';
 
 export const PROVIDERS = {
   nvidia: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/kimi-k2/i, /deepseek-v4/i, /deepseek-v3/i, /glm-5/i, /qwen3-coder/i, /gpt-oss-120b/i], concurrency: 2 },
+  // a second NIM model from ANOTHER family than the first (same key; the 40 requests/min are shared)
+  nvidia2: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/deepseek-v4/i, /glm-5/i, /qwen3-coder/i, /deepseek-v3/i, /glm-4\.[5-9]/i, /gpt-oss-120b/i], concurrency: 1, differentFrom: 'nvidia' },
   mistral: { env: 'MISTRAL_API_KEY', base: 'https://api.mistral.ai/v1', prefer: [/^devstral-medium/i, /^devstral/i, /^codestral-latest$/i, /^mistral-medium-latest$/i, /^mistral-large-latest$/i], concurrency: 1 },
   groq: { env: 'GROQ_API_KEY', base: 'https://api.groq.com/openai/v1', prefer: [/^openai\/gpt-oss-120b$/i], concurrency: 1 },
 };
-const HELPER = { mistral: [/^mistral-small-latest$/i, /^ministral-8b/i], groq: [/^openai\/gpt-oss-20b$/i] };
+const HELPER = { nvidia: [/gpt-oss-20b/i, /llama-3\.1-8b-instruct/i, /phi-4-mini/i], mistral: [/^mistral-small-latest$/i, /^ministral-8b/i], groq: [/^openai\/gpt-oss-20b$/i] };
+
+/** Model family of an id ("moonshotai/kimi-k2.6" → "kimi"). */
+export function family(id) {
+  const m = /(kimi|deepseek|glm|qwen|gpt-oss|llama|mistral|devstral|codestral|gemma|nemotron|phi)/i.exec(id);
+  return m ? m[1].toLowerCase() : id;
+}
 
 /** First id matching the preferences, in preference order (instruct/chat variants, never base/embedding models). */
 export function pick(ids, prefer) {
@@ -46,21 +54,24 @@ async function main() {
   const endpoints = [];
   const labels = [];
   const lists = {};
+  const chosen = {};
   for (const [name, p] of Object.entries(PROVIDERS)) {
     if (!process.env[p.env]) continue;
-    lists[name] = await listModels(p.base, process.env[p.env]);
-    // Groq only when there are not two better providers
-    if (name === 'groq' && endpoints.length >= 2) continue;
-    const model = pick(lists[name], p.prefer);
+    // two main models are enough; Mistral / Groq only fill a missing slot
+    if (endpoints.length >= 2) continue;
+    lists[name] = lists[p.differentFrom] ?? (await listModels(p.base, process.env[p.env]));
+    const taken = p.differentFrom && chosen[p.differentFrom] ? family(chosen[p.differentFrom]) : undefined;
+    const model = pick(lists[name].filter((id) => !taken || family(id) !== taken), p.prefer);
     if (!model) {
       console.error(`::warning::${name}: no suitable model in its /models list – skipped`);
       continue;
     }
+    chosen[name] = model;
     endpoints.push({ name, baseUrl: p.base, apiKey: `\${${p.env}}`, models: [model], maxConcurrency: p.concurrency });
     labels.push(`${model} (${name})`);
   }
   if (!endpoints.length) {
-    console.error('::error::no usable model – set NVIDIA_API_KEY and/or MISTRAL_API_KEY (or GROQ_API_KEY)');
+    console.error('::error::no usable model – set NVIDIA_API_KEY and/or MISTRAL_API_KEY or GROQ_API_KEY');
     process.exit(1);
   }
   let helper;
