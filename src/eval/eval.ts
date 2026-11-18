@@ -64,6 +64,10 @@ export interface EvalAttempt {
   checkOutput: string;
   error?: string;
   workDir: string;
+  /** seconds of multi-model work and its share (see orchestrator/timing.ts) */
+  multiModelSeconds?: number;
+  multiModelShare?: number;
+  rateLimitWait?: number;
 }
 
 export interface EvalSummary {
@@ -168,6 +172,8 @@ export interface EvalOptions {
   version?: string;
   /** JSONL file every run appends its per-mode numbers to (compare versions over time) */
   historyFile?: string;
+  /** wall-clock budget of one agent run in seconds (default: the task's timeoutSec, 30 min) – the bench gives every agent the same */
+  runTimeoutSec?: number;
 }
 
 export interface HistoryEntry {
@@ -326,7 +332,7 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   });
   const t0 = Date.now();
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('timed out')), timeoutSec * 1000);
+  const timer = setTimeout(() => ctrl.abort(new Error('timed out')), (opts.runTimeoutSec ?? timeoutSec) * 1000);
   const onAbort = () => ctrl.abort(opts.signal?.reason);
   opts.signal?.addEventListener('abort', onAbort, { once: true });
   try {
@@ -339,6 +345,11 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     a.models = report.modelsUsed;
     a.changedFiles = report.changedFiles.length;
     a.iterations = report.iterations;
+    if (report.timing) {
+      a.multiModelSeconds = report.timing.multiModel;
+      a.multiModelShare = report.timing.multiModelShare;
+      a.rateLimitWait = report.timing.rateLimitWait;
+    }
   } catch (e) {
     a.error = errorMessage(e).slice(0, 300);
     a.status = ctrl.signal.aborted ? 'timeout' : 'error';

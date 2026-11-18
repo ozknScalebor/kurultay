@@ -19,6 +19,7 @@ import { loadProfile, profilePath, runProbe } from '../probe/profile.js';
 import { SkillRegistry } from '../skills/skills.js';
 import { attachTerminal, color, fmtSeconds, section } from '../ui/terminal.js';
 import { ActivityTracker } from './activity.js';
+import { multiModelNote } from '../orchestrator/timing.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus } from '../util/events.js';
 import { truncateTokens, plural } from '../util/text.js';
@@ -664,6 +665,9 @@ export class KurultayConsole {
     for (const f of report.changedFiles.slice(0, 20)) this.out(`  ${f}`);
     if (report.changedFiles.length > 20) this.out(color.dim(`  … ${report.changedFiles.length - 20} more files`));
     if (report.merge?.conflicts.length) this.out(color.yellow(`Conflicts: ${report.merge.conflicts.join(', ')}`));
+    // the extra models cost time – say how much, so it can be weighed against what they found
+    const mm = report.timing && multiModelNote(report.timing);
+    if (mm) this.out(color.yellow(`⚠ ${mm} (REPORT.md "Time")`));
     this.printUsage(report.usage ? fmtDuration(report.usage.seconds) : undefined);
     if (report.stopReason && report.status === 'incomplete') this.out(color.yellow(`Stopped: ${report.stopReason}. To continue: /continue-run`));
     this.out(color.dim(`Report: ${shortPath(report.reportPath)} (/report) · diff: /diff${report.checkpointPath ? ' · undo: /rewind' : ''}`));
