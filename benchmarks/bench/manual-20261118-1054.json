@@ -1,0 +1,38 @@
+{
+ "name": "manual-20261118-1054",
+ "models": "Kurultay: main moonshotai/kimi-k3.1-pro + minimaxai/minimax-m3.1-flash (nvidia2), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: moonshotai/kimi-k3.1-pro",
+ "at": "2026-11-18T10:54:28.727Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "K1-depo-transfer",
+   "kurultay": {
+    "passed": false,
+    "seconds": 1200.001,
+    "requests": 18,
+    "tokens": 124698,
+    "status": "timeout",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0
+   },
+   "solo": {
+    "passed": false,
+    "seconds": 1200,
+    "requests": 28,
+    "tokens": 177964,
+    "status": "timeout",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 501.835,
+    "requests": 9,
+    "tokens": 244363,
+    "exit": 0
+   }
+  }
+ ]
+}
