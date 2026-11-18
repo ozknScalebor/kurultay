@@ -36,7 +36,7 @@ describe('SWE-bench summary for CI and release notes', () => {
 describe('bench scripts', () => {
   it('reads Qwen Code stats, renders the head-to-head table and picks a Gemini model', async () => {
     const bench = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench.mjs')).href)) as { qwenStats: (s: string) => { requests: number; tokens: number; toolCalls: number }; renderBench: (b: unknown) => string };
-    const cfg = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench-config.mjs')).href)) as { pickGemini: (ids: string[]) => string | undefined };
+    const cfg = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'bench-config.mjs')).href)) as { pick: (ids: string[], prefer: RegExp[]) => string | undefined; PROVIDERS: Record<string, { prefer: RegExp[] }> };
     assert.deepEqual(bench.qwenStats('[{"type":"x"},{"stats":{"models":{"a":{"api":{"totalRequests":3},"tokens":{"total":10}},"b":{"api":{"totalRequests":2},"tokens":{"total":5}}},"tools":{"totalCalls":4}}}]'), { requests: 5, tokens: 15, toolCalls: 4 });
     assert.deepEqual(bench.qwenStats('not json'), { requests: 0, tokens: 0, toolCalls: 0 });
     const md = bench.renderBench({
@@ -51,8 +51,10 @@ describe('bench scripts', () => {
     assert.match(md, /\| Qwen Code \| 0 \/ 2 \| 0% \| 1\.0 min \| 9 \|/);
     assert.match(md, /\| java\/K1 \| ✅ \| ❌ \| 2\.0 min \| 1\.0 min \|/);
     assert.match(md, /\| cpp\/K2 \| ❌ \| - \| 1\.0 min \| - \|/);
-    assert.equal(cfg.pickGemini(['models/gemini-2.5-flash', 'models/gemini-3.8-flash', 'gemini-3.8-pro']), 'gemini-3.8-flash');
-    assert.equal(cfg.pickGemini(['gemini-2.5-flash']), 'gemini-2.5-flash');
-    assert.equal(cfg.pickGemini(['x']), undefined);
+    const nv = cfg.PROVIDERS.nvidia.prefer;
+    assert.equal(cfg.pick(['meta/llama-3.1-8b', 'moonshotai/kimi-k2-thinking', 'moonshotai/kimi-k2.6', 'moonshotai/kimi-k2.5', 'deepseek-ai/deepseek-v4.1-flash'], nv), 'moonshotai/kimi-k2.6', 'newest non-thinking Kimi');
+    assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'nvidia/nv-embed-v2'], nv), 'deepseek-ai/deepseek-v4.1-flash');
+    assert.equal(cfg.pick(['mistral-small-latest', 'codestral-latest', 'devstral-medium-2507', 'devstral-small-2507'], cfg.PROVIDERS.mistral.prefer), 'devstral-medium-2507');
+    assert.equal(cfg.pick(['x'], nv), undefined);
   });
 });

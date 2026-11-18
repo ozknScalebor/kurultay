@@ -2,7 +2,8 @@ name: bench
 
 # Kurultay vs Qwen Code on the comparison tasks (samples/evals, K1–K3 in Java and C++), with free
 # online models, scored with the same hidden tests. Runs after every release (called from ci.yml)
-# and by hand. Needs the repository secrets GROQ_API_KEY and (optional) GEMINI_API_KEY.
+# and by hand. Repository secrets: NVIDIA_API_KEY and MISTRAL_API_KEY (chosen for their free
+# token volume, see scripts/bench-config.mjs); GROQ_API_KEY is only a fallback.
 on:
   workflow_dispatch:
     inputs:
@@ -17,9 +18,11 @@ on:
         required: false
         default: ''
     secrets:
-      GROQ_API_KEY:
+      NVIDIA_API_KEY:
         required: false
-      GEMINI_API_KEY:
+      MISTRAL_API_KEY:
+        required: false
+      GROQ_API_KEY:
         required: false
 
 concurrency:
@@ -34,16 +37,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       KURULTAY_HOME: ${{ github.workspace }}/.bench-home
       NO_COLOR: '1'
     steps:
       - name: API keys
         id: keys
         run: |
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "::notice::GROQ_API_KEY is not set (Settings → Secrets and variables → Actions) – bench skipped"
+          if [ -z "$NVIDIA_API_KEY$MISTRAL_API_KEY$GROQ_API_KEY" ]; then
+            echo "::notice::no model API key set (NVIDIA_API_KEY / MISTRAL_API_KEY in Settings → Secrets and variables → Actions) – bench skipped"
             echo "skip=1" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v5
@@ -71,10 +75,11 @@ jobs:
         if: steps.keys.outputs.skip != '1'
         env:
           # Qwen Code: OpenAI-compatible provider from the environment (docs/users/configuration/auth.md)
-          OPENAI_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          OPENAI_BASE_URL: https://api.groq.com/openai/v1
-          OPENAI_MODEL: openai/gpt-oss-120b
+          OPENAI_BASE_URL: ${{ steps.models.outputs.qwen_base }}
+          OPENAI_MODEL: ${{ steps.models.outputs.qwen_model }}
+          QWEN_KEY_ENV: ${{ steps.models.outputs.qwen_key_env }}
         run: |
+          export OPENAI_API_KEY="${!QWEN_KEY_ENV}"
           name="${{ inputs.name }}"; [ -n "$name" ] || name="manual-$(date -u +%Y%m%d-%H%M)"
           echo "BENCH_NAME=$name" >> "$GITHUB_ENV"
           node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --qwen qwen --minutes 30 \
