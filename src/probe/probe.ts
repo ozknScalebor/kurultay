@@ -5,7 +5,7 @@ import type { EndpointConfig, KurultayConfig } from '../config.js';
 import { OpenAICompatClient, clientFor } from '../llm/client.js';
 import { computeRoleScores, defaultCapabilities, type CapabilitiesFile, type ModelCapabilities } from '../llm/models.js';
 import { LlmError, type ChatRequest, type ChatResult, type ToolSpec } from '../llm/types.js';
-import { errorMessage, mapLimit, sleep } from '../util/async.js';
+import { RateLimiter, errorMessage, mapLimit, sleep } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { tryExtractJson } from '../util/text.js';
 import { CODING_TASKS, EDIT_TASKS, editTaskPrompt, evaluateCodingAnswer, evaluateEditAnswer, evaluateToolEdit, evaluateWholeAnswer, toolTaskPrompt, wholeTaskPrompt, type EditFormat } from './bench.js';
@@ -27,6 +27,10 @@ export interface ProbeOptions {
   onStep?: (key: string, step: string, index: number, total: number) => void;
   /** apply the publishers' recommended sampling in the benchmarks (default true; config llm.samplingPresets) */
   presets?: boolean;
+  /** base wait after a 429 (default 10 s; doubles per attempt, Retry-After wins) */
+  rateLimitDelayMs?: number;
+  /** requests-per-minute limiter of the endpoint's key (set by probeAll from endpoint.requestsPerMinute) */
+  limiter?: RateLimiter;
 }
 
 /** Benchmark tasks per level: standard probes keep it short (a few minutes per model at most). */
@@ -61,11 +65,25 @@ class ModelProber {
   }
 
   /** Benchmark calls (`agentic`) use the model's recommended sampling, like the real workers do. */
+  /**
+   * One request. A provider limit (429) is waited out and asked again – on a free tier the
+   * probe's own requests hit it, and a measurement must not read "too many requests" as
+   * "cannot do this" (a 32k context test lost to a 429 once left a 256k model at 16k).
+   */
   private async call(req: ChatRequest): Promise<ChatResult> {
     const p = req.agentic && this.opts.presets !== false ? presetFor(this.caps.model) : undefined;
     const temperature = p?.temperature ?? 0;
     const messages = p?.hybridThinking ? withNoThink(req.messages) : req.messages;
-    return this.client.chat(this.caps.model, { timeoutMs: 120_000, signal: this.opts.signal, temperature, ...req, messages }, p ? presetBody(p) : undefined);
+    for (let attempt = 1; ; attempt++) {
+      await this.opts.limiter?.take(this.opts.signal);
+      try {
+        return await this.client.chat(this.caps.model, { timeoutMs: 120_000, signal: this.opts.signal, temperature, ...req, messages }, p ? presetBody(p) : undefined);
+      } catch (e) {
+        if (!(e instanceof LlmError) || e.kind !== 'rate_limit' || attempt >= 4) throw e;
+        const base = (this.opts.rateLimitDelayMs ?? 10_000) * 2 ** (attempt - 1);
+        await sleep(Math.min(120_000, Math.max(base, e.retryAfterMs ?? 0)), this.opts.signal);
+      }
+    }
   }
 
   /** Ollama serves its OpenAI-compatible API on port 11434 by default. */
@@ -306,14 +324,24 @@ class ModelProber {
     };
     let lastOk = 0;
     let failedAt = 0;
+    let unknownAt = 0;
     for (const size of ladder) {
       if (reported && size > reported) break;
       const ok = await fits(size);
       if (ok) lastOk = size;
-      else {
+      else if (ok === undefined) {
+        // an error that is not "context too long" (timeout, rate limit, network) says nothing
+        // about the window: stop climbing, but do not shrink it either
+        unknownAt = size;
+        break;
+      } else {
         failedAt = size;
         break;
       }
+    }
+    if (unknownAt && !reported) {
+      lastOk = Math.max(lastOk, unknownAt);
+      c.notes.push(`context test ${unknownAt} could not run – assumed ${unknownAt} (set "contextWindow" for the model if it is larger)`);
     }
     // standard ladder skips 16k: try it when 32k did not fit
     if (!this.opts.deep && failedAt === 32_768 && lastOk === 8_192 && (await fits(16_384))) lastOk = 16_384;
@@ -417,8 +445,16 @@ async function probeEndpoint(ep: EndpointConfig, cfg: KurultayConfig, bus: Event
 /** Probe every endpoint in parallel and compute role scores across the fleet. */
 export async function probeAll(cfg: KurultayConfig, bus?: EventBus, opts: ProbeOptions = {}): Promise<CapabilitiesFile> {
   const eps = cfg.endpoints.filter((e) => !e.disabled);
+  // endpoints of one provider key share its requests-per-minute limit, as in the router
+  const limiters = new Map<string, RateLimiter>();
+  const limiterOf = (ep: EndpointConfig): RateLimiter | undefined => {
+    if (!ep.requestsPerMinute || ep.requestsPerMinute <= 0) return undefined;
+    const k = `${ep.baseUrl}\u0000${ep.apiKey ?? ''}`;
+    if (!limiters.has(k)) limiters.set(k, new RateLimiter(ep.requestsPerMinute));
+    return limiters.get(k);
+  };
   const perEndpoint = await mapLimit(eps, eps.length, (ep) =>
-    probeEndpoint(ep, cfg, bus, opts).catch((e) => {
+    probeEndpoint(ep, cfg, bus, { ...opts, limiter: opts.limiter ?? limiterOf(ep) }).catch((e) => {
       bus?.error(`probe:${ep.name}`, errorMessage(e));
       return [] as ModelCapabilities[];
     }),

@@ -67,16 +67,18 @@ export function renderBench(b) {
     return `| ${a.label} | ${passed} / ${got.length} | ${pct(passed, got.length)} | ${min(sum((t) => t[a.key]?.seconds))} | ${sum((t) => t[a.key]?.requests) || '-'} | ${tok(sum((t) => t[a.key]?.tokens))} | ${a.key === 'qwen' ? '-' : min(wait)} | ${a.key === 'kurultay' ? min(mm) : '-'} |`;
   });
   const notes = [];
-  // only tasks both Kurultay variants ran
-  const both = b.tasks.filter((t) => t.kurultay && t.solo);
+  // only tasks both Kurultay variants finished – two runs stopped by the time budget say nothing about speed
+  const both = b.tasks.filter((t) => t.kurultay && t.solo && t.kurultay.status !== 'timeout' && t.solo.status !== 'timeout');
   const k = both.reduce((s, t) => s + t.kurultay.seconds, 0);
   const so = both.reduce((s, t) => s + t.solo.seconds, 0);
   if (k && so) {
     const d = k - so;
     notes.push(
-      d > 0
+      d > Math.max(30, so * 0.05)
         ? `⚠ **Multi-model slowdown:** with all models Kurultay took ${min(d)} (${Math.round((d / so) * 100)}%) longer than with the main model alone; ${min(both.reduce((s, t) => s + (t.kurultay.multiModelSeconds ?? 0), 0))} of its time went to multi-model work (plan council, waiting for slower candidates, cross-checks, judges, shared rate limit) – see each run's REPORT.md "Time".`
-        : `The extra models made Kurultay ${min(-d)} (${Math.round((-d / so) * 100)}%) faster than the main model alone.`,
+        : -d > Math.max(30, so * 0.05)
+          ? `The extra models made Kurultay ${min(-d)} (${Math.round((-d / so) * 100)}%) faster than the main model alone.`
+          : 'With all models Kurultay was about as fast as with the main model alone.',
     );
   }
   return [

@@ -36,6 +36,24 @@ describe('probe – edge cases', () => {
     assert.equal(deep.models[0].contextWindow, 131_072, 'deep ladder climbs to the last rung that fits');
   });
 
+  it('waits out a 429 during the context test instead of reading it as a small window', async () => {
+    let limited = 0;
+    let failing = 0;
+    const s = await mock([
+      // first 32k test answers 429 twice, then works
+      { id: 'busy', quality: 'good', tools: true, ctx: 200_000, hideCtx: true, handler: (r) => (/code word/.test(JSON.stringify(r.messages)) && JSON.stringify(r.messages).length > 80_000 && limited++ < 2 ? { status: 429, error: 'Too Many Requests', retryAfter: '0' } : undefined) },
+      // the 32k test keeps failing with a server error: unknown, not "too small"
+      { id: 'flaky', quality: 'good', tools: true, ctx: 200_000, hideCtx: true, handler: (r) => (/code word/.test(JSON.stringify(r.messages)) && JSON.stringify(r.messages).length > 80_000 ? (failing++, { status: 400, error: 'upstream exploded' }) : undefined) },
+    ]);
+    const file = await probeAll(config({ endpoints: [{ name: 'e', baseUrl: s.url, requestsPerMinute: 1000 }] }), recordingBus(), { quick: true, rateLimitDelayMs: 5 });
+    const by = Object.fromEntries(file.models.map((m) => [m.model, m]));
+    assert.equal(limited, 3, 'two 429s, then the same test again');
+    assert.equal(by.busy.contextWindow, 32_768);
+    assert.ok(failing >= 1);
+    assert.equal(by.flaky.contextWindow, 32_768);
+    assert.ok(by.flaky.notes.some((n) => /could not run – assumed 32768/.test(n)));
+  });
+
   it('skips embedding models, honours preset concurrency and quick mode', async () => {
     const s = await mock([
       { id: 'coder', quality: 'good', tools: true, ctx: 32_768 },
