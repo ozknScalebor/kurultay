@@ -47,6 +47,50 @@ export function pick(ids, prefer) {
   return undefined;
 }
 
+/**
+ * A tiny chat request: does the model answer at all, and how fast? A free endpoint can list a
+ * model and still queue every request for minutes – such a model makes the whole bench time out.
+ */
+export async function ping(base, key, id, timeoutMs = 60_000, doFetch = fetch) {
+  const t0 = Date.now();
+  try {
+    const r = await doFetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: id, messages: [{ role: 'user', content: 'Reply with the word OK.' }], max_tokens: 16, stream: false }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) return { ok: false, ms: Date.now() - t0, error: `HTTP ${r.status}` };
+    await r.json();
+    return { ok: true, ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, error: String(e?.name === 'TimeoutError' ? 'no answer in time' : (e?.message ?? e)) };
+  }
+}
+
+/** All ids matching the preferences, best first (same order as pick). */
+export function candidates(ids, prefer) {
+  const out = [];
+  let rest = [...ids];
+  for (;;) {
+    const m = pick(rest, prefer);
+    if (!m) return out;
+    out.push(m);
+    rest = rest.filter((x) => x !== m);
+  }
+}
+
+/** First candidate that answers; every attempt is logged. A forced id is tried first even when the list does not show it. */
+async function firstAnswering(name, base, key, ids, prefer, forced) {
+  const list = [...(forced ? [forced] : []), ...candidates(ids, prefer).filter((x) => x !== forced)].slice(0, 6);
+  for (const id of list) {
+    const r = await ping(base, key, id);
+    console.error(`${name}: ${id} → ${r.ok ? `answered in ${(r.ms / 1000).toFixed(1)} s` : `${r.error} after ${(r.ms / 1000).toFixed(0)} s`}`);
+    if (r.ok) return id;
+  }
+  return undefined;
+}
+
 async function listModels(base, key) {
   try {
     const r = await fetch(`${base}/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(20_000) });
@@ -68,10 +112,13 @@ async function main() {
     // two main models are enough; Mistral / Groq only fill a missing slot
     if (endpoints.length >= 2) continue;
     lists[name] = lists[p.differentFrom] ?? (await listModels(p.base, process.env[p.env]));
+    if (!p.differentFrom) console.error(`::group::${name}: ${lists[name].length} models listed\n${lists[name].join('\n')}\n::endgroup::`);
     const taken = p.differentFrom && chosen[p.differentFrom] ? family(chosen[p.differentFrom]) : undefined;
-    const model = pick(lists[name].filter((id) => !taken || family(id) !== taken), p.prefer);
+    const forced = name === 'nvidia' ? process.env.BENCH_MODEL : name === 'nvidia2' ? process.env.BENCH_SECOND : undefined;
+    const pool = lists[name].filter((id) => !taken || family(id) !== taken);
+    const model = await firstAnswering(name, p.base, process.env[p.env], pool, p.prefer, forced || undefined);
     if (!model) {
-      console.error(`::warning::${name}: no suitable model in its /models list – skipped`);
+      console.error(`::warning::${name}: no listed model of the preferred families answered – skipped`);
       continue;
     }
     chosen[name] = model;
@@ -79,12 +126,12 @@ async function main() {
     labels.push(`${model} (${name})`);
   }
   if (!endpoints.length) {
-    console.error('::error::no usable model – set NVIDIA_API_KEY and/or MISTRAL_API_KEY or GROQ_API_KEY');
+    console.error('::error::no model answered – the free endpoint may be overloaded right now (try again later or set the model input), or the key is missing/invalid');
     process.exit(1);
   }
   let helper;
   for (const [name, prefer] of Object.entries(HELPER)) {
-    const m = lists[name] && pick(lists[name], prefer);
+    const m = lists[name] && (await firstAnswering('helper', PROVIDERS[name].base, process.env[PROVIDERS[name].env], lists[name], prefer));
     if (m) {
       helper = { name: 'helper', baseUrl: PROVIDERS[name].base, apiKey: `\${${PROVIDERS[name].env}}`, models: [m], ...(PROVIDERS[name].rpm ? { requestsPerMinute: PROVIDERS[name].rpm } : {}) };
       break;

@@ -64,6 +64,11 @@ describe('bench scripts', () => {
     assert.equal(cfg.pick(['x'], nv), undefined);
     assert.equal(cfg.family('moonshotai/kimi-k2.6'), 'kimi');
     assert.equal(cfg.family('deepseek-ai/deepseek-v4.1-flash'), 'deepseek');
+    const c2 = cfg as unknown as { candidates: (ids: string[], p: RegExp[]) => string[]; ping: (b: string, k: string, id: string, t: number, f: unknown) => Promise<{ ok: boolean; error?: string }> };
+    assert.deepEqual(c2.candidates(['z-ai/glm-5.3-flash', 'moonshotai/kimi-k2.6', 'deepseek-ai/deepseek-v4.1-flash', 'meta/llama-3.1-8b'], nv), ['moonshotai/kimi-k2.6', 'deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash']);
+    assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => ({ ok: true, json: async () => ({}) }))).ok, true);
+    assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => ({ ok: false, status: 429 }))).error, 'HTTP 429');
+    assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); })).error, 'no answer in time');
     // the second NIM slot prefers another family
     assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash'], cfg.PROVIDERS.nvidia2.prefer), 'deepseek-ai/deepseek-v4.1-flash');
   });
