@@ -5,6 +5,7 @@ import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex } from '../app.js';
 import type { RunMode } from '../config.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
+import { TimingTracker } from '../orchestrator/timing.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus, type KEvent } from '../util/events.js';
 
@@ -323,7 +324,10 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   rmSync(baseCopy, { recursive: true, force: true });
 
   const bus = new EventBus();
+  // timing from the event stream: also known when the run is stopped by the time budget
+  const timing = new TimingTracker();
   bus.on('event', (e: KEvent) => {
+    timing.onEvent(e);
     if (e.type === 'llm.response') {
       a.requests++;
       a.tokensIn += Number(e.data?.in ?? 0);
@@ -331,6 +335,7 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     } else if (e.type === 'llm.error') a.llmErrors++;
   });
   const t0 = Date.now();
+  timing.onEvent({ type: 'run.start', ts: t0 } as KEvent);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(new Error('timed out')), (opts.runTimeoutSec ?? timeoutSec) * 1000);
   const onAbort = () => ctrl.abort(opts.signal?.reason);
@@ -345,11 +350,6 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     a.models = report.modelsUsed;
     a.changedFiles = report.changedFiles.length;
     a.iterations = report.iterations;
-    if (report.timing) {
-      a.multiModelSeconds = report.timing.multiModel;
-      a.multiModelShare = report.timing.multiModelShare;
-      a.rateLimitWait = report.timing.rateLimitWait;
-    }
   } catch (e) {
     a.error = errorMessage(e).slice(0, 300);
     a.status = ctrl.signal.aborted ? 'timeout' : 'error';
@@ -358,6 +358,10 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     opts.signal?.removeEventListener('abort', onAbort);
   }
   a.seconds = (Date.now() - t0) / 1000;
+  const tm = timing.result(Date.now());
+  a.multiModelSeconds = tm.multiModel;
+  a.multiModelShare = tm.multiModelShare;
+  a.rateLimitWait = tm.rateLimitWait;
   addHidden(opts.suiteDir, task, work);
   const c = await check(cmd, work, timeoutSec);
   a.passed = c.ok;
