@@ -1,0 +1,70 @@
+{
+ "name": "manual-20261124-1832",
+ "models": "Kurultay: main glm-5.3-flash + mistralai/mistral-large-4-1t-a52b (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-24T18:32:43.070Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "K3-iade",
+   "kurultay": {
+    "passed": true,
+    "seconds": 378.847,
+    "requests": 19,
+    "tokens": 576592,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 378.8,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 372.2,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 6.6,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 277.13,
+    "requests": 27,
+    "tokens": 825213,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 277.1,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 270.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 6.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 469.649,
+    "requests": 23,
+    "tokens": 1163415,
+    "exit": 0
+   }
+  }
+ ]
+}
