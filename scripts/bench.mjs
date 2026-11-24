@@ -198,6 +198,8 @@ async function main() {
           const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${t.id}`), onProgress: (l) => console.log(l) });
           row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
           if (row[key]?.timing) console.log(timingLine(row[key].timing));
+          const att = k.summary.attempts.find((x) => x.task === t.id);
+          if (att?.models?.length) console.log(`   models: ${att.models.join(', ')}${att.llmErrors ? ` · ${att.llmErrors} failed requests` : ''}`);
           continue;
         }
         const work = join(out, `qwen-${name}`, t.id);

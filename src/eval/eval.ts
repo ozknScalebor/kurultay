@@ -328,9 +328,12 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   const bus = new EventBus();
   // timing from the event stream: also known when the run is stopped by the time budget
   const timing = new TimingTracker();
+  /** models that answered – known also when the run is stopped by the time budget */
+  const answered = new Set<string>();
   bus.on('event', (e: KEvent) => {
     timing.onEvent(e);
     if (e.type === 'llm.response') {
+      if (e.source) answered.add(e.source);
       a.requests++;
       a.tokensIn += Number(e.data?.in ?? 0);
       a.tokensOut += Number(e.data?.out ?? 0);
@@ -365,6 +368,7 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   a.multiModelShare = tm.multiModelShare;
   a.rateLimitWait = tm.rateLimitWait;
   a.timing = tm;
+  if (!a.models.length) a.models = [...answered];
   addHidden(opts.suiteDir, task, work);
   const c = await check(cmd, work, timeoutSec);
   a.passed = c.ok;

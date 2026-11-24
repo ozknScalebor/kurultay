@@ -24,6 +24,9 @@ export const PROVIDERS = {
   // the user's own Z.AI GLM key: the main model when it is set (Qwen Code gets it too), NIM second.
   // ZAI_BASE_URL: https://api.z.ai/api/paas/v4 (pay as you go, default) or …/api/coding/paas/v4 (Coding Plan)
   zai: { env: 'ZAI_API_KEY', base: process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4', prefer: [/^glm-[5-9][.\d]*-?(flash|turbo|air|fast)/i, /^glm-[5-9]/i, /^glm-4\.[5-9]/i], concurrency: 4, fallbackIds: ['glm-5.4', 'glm-5.3', 'glm-5.2-fast', 'glm-5.2', 'glm-5.1', 'glm-5'] },
+  // BENCH_SECOND_PROVIDER=zai: the second model is another GLM model on the same Z.AI key (the fault
+  // test needs a backup as fast as the main model – the free NIM models answered at 6–20 tok/s)
+  zai2: { env: 'ZAI_API_KEY', base: process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4', prefer: [/^glm-[5-9][.\d]*-?turbo/i, /^glm-[5-9][.\d]*-?(flash|air|fast)/i, /^glm-[5-9]/i], concurrency: 4, differentFrom: 'zai', otherId: true, only: 'zai' },
   nvidia: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/kimi-k\d/i, /deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i], concurrency: 8, rpm: 40 },
   // a second NIM model from ANOTHER family than the first (same key; the 40 requests/min are shared)
   nvidia2: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i, /kimi-k\d/i], concurrency: 8, rpm: 40, differentFrom: 'nvidia' },
@@ -116,8 +119,13 @@ async function main() {
   const chosen = {};
   for (const [name, p] of Object.entries(PROVIDERS)) {
     if (!process.env[p.env]) continue;
+    if (p.only && process.env.BENCH_SECOND_PROVIDER !== p.only) continue;
     // two main models are enough; Mistral / Groq only fill a missing slot
-    if (endpoints.length >= 2) continue;
+    if (endpoints.length >= 2) {
+      // the helper may still come from this provider
+      if (HELPER[name] && !lists[name]) lists[name] = await listModels(p.base, process.env[p.env]);
+      continue;
+    }
     lists[name] = lists[p.differentFrom] ?? (await listModels(p.base, process.env[p.env]));
     // a provider without GET /models (or a plan that hides it): try the known ids
     if (!lists[name].length && p.fallbackIds) lists[name] = p.fallbackIds;
@@ -128,7 +136,8 @@ async function main() {
     // with a Z.AI key, `model` names the GLM model and `second` the NIM model
     const zaiMain = !!process.env.ZAI_API_KEY;
     const forced = name === 'zai' ? process.env.BENCH_MODEL : name === 'nvidia' ? (zaiMain ? process.env.BENCH_SECOND : process.env.BENCH_MODEL) : name === 'nvidia2' ? process.env.BENCH_SECOND : undefined;
-    const pool = lists[name].filter((id) => !taken || family(id) !== taken);
+    // otherId: the same family is fine, only not the same model
+    const pool = lists[name].filter((id) => (p.otherId ? id !== first : !taken || family(id) !== taken));
     const model = await firstAnswering(name, p.base, process.env[p.env], pool, p.prefer, forced || undefined);
     if (!model) {
       console.error(`::warning::${name}: no listed model of the preferred families answered – skipped`);

@@ -102,6 +102,8 @@ jobs:
         env:
           BENCH_MODEL: ${{ inputs.model }}
           BENCH_SECOND: ${{ inputs.second }}
+          # fault test: the backup must be as fast as the main model – a second GLM model on the Z.AI key
+          BENCH_SECOND_PROVIDER: ${{ inputs.fault && inputs.fault != 'none' && 'zai' || '' }}
         run: node scripts/bench-config.mjs > "$GITHUB_OUTPUT"
       - name: Capability probe (minimal)
         if: steps.keys.outputs.skip != '1'
