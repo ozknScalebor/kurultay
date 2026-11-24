@@ -22,7 +22,7 @@ on:
         required: false
         default: '20'
       model:
-        description: 'main model id on NVIDIA NIM (empty = first answering of Kimi K2, DeepSeek, GLM…)'
+        description: 'main model id – the GLM model with a Z.AI key, otherwise on NVIDIA NIM (empty = first answering)'
         required: false
         default: ''
       second:
@@ -42,6 +42,8 @@ on:
         required: false
       GROQ_API_KEY:
         required: false
+      ZAI_API_KEY:
+        required: false
 
 concurrency:
   group: bench
@@ -58,13 +60,16 @@ jobs:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      # the user's own Z.AI GLM key (main model when set); ZAI_BASE_URL as a repository variable for the Coding Plan
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      ZAI_BASE_URL: ${{ vars.ZAI_BASE_URL }}
       KURULTAY_HOME: ${{ github.workspace }}/.bench-home
       NO_COLOR: '1'
     steps:
       - name: API keys
         id: keys
         run: |
-          if [ -z "$NVIDIA_API_KEY$MISTRAL_API_KEY$GROQ_API_KEY" ]; then
+          if [ -z "$NVIDIA_API_KEY$MISTRAL_API_KEY$GROQ_API_KEY$ZAI_API_KEY" ]; then
             echo "::notice::no model API key set (NVIDIA_API_KEY in Settings → Secrets and variables → Actions) – bench skipped"
             echo "skip=1" >> "$GITHUB_OUTPUT"
           fi

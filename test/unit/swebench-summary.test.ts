@@ -73,6 +73,11 @@ describe('bench scripts', () => {
     assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => ({ ok: true, json: async () => ({}) }))).ok, true);
     assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => ({ ok: false, status: 429 }))).error, 'HTTP 429');
     assert.equal((await c2.ping('b', 'k', 'm', 1000, async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); })).error, 'no answer in time');
+    // Z.AI: the known ids when /models is not available, a fast variant first
+    const z = (cfg as unknown as { PROVIDERS: Record<string, { prefer: RegExp[]; fallbackIds: string[] }> }).PROVIDERS.zai;
+    assert.equal(cfg.pick(z.fallbackIds, z.prefer), 'glm-5.2-fast');
+    assert.equal(cfg.pick(['glm-5.4', 'glm-5.3-turbo'], z.prefer), 'glm-5.3-turbo');
+    assert.equal(cfg.family('glm-5.4'), 'glm');
     // the second NIM slot prefers another family
     assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash'], cfg.PROVIDERS.nvidia2.prefer), 'deepseek-ai/deepseek-v4.1-flash');
   });

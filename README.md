@@ -424,7 +424,7 @@ Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by def
 
 ## Bench: Kurultay vs Qwen Code (GitHub, free NVIDIA NIM models)
 
-The `bench` workflow (Actions → bench, or after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with three agents and scores them with the same hidden tests. It needs one repository secret, `NVIDIA_API_KEY` (free key from build.nvidia.com).
+The `bench` workflow (Actions → bench, or after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with three agents and scores them with the same hidden tests. It needs one repository secret, `NVIDIA_API_KEY` (free key from build.nvidia.com). With a `ZAI_API_KEY` secret as well, a Z.AI GLM model becomes the main model of Kurultay and the model of Qwen Code, with a NIM model of another family second; the repository variable `ZAI_BASE_URL` selects the endpoint (default `https://api.z.ai/api/paas/v4`, the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`).
 
 | Agent | Models |
 |---|---|

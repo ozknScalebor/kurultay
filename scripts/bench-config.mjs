@@ -21,6 +21,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const PROVIDERS = {
+  // the user's own Z.AI GLM key: the main model when it is set (Qwen Code gets it too), NIM second.
+  // ZAI_BASE_URL: https://api.z.ai/api/paas/v4 (pay as you go, default) or …/api/coding/paas/v4 (Coding Plan)
+  zai: { env: 'ZAI_API_KEY', base: process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4', prefer: [/^glm-[5-9][.\d]*-?(flash|turbo|air|fast)/i, /^glm-[5-9]/i, /^glm-4\.[5-9]/i], concurrency: 4, fallbackIds: ['glm-5.4', 'glm-5.3', 'glm-5.2-fast', 'glm-5.2', 'glm-5.1', 'glm-5'] },
   nvidia: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/kimi-k\d/i, /deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i], concurrency: 8, rpm: 40 },
   // a second NIM model from ANOTHER family than the first (same key; the 40 requests/min are shared)
   nvidia2: { env: 'NVIDIA_API_KEY', base: 'https://integrate.api.nvidia.com/v1', prefer: [/deepseek-v[4-9]/i, /minimax-m\d/i, /glm-[5-9]/i, /qwen3[.\d]*-coder/i, /mistral-large/i, /nemotron-3-ultra/i, /gpt-oss-120b/i, /step-\d/i, /kimi-k\d/i], concurrency: 8, rpm: 40, differentFrom: 'nvidia' },
@@ -31,7 +34,7 @@ const HELPER = { nvidia: [/gpt-oss-20b/i, /nemotron-3\.5-lightning/i, /nemotron-
 
 /** Model family of an id ("moonshotai/kimi-k2.6" → "kimi"). */
 export function family(id) {
-  const m = /(kimi|deepseek|glm|qwen|gpt-oss|llama|mistral|devstral|codestral|gemma|nemotron|phi)/i.exec(id);
+  const m = /(kimi|deepseek|glm|qwen|gpt-oss|llama|mistral|devstral|codestral|gemma|nemotron|phi|minimax|step)/i.exec(id);
   return m ? m[1].toLowerCase() : id;
 }
 
@@ -116,9 +119,15 @@ async function main() {
     // two main models are enough; Mistral / Groq only fill a missing slot
     if (endpoints.length >= 2) continue;
     lists[name] = lists[p.differentFrom] ?? (await listModels(p.base, process.env[p.env]));
+    // a provider without GET /models (or a plan that hides it): try the known ids
+    if (!lists[name].length && p.fallbackIds) lists[name] = p.fallbackIds;
     if (!p.differentFrom) console.error(`::group::${name}: ${lists[name].length} models listed\n${lists[name].join('\n')}\n::endgroup::`);
-    const taken = p.differentFrom && chosen[p.differentFrom] ? family(chosen[p.differentFrom]) : undefined;
-    const forced = name === 'nvidia' ? process.env.BENCH_MODEL : name === 'nvidia2' ? process.env.BENCH_SECOND : undefined;
+    // the second model comes from another family than the first (GLM on Z.AI → no GLM on NIM)
+    const first = p.differentFrom ? chosen[p.differentFrom] : name === 'nvidia' ? chosen.zai : undefined;
+    const taken = first ? family(first) : undefined;
+    // with a Z.AI key, `model` names the GLM model and `second` the NIM model
+    const zaiMain = !!process.env.ZAI_API_KEY;
+    const forced = name === 'zai' ? process.env.BENCH_MODEL : name === 'nvidia' ? (zaiMain ? process.env.BENCH_SECOND : process.env.BENCH_MODEL) : name === 'nvidia2' ? process.env.BENCH_SECOND : undefined;
     const pool = lists[name].filter((id) => !taken || family(id) !== taken);
     const model = await firstAnswering(name, p.base, process.env[p.env], pool, p.prefer, forced || undefined);
     if (!model) {
