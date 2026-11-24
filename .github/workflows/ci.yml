@@ -149,8 +149,14 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm }
-      - uses: actions/setup-java@v5
+      # the JDK 8 download sometimes arrives broken ("tar: Error is not recoverable") – try once more
+      - id: jdk
+        uses: actions/setup-java@v5
+        continue-on-error: true
         with: { distribution: temurin, java-version: '8' }
+      - if: steps.jdk.outcome == 'failure'
+        uses: actions/setup-java@v5
+        with: { distribution: zulu, java-version: '8' }
       - run: npm ci
       - run: npm run build
       - name: java-envanter (JDK 8, --validate)
