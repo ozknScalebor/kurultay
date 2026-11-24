@@ -262,8 +262,22 @@ export class Orchestrator {
     return 1;
   }
 
+  /**
+   * Cascade (FrugalGPT, AutoMix): the fast models go first; once they failed an objective
+   * check, the slower models of the speed band join every step for the rest of the run.
+   */
+  private escalate(why: string): void {
+    if (this.router.speedBand === 0) return;
+    const slow = this.router.list().filter((h) => this.router.allows(h, 'coder') && !this.router.inSpeedBand(h, 'coder'));
+    this.router.speedBand = 0;
+    if (slow.length) this.bus.info('orchestrator', `${why}: the slower models join from now on (${slow.map((h) => h.caps.key).join(', ')})`);
+  }
+
   /** Shared start-up of run() and resume(). */
   private begin(sessionId: string, opts: RunOptions, task: string): void {
+    this.router.speedBand = this.cfg.orchestrator.speedBand ?? 3;
+    const slow = this.router.list().filter((h) => this.router.allows(h, 'coder') && !this.router.inSpeedBand(h, 'coder'));
+    if (slow.length) this.bus.info('orchestrator', `much slower than ${this.router.rank('coder')[0]?.caps.key}: ${slow.map((h) => h.caps.key).join(', ')} – kept out of the steps that wait for everyone until the fast models fail`);
     this.sessionDir = join(this.stateDir, 'sessions', sessionId);
     mkdirSync(this.sessionDir, { recursive: true });
     this.bus.attachLog(join(this.sessionDir, 'events.jsonl'));
@@ -564,6 +578,7 @@ export class Orchestrator {
         st.requirementCheck = reqCheck;
         this.bus.emitEvent('run.requirements', { data: reqCheck });
         st.inProgress = false;
+        if (!finalVerify.skipped && !finalVerify.ok) this.escalate('the build or tests failed');
         if (reqCheck.complete && (finalVerify.skipped || finalVerify.ok)) {
           st.queue = [];
           save();
@@ -786,13 +801,20 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const workerSignal = modelKeys.length > 1 && grace > 0 ? anySignal(signal, race.signal) : signal;
       const firstDone = async (overlay: Overlay) => {
         if (timer || modelKeys.length < 2 || grace <= 0) return;
-        // with build/tests the grace period starts only for a candidate that passes them
+        // with build/tests the grace period starts only for a candidate that passes them – and
+        // is short then: a verified candidate is already a result, the race only bought the
+        // fastest of several samples (Trae Agent stops voting early on a unanimous result too)
+        let verified = false;
         if (this.hasChecks()) {
           const v = await verifyOverlay(overlay, this.materializer, this.cfg, signal);
           early.set(overlay.id, v);
           if (!v.ok || timer) return;
+          verified = true;
         }
-        const ms = Math.max((this.cfg.orchestrator.raceGraceMinSeconds ?? 90) * 1000, (Date.now() - t0) * grace);
+        const o = this.cfg.orchestrator;
+        const ms = verified
+          ? Math.max((o.raceGraceVerifiedMinSeconds ?? 15) * 1000, (Date.now() - t0) * (o.raceGraceVerified ?? 0.15))
+          : Math.max((o.raceGraceMinSeconds ?? 90) * 1000, (Date.now() - t0) * grace);
         timer = setTimeout(() => {
           this.bus.info(st.id, `the other candidates had ${Math.round(ms / 1000)} s more; stopping the slower ones`);
           race.abort(new Error('slower candidate stopped'));
@@ -832,6 +854,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     if (!usable.length) {
       // retry on models that were not tried yet
       const tried = new Set(runs.flatMap((r) => r.result.models).concat(models.map((m) => m.caps.key)));
+      this.escalate('no fast candidate produced a change');
       const others = this.router.pick('coder', Math.max(1, Math.min(2, width)), [...tried]);
       if (others.length) {
         this.bus.warn(st.id, `no candidate produced changes; retrying with ${others.map((o) => o.caps.key).join(', ')}`);
@@ -879,6 +902,8 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     if (reviewers > 0) {
       try {
         verdict = await councilReview(this.router, {
+          // tests passed: they already decide, a much slower reviewer is not waited for
+          strictBand: this.hasChecks() && candidates.some((c) => c.verifyOk === true),
           task: `${st.title}\n${st.description}`,
           acceptance: plan.acceptance,
           candidates,
@@ -999,7 +1024,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     // judges that did not write the winning code come first
     const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
     const want = Math.min(2, this.router.size);
-    let judges = this.router.pick('judge', want, writers);
+    let judges = this.router.pick('judge', want, writers, { strictBand: !verify.skipped && verify.ok });
     if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
     const budget = this.contextBudget(0.55, judges.map((j) => j.caps.key));
     const prompt = `You are the final acceptance judge. Decide whether the combined change fully satisfies the task and its acceptance criteria. Be strict but do not invent requirements.

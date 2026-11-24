@@ -137,6 +137,12 @@ export interface OrchestratorConfig {
    * straight to the coders (default true; only in auto mode without plan approval).
    */
   fastPath?: boolean;
+  /**
+   * Models more than this many times slower than the best one stay out of the steps that wait
+   * for every participant (plan drafts, race, reviews, judges); they come in when the fast
+   * models fail. Default 3; 0 turns the band off.
+   */
+  speedBand?: number;
   /** most files a fast-path task may touch (default 2; 6 with a single coding model) */
   fastPathMaxFiles?: number;
   /** model id or key of the main model (see ModelOverride.primary) */
@@ -148,6 +154,9 @@ export interface OrchestratorConfig {
   raceGrace?: number;
   /** the grace period is never shorter than this (default 90 s) */
   raceGraceMinSeconds?: number;
+  /** grace after a candidate that passed the build and tests: share of its time (default 0.15) and minimum (15 s) */
+  raceGraceVerified?: number;
+  raceGraceVerifiedMinSeconds?: number;
   /** how many reviewers in council */
   councilSize: number;
   /** plan → execute → verify → requirement-check loops */

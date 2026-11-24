@@ -56,14 +56,14 @@ function brainHandler(b: Brain, model: string) {
   };
 }
 
-async function setup(brain: Brain, files: Record<string, string>, opts: { models?: string[]; cfg?: Record<string, unknown> } = {}) {
+async function setup(brain: Brain, files: Record<string, string>, opts: { models?: string[]; cfg?: Record<string, unknown>; caps?: Record<string, Record<string, unknown>> } = {}) {
   const ids = opts.models ?? ['m1', 'm2'];
   const s = await startMockServer(ids.map((id) => ({ id, quality: 'good' as const, tools: true, ctx: 65536, handler: brainHandler(brain, id) })));
   servers.push(s);
   const root = tmpProject(files, { git: true });
   const cfg = config({ endpoints: [{ name: 'e', baseUrl: s.url }], ...(opts.cfg ?? {}) });
   const bus = recordingBus();
-  const router = routerFor(cfg, ids.map((id) => caps(id, 'e', { maxConcurrency: 4 })), bus);
+  const router = routerFor(cfg, ids.map((id) => caps(id, 'e', { maxConcurrency: 4, ...(opts.caps?.[id] ?? {}) })), bus);
   const index = new ProjectIndex(root, join(root, cfg.stateDir));
   index.build();
   const run = (task: string, o: RunOptions = {}) => new Orchestrator(root, cfg, router, new Materializer(root, join(root, cfg.stateDir)), index, bus).run(task, o);
@@ -424,6 +424,33 @@ describe('Orchestrator', () => {
     const { run, s } = await setup(brain, files);
     await run('change f1, f2 and f3');
     assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1);
+  });
+
+  it('speed band: a much slower model stays out of the race and the review until the fast model fails the tests', async () => {
+    const workers: string[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      agent: (_id, step, _q, model) => {
+        if (step === 0) workers.push(model);
+        return step === 0 ? call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' }) : undefined;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const speeds = { fast: { tokensPerSec: 190, ttftMs: 1000 }, slow: { tokensPerSec: 19, ttftMs: 7000 } };
+    const ok = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { raceWidth: 3, maxIterations: 1 } } });
+    const report = await ok.run('change f1');
+    assert.equal(report.mode, 'race');
+    assert.ok(workers.length >= 2 && workers.every((m) => m === 'fast'), `only the fast model races (${workers.join(', ')})`);
+    assert.ok(ok.bus.ofType('log.info').some((e) => /much slower than fast@e: slow@e/.test(e.message ?? '')));
+    assert.ok(!ok.s.log.some((l) => (l.body as { model?: string }).model === 'slow'), 'the slow model got no request at all');
+    // the fast model's change fails the tests: the slower model joins the next iteration
+    workers.length = 0;
+    const bad = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'false' }, orchestrator: { raceWidth: 2, maxIterations: 2 } } });
+    await bad.run('change f1');
+    assert.ok(bad.bus.ofType('log.info').some((e) => /the build or tests failed: the slower models join from now on \(slow@e\)/.test(e.message ?? '')));
+    assert.ok((workers as string[]).includes('slow'));
   });
 
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {

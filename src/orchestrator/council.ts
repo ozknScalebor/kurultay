@@ -66,6 +66,8 @@ export async function councilReview(
     contextTokens: number;
     bus?: EventBus;
     signal?: AbortSignal;
+    /** the build and tests already passed: a reviewer outside the speed band is not waited for */
+    strictBand?: boolean;
   },
 ): Promise<CouncilVerdict> {
   const { candidates } = args;
@@ -107,11 +109,13 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   // Reviewers must not have written the code they judge. With several candidates the
   // council may fill up with authors (each still reviews anonymously, and other
   // candidates); a single candidate is never reviewed by its own author.
-  const outsiders = router.pick('reviewer', args.reviewers, authors);
+  const outsiders = router.pick('reviewer', args.reviewers, authors, { strictBand: args.strictBand });
   let reviewers = outsiders;
   if (reviewers.length < args.reviewers && candidates.length > 1) reviewers = [...reviewers, ...router.pick('reviewer', args.reviewers - reviewers.length, reviewers.map((r) => r.caps.key))];
   if (!reviewers.length) {
-    args.bus?.warn('council', `no independent reviewer: no usable model besides the author(s) (${authors.join(', ')}); review skipped`);
+    const slow = args.strictBand && router.pick('reviewer', 1, authors).length > 0;
+    if (slow) args.bus?.info('council', 'the only independent reviewers are much slower than the author and the tests passed: not waiting for a review');
+    else args.bus?.warn('council', `no independent reviewer: no usable model besides the author(s) (${authors.join(', ')}); review skipped`);
     return { ranking: candidates.map((c) => ({ id: c.id, author: c.author, points: 0, verifyScore: c.verifyScore })), reviews: [], winnerIssues: [], winner: candidates[0], independent: false };
   }
   args.bus?.info('council', `${candidates.length} candidates, ${reviewers.length} reviewers: ${reviewers.map((r) => r.caps.key).join(', ')}`);

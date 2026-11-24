@@ -146,3 +146,28 @@ describe('role scores of a model whose speed test failed', () => {
     assert.ok(broken.planner < ok.planner * 0.5 && broken.reviewer < ok.reviewer * 0.5);
   });
 });
+
+describe('Router – speed band', () => {
+  const fastCaps = { tokensPerSec: 190, ttftMs: 1000 };
+  const slowCaps = { tokensPerSec: 19, ttftMs: 7000 };
+
+  it('keeps a model ten times slower out of the steps that wait for everyone, unless nothing else is left', () => {
+    const cfg = config({ endpoints: [{ name: 'a', baseUrl: 'http://127.0.0.1:1/v1' }, { name: 'b', baseUrl: 'http://127.0.0.1:2/v1' }] });
+    const r = routerFor(cfg, [caps('fast', 'a', fastCaps), caps('slow', 'b', slowCaps), caps('new', 'b')]);
+    assert.deepEqual(r.pick('coder', 3).map((h) => h.caps.model).sort(), ['fast', 'new'], 'unmeasured models are not judged');
+    assert.equal(r.inSpeedBand(r.get('slow@b')!, 'coder'), false);
+    assert.deepEqual(r.pick('reviewer', 1, ['fast@a', 'new@b']).map((h) => h.caps.model), ['slow'], 'the only one left is still used');
+    assert.deepEqual(r.pick('reviewer', 1, ['fast@a', 'new@b'], { strictBand: true }), [], 'strict: not waited for');
+    r.speedBand = 0;
+    assert.equal(r.pick('coder', 3).length, 3, 'band off after an escalation');
+  });
+
+  it('judges by the live speed once a model has answered a few requests', () => {
+    const cfg = config({ endpoints: [{ name: 'a', baseUrl: 'http://127.0.0.1:1/v1' }] });
+    const r = routerFor(cfg, [caps('fast', 'a', fastCaps), caps('slow', 'a', slowCaps)]);
+    const slow = r.get('slow@a')!;
+    slow.health.successes = 5;
+    slow.health.ewmaMsPerToken = 8; // the free tier got quick again
+    assert.equal(r.inSpeedBand(slow, 'coder'), true);
+  });
+});

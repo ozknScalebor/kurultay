@@ -96,7 +96,9 @@ export class Router {
   constructor(
     readonly config: KurultayConfig,
     private readonly bus?: EventBus,
-  ) {}
+  ) {
+    this.speedBand = config.orchestrator?.speedBand ?? 3;
+  }
 
   /** Register models from probe results (or discovered ids with default caps). */
   register(caps: ModelCapabilities[]): void {
@@ -271,8 +273,45 @@ export class Router {
   }
 
   /** Pick up to n distinct models for a role, spreading across endpoints first. */
-  pick(role: Role, n: number, exclude: string[] = []): ModelHandle[] {
-    const ranked = this.rank(role, { exclude });
+  /**
+   * Speed band: a model this many times slower than the best model of the role is left out of
+   * the steps that wait for every participant (plan drafts, race, reviews, judges) – the slowest
+   * member sets the pace of such a step ("The Tail at Scale"). 0 = off. The orchestrator turns it
+   * off to escalate to the slower (often stronger) models when the fast ones failed.
+   */
+  speedBand: number;
+
+  /**
+   * Expected milliseconds per output token including the wait for the first token: the live
+   * average once a model has answered a few requests, the probe's numbers before that.
+   * undefined = unknown (never measured).
+   */
+  msPerToken(h: ModelHandle): number | undefined {
+    if (h.health.successes >= 3 && h.health.ewmaMsPerToken > 0) return h.health.ewmaMsPerToken;
+    if (h.caps.tokensPerSec > 0) return (h.caps.ttftMs + (800 * 1000) / h.caps.tokensPerSec) / 800;
+    return undefined;
+  }
+
+  /** Is the model within the speed band of the role's best model? Unmeasured models are. */
+  inSpeedBand(h: ModelHandle, role: Role): boolean {
+    const band = this.speedBand;
+    if (!band) return true;
+    const ref = this.rank(role)[0];
+    const a = this.msPerToken(h);
+    const b = ref && this.msPerToken(ref);
+    if (!a || !b) return true;
+    return a <= band * b;
+  }
+
+  /**
+   * Pick up to n distinct models for a role, spreading across endpoints first. Models outside
+   * the speed band are left out; with `strictBand` none of them is used even when that leaves
+   * nobody, otherwise the band is ignored when it would leave nobody.
+   */
+  pick(role: Role, n: number, exclude: string[] = [], opts: { strictBand?: boolean } = {}): ModelHandle[] {
+    const all = this.rank(role, { exclude });
+    const fast = all.filter((h) => this.inSpeedBand(h, role));
+    const ranked = fast.length || opts.strictBand ? fast : all;
     const chosen: ModelHandle[] = [];
     const usedEndpoints = new Set<string>();
     for (const h of ranked) {
