@@ -142,6 +142,9 @@ jobs:
         run: |
           echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
           echo "CMAKE_GENERATOR=${{ matrix.generator }}" >> "$GITHUB_ENV"
+          # the runner image's MSVC STL (14.52) asks for Clang 22 while its LLVM is older:
+          # allow the mismatch instead of failing every build (STL1000)
+          if [ "$RUNNER_OS" = Windows ]; then echo "CXXFLAGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" >> "$GITHUB_ENV"; fi
           clang++ --version && ninja --version
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
