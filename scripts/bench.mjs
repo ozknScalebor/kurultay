@@ -200,6 +200,12 @@ async function main() {
           if (row[key]?.timing) console.log(timingLine(row[key].timing));
           const att = k.summary.attempts.find((x) => x.task === t.id);
           if (att?.models?.length) console.log(`   models: ${att.models.join(', ')}${att.llmErrors ? ` · ${att.llmErrors} failed requests` : ''}`);
+          if (att) {
+            const j = att.judges;
+            console.log(`   project's own checks: ${att.ownChecks ?? '?'} · acceptance judge: ${j ? (j.ran.length ? `${j.ran.join(', ')} → ${j.complete ? 'complete' : `missing: ${j.missing.join(' | ').slice(0, 300)}`}` : 'skipped') : '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
+          }
+          // a failed run: which hidden tests failed and why (the end of the check output)
+          if (att && !att.passed) console.log(`   hidden tests (last lines):\n${att.checkOutput.split('\n').filter((l) => l.trim()).slice(-25).map((l) => `     | ${l}`).join('\n')}`);
           continue;
         }
         const work = join(out, `qwen-${name}`, t.id);
@@ -219,6 +225,7 @@ async function main() {
         const score = await evalMod.scoreFolder({ suiteDir, dir: work, tasks: [t.id] });
         row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };
         console.log(`${row.qwen.passed ? '✓' : '✗'} ${t.id} · ${seconds.toFixed(0)} s · ${s.requests} requests · exit ${r.status}`);
+        if (!row.qwen.passed) console.log(`   hidden tests (last lines):\n${String(score[0].output ?? '').split('\n').filter((l) => l.trim()).slice(-25).map((l) => `     | ${l}`).join('\n')}`);
       }
       if (stopped && !Object.keys(row).some((k) => keys.includes(k))) bench.tasks.pop();
       // partial results survive a cancelled job

@@ -71,6 +71,11 @@ export interface EvalAttempt {
   rateLimitWait?: number;
   /** where the run's time went (seconds per phase) */
   timing?: RunTiming;
+  /** the project's own build/tests at the end of the run, and the acceptance judges' verdict */
+  ownChecks?: 'passed' | 'failed' | 'none';
+  judges?: { ran: string[]; complete: boolean; missing: string[] };
+  /** files the agent changed */
+  files?: string[];
 }
 
 export interface EvalSummary {
@@ -355,6 +360,9 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     a.models = report.modelsUsed;
     a.changedFiles = report.changedFiles.length;
     a.iterations = report.iterations;
+    a.ownChecks = !report.finalVerify || report.finalVerify.skipped ? 'none' : report.finalVerify.ok ? 'passed' : 'failed';
+    if (report.requirementCheck) a.judges = { ran: report.requirementCheck.judges, complete: report.requirementCheck.complete, missing: report.requirementCheck.missing };
+    a.files = report.changedFiles;
   } catch (e) {
     a.error = errorMessage(e).slice(0, 300);
     a.status = ctrl.signal.aborted ? 'timeout' : 'error';
