@@ -218,6 +218,17 @@ export class Router {
     return h.caps.reachable && h.health.circuitOpenUntil <= now;
   }
 
+  /**
+   * A model that keeps answering only after others did (hedged requests won by the backup):
+   * keep it out of new work for a while, like an open circuit breaker.
+   */
+  markStalled(key: string, ms = 5 * 60_000): void {
+    const h = this.models.get(key);
+    if (!h) return;
+    h.health.circuitOpenUntil = Math.max(h.health.circuitOpenUntil, Date.now() + ms);
+    this.bus?.warn('router', `${key} answers too late; not used for new work for ${Math.round(ms / 60_000)} min`);
+  }
+
   /** Score for picking a model for a role, discounted by current load. */
   /** learned per-role quality (set by createApp; tests run without) */
   learned: ModelStats | undefined;

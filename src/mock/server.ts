@@ -53,7 +53,7 @@ export interface MockRequest {
 }
 
 export type MockReply =
-  | { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string; completionTokens?: number }
+  | { content: string; toolCall?: { name: string; args: Record<string, unknown> }; finish?: string; completionTokens?: number; delayMs?: number }
   | { content?: string; toolCall: { name: string; args: Record<string, unknown> }; completionTokens?: number }
   | { status: number; error: string; retryAfter?: string }
   | { hangMs: number }
@@ -316,6 +316,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
       res.writeHead(custom.status, { 'content-type': 'application/json', ...(custom.retryAfter ? { 'retry-after': custom.retryAfter } : {}) }).end(JSON.stringify({ error: { message: custom.error } }));
       return;
     }
+    if (custom && 'delayMs' in custom && custom.delayMs) await new Promise((r) => setTimeout(r, custom.delayMs));
     if (custom && 'hangMs' in custom) {
       await new Promise((r) => setTimeout(r, custom.hangMs));
       if (!res.writableEnded && !req.destroyed) res.writeHead(504).end('timeout');

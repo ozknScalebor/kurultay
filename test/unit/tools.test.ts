@@ -236,3 +236,22 @@ describe('context savers (from Qwen Code)', () => {
     assert.ok((await executeTool('mcp_call', { name: 'mcp__srv__tool5', arguments: {} }, ro)).isError);
   });
 });
+
+describe('read_file – window and read-ahead', () => {
+  it('a large-window model gets a whole file, and the definitions the code uses elsewhere come with it', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `int v${i} = ${i};`).join('\n');
+    const root = tmpProject({
+      'src/util.c': 'int checksum(const char *p, int n) {\n  return 0;\n}\n',
+      'src/main.c': `#include "util.h"\nint main(void) {\n  return checksum("x", 1);\n}\n${lines}\n`,
+    });
+    const index = new ProjectIndex(root, join(root, '.kurultay'));
+    index.build();
+    const small = await executeTool('read_file', { path: 'src/main.c' }, ctx(root, { index }));
+    assert.match(small.output, /showing lines 1-100 of 30\d/);
+    const big = await executeTool('read_file', { path: 'src/main.c' }, ctx(root, { index, contextWindow: 262_144 }));
+    assert.doesNotMatch(big.output, /showing lines/);
+    assert.match(big.output, /Used here, defined elsewhere in the project:\n- int checksum\(const char \*p, int n\).*\(src\/util\.c:1\)/);
+    const off = await executeTool('read_file', { path: 'src/main.c', start_line: 1, end_line: 5 }, ctx(root, { index, config: config({ endpoints: [{ name: 'e', baseUrl: 'http://x/v1' }], tools: { readAhead: false } }) }));
+    assert.doesNotMatch(off.output, /defined elsewhere/);
+  });
+});

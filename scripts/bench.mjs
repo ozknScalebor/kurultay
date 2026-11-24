@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global setTimeout, clearTimeout */
 // Head-to-head bench: Kurultay and Qwen Code on the same tasks, scored with the same hidden tests.
 //
 //   node scripts/bench.mjs --out bench-out [--suites java-envanter,cpp-telemetri] [--tasks K1-depo-transfer,…]
@@ -10,7 +11,7 @@
 // Qwen Code gets a fresh copy of the same project, the same task text, and is run headless
 // (--yolo, a wall-clock budget); its folder is then scored with the same hidden tests.
 // Writes <out>/bench.json and <out>/BENCH.md; --merge-notes <file> also merges the table into release notes.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -83,6 +84,7 @@ export function renderBench(b) {
   }
   return [
     `### Bench – ${b.name}`,
+    ...(b.fault ? ['', `**Fault test:** in every run \`${b.fault.faulty}\` ${b.fault.mode === 'error' ? 'answers HTTP 503' : 'stops answering (the connection stays open)'} after ${b.fault.after} of its requests. Kurultay has its other models; Qwen Code gets \`--fallback-model ${b.fault.fallback ?? '-'}\` (it switches on 429/503/529).`] : []),
     '',
     `Models: ${b.models}. Same task text, a fresh copy of the project for every task and agent, the same hidden tests; the run order is rotated per task.`,
     '',
@@ -120,6 +122,26 @@ function kurultayResult(a) {
   return a && { passed: a.passed, seconds: a.seconds, requests: a.requests, tokens: a.tokensIn + a.tokensOut, status: a.status, rateLimitWait: a.rateLimitWait ?? 0, multiModelSeconds: a.multiModelSeconds ?? 0, multiModelShare: a.multiModelShare ?? 0, timing: a.timing };
 }
 
+/** Run a command without blocking the event loop (the fault proxy lives in this process). */
+function run(cmd, args, opts) {
+  return new Promise((resolveRun) => {
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    const timer = setTimeout(() => child.kill('SIGKILL'), opts.timeout);
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      resolveRun({ status, stdout, stderr });
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolveRun({ status: -1, stdout, stderr: `${stderr}\n${e.message}` });
+    });
+  });
+}
+
 async function main() {
   const f = flags(process.argv.slice(2));
   const out = resolve(f.out ?? 'bench-out');
@@ -129,7 +151,27 @@ async function main() {
   const wanted = f.tasks ? new Set(String(f.tasks).split(',').map((s) => s.trim())) : undefined;
   const minutes = Number(f.minutes ?? 30);
   const bench = { name: String(f.name ?? 'bench'), models: String(f.models ?? process.env.BENCH_MODELS ?? '?'), at: new Date().toISOString(), tasks: [] };
-  const keys = ['kurultay', ...(f['solo-config'] ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])];
+  // fault test: the main model stops answering (or answers 503) after a few of its requests;
+  // Kurultay gets every model, Qwen Code its own fallback chain with the same second model
+  let kurultayConfig = f.config;
+  let qwenEnv = process.env;
+  let qwenExtra = [];
+  let proxy;
+  if (f.fault && f.fault !== 'none') {
+    const { startFaultProxy, viaProxy } = await import(pathToFileURL(join(root, 'scripts', 'fault-proxy.mjs')).href);
+    const cfg = JSON.parse(readFileSync(String(f.config), 'utf8'));
+    const faulty = cfg.orchestrator?.primaryModel ?? cfg.endpoints?.[0]?.models?.[0];
+    const second = cfg.endpoints?.find((e) => !(e.models ?? []).includes(faulty))?.models?.[0];
+    const after = Number(f['fault-after'] ?? 3);
+    proxy = await startFaultProxy({ routes: viaProxy(cfg, 'x').routes, faulty, mode: String(f.fault), after });
+    kurultayConfig = join(out, 'config-fault.json');
+    writeFileSync(kurultayConfig, JSON.stringify(viaProxy(cfg, proxy.url).config, null, 2));
+    qwenEnv = { ...process.env, OPENAI_BASE_URL: proxy.url, OPENAI_API_KEY: 'proxy', OPENAI_MODEL: faulty };
+    qwenExtra = second ? ['--fallback-model', second] : [];
+    bench.fault = { mode: String(f.fault), after, faulty, fallback: second };
+    console.log(`fault test: ${faulty} ${f.fault === 'error' ? 'answers 503' : 'stops answering'} after ${after} of its requests in every run; second model ${second ?? '(none)'}`);
+  }
+  const keys = ['kurultay', ...(f['solo-config'] && !proxy ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])];
   let i = 0;
   // the CI job has a hard limit: stop starting runs that could not finish before it, so the
   // results are still written, committed and added to the release notes
@@ -151,7 +193,8 @@ async function main() {
         }
         if (key === 'kurultay' || key === 'solo') {
           console.log(`\n== ${key === 'solo' ? 'Kurultay (main model only)' : 'Kurultay'} · ${name}/${t.id}`);
-          const config = key === 'solo' ? String(f['solo-config']) : f.config;
+          const config = key === 'solo' ? String(f['solo-config']) : kurultayConfig;
+          proxy?.reset?.();
           const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${t.id}`), onProgress: (l) => console.log(l) });
           row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
           if (row[key]?.timing) console.log(timingLine(row[key].timing));
@@ -166,7 +209,8 @@ async function main() {
         console.log(`\n== Qwen Code · ${name}/${t.id}`);
         const t0 = Date.now();
         const [cmd, ...pre] = String(f.qwen).split(' ');
-        const r = spawnSync(cmd, [...pre, '-p', t.prompt, '--yolo', '--max-wall-time', `${minutes}m`, '--output-format', 'json'], { cwd: work, encoding: 'utf8', timeout: (minutes + 5) * 60_000, maxBuffer: 256 * 1024 * 1024, env: process.env });
+        proxy?.reset?.();
+        const r = await run(cmd, [...pre, '-p', t.prompt, '--yolo', '--max-wall-time', `${minutes}m`, '--output-format', 'json', ...qwenExtra], { cwd: work, timeout: (minutes + 5) * 60_000, env: qwenEnv });
         const seconds = (Date.now() - t0) / 1000;
         writeFileSync(join(out, `qwen-${name}-${t.id}.log`), `${r.stdout ?? ''}\n--- stderr\n${r.stderr ?? ''}`);
         const s = qwenStats(r.stdout ?? '');
@@ -180,6 +224,7 @@ async function main() {
       writeFileSync(join(out, 'BENCH.md'), renderBench(bench));
     }
   }
+  await proxy?.close();
   writeFileSync(join(out, 'bench.json'), JSON.stringify(bench, null, 1));
   const md = renderBench(bench);
   writeFileSync(join(out, 'BENCH.md'), md);

@@ -482,7 +482,7 @@ export class Orchestrator {
   }
 
   /** localisation done while triaging the task, reused by the first subtask */
-  private preLocalized: { id: string; loc: Localization | undefined } | undefined;
+  private preLocalized: { id: string; loc: Localization | undefined; pending?: Promise<Localization | undefined> } | undefined;
 
   /**
    * Small task → no plan council. A short task whose localisation names one or two files
@@ -495,6 +495,17 @@ export class Orchestrator {
     if (fullTask.length > 1500 || !this.index) return undefined;
     const title = cleanTitle(fullTask.split('\n').find((l) => l.trim()) ?? '').slice(0, 90) || 'Task';
     let files: string[] = [];
+    if (this.index.files.length >= 8 && o.localize !== false && o.parallelLocalize !== false) {
+      // short task: the coders start at once with the repo map and the search hits; the
+      // localisation runs alongside and reaches them as a hint a few steps in (25–30 s it no
+      // longer waits for – single-agent tools start right away too)
+      const coders = this.router.pick('coder', 1).map((h) => h.caps.key);
+      const retrieved = await this.retrieve(fullTask, signal);
+      const pending = localize(this.index, this.router, fullTask, { retrieved }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' }).catch(() => undefined);
+      this.preLocalized = { id: 'T1', loc: undefined, pending };
+      this.bus.info('planner', 'small task: no plan council, the coders start at once (localisation runs alongside)');
+      return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }], authors: [] };
+    }
     if (this.index.files.length >= 8 && o.localize !== false) {
       const coders = this.router.pick('coder', 1).map((h) => h.caps.key);
       const loc = await localize(this.index, this.router, fullTask, { retrieved: await this.retrieve(fullTask, signal) }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' });
@@ -781,6 +792,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     // the task was already localised while triaging it: a one-subtask plan does not ask again
     const reuse = this.preLocalized?.id === st.id && iteration === 1 && plan.subtasks.length === 1;
     const pre = reuse ? this.preLocalized!.loc : undefined;
+    const pending = reuse ? this.preLocalized!.pending : undefined;
     if (reuse) this.preLocalized = undefined;
     const loc = reuse
       ? pre
@@ -793,7 +805,14 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       return contexts.get(budget)!;
     };
     const workerSkills = this.skillsFor(st, fullTask);
-    const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed', ...(loc?.locations.length ? { localized: loc.locations.map((l) => (l.symbol === '(file)' ? l.path : `${l.path}:${l.symbol}`)) } : {}) };
+    const located = (l: Localization) => l.locations.map((x) => (x.symbol === '(file)' ? x.path : `${x.path}:${x.symbol}`));
+    const report: SubtaskReport = { subtask: st, iteration, candidates: [], fixes: 0, status: 'failed', ...(loc?.locations.length ? { localized: located(loc) } : {}) };
+    // localisation still running: every candidate gets it as a hint once it is there
+    const lateHint = pending?.then((l) => {
+      if (!l?.context) return undefined;
+      if (l.locations.length) report.localized = located(l);
+      return `${l.context}${l.files.length ? `\nFiles likely involved: ${l.files.join(', ')}` : ''}`;
+    });
 
     // candidates stopped because a faster one was done (not a failure of their model)
     const stopped = new Set<string>();
@@ -834,7 +853,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
           // a repeated model samples more freely so its candidates differ
           const sample = modelKeys.slice(0, i).filter((k) => k === mk).length;
           const w = new AgentWorker(
-            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined },
+            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined, lateHint },
             this.router,
             this.cfg,
             { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal: workerSignal, external: this.external },

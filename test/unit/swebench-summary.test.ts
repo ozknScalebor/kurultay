@@ -82,3 +82,33 @@ describe('bench scripts', () => {
     assert.equal(cfg.pick(['deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash'], cfg.PROVIDERS.nvidia2.prefer), 'deepseek-ai/deepseek-v4.1-flash');
   });
 });
+
+describe('bench fault proxy', () => {
+  it('forwards by model id and makes the faulty model fail after N requests (503 or no answer)', async () => {
+    const { startMockServer } = await import('../../src/mock/server.js');
+    const up = await startMockServer([{ id: 'main', quality: 'good', tools: true, ctx: 32768 }, { id: 'spare', quality: 'good', tools: true, ctx: 32768 }]);
+    const fp = (await import(pathToFileURL(join(process.cwd(), 'scripts', 'fault-proxy.mjs')).href)) as {
+      startFaultProxy: (o: unknown) => Promise<{ url: string; stats: { faulted: number }; reset: () => void; close: () => Promise<void> }>;
+      viaProxy: (c: unknown, url: string) => { routes: Record<string, unknown>; config: { endpoints: Array<{ baseUrl: string; apiKey: string }> } };
+      resolveKey: (k: string) => string;
+    };
+    process.env.FP_TEST_KEY = 'secret';
+    assert.equal(fp.resolveKey('${FP_TEST_KEY}'), 'secret');
+    const cfg = { endpoints: [{ name: 'a', baseUrl: up.url, apiKey: '${FP_TEST_KEY}', models: ['main'] }, { name: 'b', baseUrl: up.url, models: ['spare'] }] };
+    const ask = (url: string, model: string, signal?: AbortSignal) => fetch(`${url}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with exactly the word PONG and nothing else.' }] }), signal });
+    for (const mode of ['error', 'hang']) {
+      const p = await fp.startFaultProxy({ routes: fp.viaProxy(cfg, 'x').routes, faulty: 'main', mode, after: 1 });
+      const pointed = fp.viaProxy(cfg, p.url).config;
+      assert.ok(pointed.endpoints.every((e) => e.baseUrl === p.url) && pointed.endpoints[0].apiKey === 'proxy-a');
+      assert.equal((await ask(p.url, 'main')).status, 200, 'the first request still works');
+      if (mode === 'error') assert.equal((await ask(p.url, 'main')).status, 503);
+      else await assert.rejects(ask(p.url, 'main', AbortSignal.timeout(300)), /abort|timeout/i);
+      assert.equal((await ask(p.url, 'spare')).status, 200, 'the other model is untouched');
+      assert.equal(p.stats.faulted, 1);
+      p.reset();
+      assert.equal((await ask(p.url, 'main')).status, 200, 'healthy again for the next agent');
+      await p.close();
+    }
+    await up.close();
+  });
+});

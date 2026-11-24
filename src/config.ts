@@ -104,6 +104,13 @@ export interface LlmConfig {
    * recent turns. Defaults 0.6 and 0.85 (Qwen Code / Claude Code auto-compaction at 85%).
    */
   microcompactAt?: number;
+  /**
+   * Hedged requests: a worker step that takes 2.5× its model's usual time (at least
+   * hedgeMinMs, 30 s; 2 min before the first measured step) is also sent to the best other
+   * coder; the first answer wins. Default true.
+   */
+  hedge?: boolean;
+  hedgeMinMs?: number;
   compactAt?: number;
 }
 
@@ -145,6 +152,8 @@ export interface OrchestratorConfig {
   speedBand?: number;
   /** race mode with build/tests: the main model tries alone first, the race starts only if it fails (default true) */
   cascade?: boolean;
+  /** short tasks: the coders start at once and the localisation joins them as a hint (default true) */
+  parallelLocalize?: boolean;
   /** most files a fast-path task may touch (default 6) */
   fastPathMaxFiles?: number;
   /** model id or key of the main model (see ModelOverride.primary) */
@@ -188,8 +197,16 @@ export interface IndexConfig {
 }
 
 export interface ToolsConfig {
-  /** lines read_file returns when no range is given (default 100) */
+  /**
+   * lines read_file returns when no range is given (default 100; 800 for models with a window
+   * of 64k tokens or more – they get a whole source file in one step instead of three)
+   */
   readWindow?: number;
+  /**
+   * read-ahead: a read_file answer also names where the types and functions the shown code
+   * uses are defined in other project files – the agent's likely next lookup (default true)
+   */
+  readAhead?: boolean;
   /**
    * Tool output longer than this (characters) is saved in full to
    * .kurultay/tool-output/ and the model gets the start and the end, the file's path and a

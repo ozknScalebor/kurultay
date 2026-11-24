@@ -1,7 +1,7 @@
 import type { KurultayConfig } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { ModelHandle, Router } from '../llm/router.js';
-import { LlmError, type ChatMessage, type ChatResult, type ToolSpec } from '../llm/types.js';
+import { LlmError, type ChatMessage, type ChatRequest, type ChatResult, type ToolSpec } from '../llm/types.js';
 import { SkillRegistry, type Skill } from '../skills/skills.js';
 import { errorMessage } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
@@ -33,6 +33,8 @@ export interface WorkerSpec {
   acceptance?: string[];
   /** project/background context: architecture excerpt, repo map, rules */
   context: string;
+  /** context that is still being prepared (localisation running alongside): added to the conversation once it is there */
+  lateHint?: Promise<string | undefined>;
   /** preferred model key (others are used only on failure) */
   model: string;
   overlay: Overlay;
@@ -113,6 +115,13 @@ export class AgentWorker {
   private keepReasoning = true;
   /** times the window was lowered after a context-length error */
   private shrinks = 0;
+  /** localisation that arrived while the worker was already running */
+  private lateHint: string | undefined;
+  private lateHintGiven = false;
+  /** how long this worker's model took per step (for the hedge delay) */
+  private readonly stepMs: number[] = [];
+  /** hedged steps in a row the backup answered first */
+  private hedgeWins = 0;
   private readonly toolCtx: ToolContext;
   private tokens = { in: 0, out: 0 };
   private readonly guard: LoopGuard;
@@ -132,6 +141,9 @@ export class AgentWorker {
     private readonly bus = deps.bus,
     private readonly signal = deps.signal,
   ) {
+    void spec.lateHint?.then((h) => {
+      if (h) this.lateHint = h;
+    });
     const handle = router.get(spec.model);
     this.currentModel = spec.model;
     this.nativeTools = handle?.caps.nativeTools ?? true;
@@ -150,6 +162,7 @@ export class AgentWorker {
       skills: spec.skills?.registry,
       explicitSkills: spec.skills?.explicit,
       loadedSkills: loaded,
+      contextWindow: router.get(spec.model)?.caps.contextWindow,
       readFiles: this.touched.read,
       writtenFiles: this.touched.modified,
       staleFiles: this.staleFiles,
@@ -348,7 +361,7 @@ export class AgentWorker {
     // adapt the transcript to it, and continue the task there – never bouncing back to the failed model.
     for (;;) {
       try {
-        return await this.router.chat(req(), { only: [this.currentModel], fallback: false, role: 'coder', recoveryWaitMs: 0 });
+        return await this.hedged(req);
       } catch (e) {
         if (e instanceof LlmError && e.kind === 'aborted') throw e;
         if (await this.adaptTo(e)) continue;
@@ -372,6 +385,126 @@ export class AgentWorker {
         return r;
       }
     }
+  }
+
+  /**
+   * Hedged request (The Tail at Scale): when the current model takes much longer than its own
+   * usual step – a free tier queues it, a server stalls – the same request also goes to the
+   * best other coder and the first answer wins; the slower one is cancelled. The worker stays
+   * on its model for the next step. Costs a few percent more requests, cuts the long tail.
+   */
+  private async hedged(req: () => ChatRequest): Promise<ChatResult> {
+    const only = (model: string, signal: AbortSignal | undefined) => this.router.chat({ ...req(), signal }, { only: [model], fallback: false, role: 'coder', recoveryWaitMs: 0 });
+    const after = this.hedgeAfterMs();
+    const backup = after > 0 ? this.hedgeModel() : undefined;
+    const t0 = Date.now();
+    if (!backup) {
+      const r = await only(this.currentModel, this.signal);
+      this.stepMs.push(Date.now() - t0);
+      return r;
+    }
+    const main = new AbortController();
+    const spare = new AbortController();
+    const link = (c: AbortController) => {
+      const on = () => c.abort(this.signal?.reason);
+      this.signal?.addEventListener('abort', on, { once: true });
+      return () => this.signal?.removeEventListener('abort', on);
+    };
+    const unlinkA = link(main);
+    const unlinkB = link(spare);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<ChatResult>((resolve, reject) => {
+        let settled = false;
+        let mainFailed: unknown;
+        let spareFailed: unknown;
+        let spareStarted = false;
+        const finish = (r: ChatResult, which: 'main' | 'spare') => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          (which === 'main' ? spare : main).abort(new Error('the other request answered first'));
+          if (which === 'main') {
+            this.stepMs.push(Date.now() - t0);
+            this.hedgeWins = 0;
+          } else {
+            this.interventions.push(`hedge:${backup}`);
+            this.bus?.info(this.spec.id, `${this.currentModel} took over ${Math.round(after / 1000)} s; ${backup} answered first`);
+            // twice in a row: the model has stopped answering in time – continue on the backup
+            if (++this.hedgeWins >= 2) {
+              const stalled = this.currentModel;
+              this.failedModels.add(stalled);
+              this.router.markStalled(stalled);
+              this.switchModel(backup, `no answer within ${Math.round(after / 1000)} s twice in a row`);
+              this.hedgeWins = 0;
+            }
+          }
+          resolve(r);
+        };
+        const giveUp = (e: unknown) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          spare.abort(new Error('stopped'));
+          reject(e);
+        };
+        only(this.currentModel, main.signal).then(
+          (r) => finish(r, 'main'),
+          (e) => {
+            mainFailed = e ?? new Error('failed');
+            // before the hedge started, or with the hedge failed too: the usual failover takes over
+            if (!spareStarted || spareFailed) giveUp(e);
+          },
+        );
+        timer = setTimeout(() => {
+          timer = undefined;
+          if (settled) return;
+          spareStarted = true;
+          this.bus?.emitEvent('worker.hedge', { source: this.spec.id, data: { model: this.currentModel, backup, afterMs: after } });
+          only(backup, spare.signal).then(
+            (r) => finish(r, 'spare'),
+            (e) => {
+              spareFailed = e ?? new Error('failed');
+              if (mainFailed) giveUp(mainFailed);
+            },
+          );
+        }, after);
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+      unlinkA();
+      unlinkB();
+    }
+  }
+
+  /** Hedge delay: 2.5× the median of this model's last steps, at least llm.hedgeMinMs (30 s); 0 = off. */
+  private hedgeAfterMs(): number {
+    const llm = this.cfg.llm ?? {};
+    if (llm.hedge === false) return 0;
+    const last = this.stepMs.slice(-5).sort((a, b) => a - b);
+    const median = last.length ? last[Math.floor(last.length / 2)] : 0;
+    return Math.max(llm.hedgeMinMs ?? 30_000, median ? 2.5 * median : 120_000);
+  }
+
+  /** Best other coder that can take the same transcript (same tool format, large enough window). */
+  private hedgeModel(): string | undefined {
+    const need = estimateTokens(this.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '')).join('\n')) + 1024;
+    const native = this.nativeTools;
+    return this.router
+      .rank('coder', { exclude: [this.currentModel, ...this.failedModels], minContext: need })
+      .find((h) => this.router.allows(h, 'coder') && h.caps.nativeTools === native)?.caps.key;
+  }
+
+  /** A late hint that arrived since the last step goes into the conversation (once). */
+  private addLateHint(): void {
+    if (!this.lateHint || this.lateHintGiven) return;
+    this.lateHintGiven = true;
+    const text = `[Kurultay] A parallel localisation finished – the code most likely involved (use it, skip what you already read):\n${this.lateHint}`;
+    const last = this.messages[this.messages.length - 1];
+    if (last?.role === 'user') last.content = `${last.content ?? ''}\n\n${text}`;
+    else this.messages.push({ role: 'user', content: text });
+    this.interventions.push('late-hint');
+    this.bus?.emitEvent('worker.hint', { source: this.spec.id, data: { chars: this.lateHint.length } });
   }
 
   /**
@@ -476,6 +609,7 @@ export class AgentWorker {
       this.step = step;
       this.toolCtx.step = step;
       if (this.signal?.aborted) return this.result('failed', 'cancelled', step, finalText, 'aborted');
+      this.addLateHint();
       await this.condense();
       let r: ChatResult;
       try {

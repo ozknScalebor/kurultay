@@ -477,3 +477,27 @@ describe('AgentWorker – reasoning models and smaller windows', () => {
     assert.ok(router.get('small@e')!.caps.contextWindow < 262_144);
   });
 });
+
+describe('AgentWorker – hedged requests', () => {
+  it('sends a step that takes far longer than usual to another model as well, and moves there after two late answers', async () => {
+    const steps = [call('read_file', { path: 'src/a.c' }), call('read_file', { path: 'src/a.c' }), call('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 2;' }), call('finish', { summary: 'done' })];
+    const { make, bus } = await setup(
+      [
+        // answers the first step at once, then only after 3 s
+        { id: 'stuck', script: (n) => (n === 0 ? steps[0] : ({ ...steps[n], delayMs: 3000 } as MockReply)) },
+        { id: 'spare', script: (n) => steps[n] },
+      ],
+      undefined,
+      {},
+      { llm: { hedgeMinMs: 150 } },
+    );
+    const { w, overlay } = make('stuck');
+    const t0 = Date.now();
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.equal(overlay.read('src/a.c'), 'int a = 2;\n');
+    assert.ok(Date.now() - t0 < 2500, 'did not wait for the stuck model');
+    assert.ok(r.failovers.some((f) => f.from === 'stuck@e' && f.to === 'spare@e'), 'moved to the spare model');
+    assert.ok(bus.ofType('log.warn').some((e) => /answers too late/.test(e.message ?? '')));
+  });
+});

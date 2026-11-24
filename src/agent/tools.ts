@@ -31,6 +31,8 @@ export interface ToolContext {
   explicitSkills?: Set<string>;
   /** names already loaded into this worker (avoid duplicates) */
   loadedSkills?: Set<string>;
+  /** context window of the worker's model (sizes the default read window) */
+  contextWindow?: number;
   /** files this worker has read (read-before-edit guard – Qwen/Crush/OMO) */
   readFiles?: Set<string>;
   /** files this worker created or modified */
@@ -134,6 +136,32 @@ interface ToolDef {
   run: Executor;
 }
 
+/**
+ * Read-ahead (Speculative Actions, in the cheap and lossless form): after a read, the agent
+ * usually looks up the types and functions the code uses. Their definitions in OTHER project
+ * files come with the read – a line each from the index, no model call – so that lookup step
+ * is not needed. At most 8 symbols.
+ */
+export function readAhead(ctx: ToolContext, path: string, shown: string): string {
+  const index = ctx.index;
+  if (!index) return '';
+  const own = new Set((index.file(path)?.defs ?? []).map((d) => d.name));
+  const names = new Set<string>();
+  for (const m of shown.matchAll(/\b([A-Za-z_][A-Za-z0-9_]{2,})\b(?=\s*[(<.:]|\s+[a-z_])/g)) {
+    if (!own.has(m[1]) && !KEYWORDS.has(m[1])) names.add(m[1]);
+    if (names.size > 60) break;
+  }
+  // called functions first (their signature is what the next step needs), then types
+  const hits = [...names]
+    .map((n) => index.findSymbol(n, 3).find((h) => h.path !== path && h.def.name === n))
+    .filter((h): h is NonNullable<typeof h> => !!h)
+    .sort((a, b) => Number(/class|struct|interface|enum|type/.test(a.def.kind)) - Number(/class|struct|interface|enum|type/.test(b.def.kind)));
+  const out = hits.slice(0, 8).map((h) => `- ${h.def.signature.trim().slice(0, 140)}  (${h.path}:${h.def.line})`);
+  return out.length ? `\n\nUsed here, defined elsewhere in the project:\n${out.join('\n')}` : '';
+}
+
+const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'return', 'new', 'catch', 'throw', 'try', 'else', 'this', 'super', 'sizeof', 'static_cast', 'const', 'auto', 'void', 'int', 'String', 'std', 'public', 'private', 'protected', 'class', 'struct', 'import', 'package', 'final', 'static', 'function', 'await', 'async', 'let', 'var', 'def', 'self', 'null', 'true', 'false', 'List', 'Map', 'Set', 'Optional', 'Override', 'vector', 'string', 'size_t']);
+
 const str = (v: unknown, name: string): string => {
   if (typeof v !== 'string') throw new Error(`parameter "${name}" must be a string`);
   return v;
@@ -226,8 +254,11 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.staleFiles?.delete(path);
       const total = content.split('\n').length;
       const start = optNum(a.start_line) ?? 1;
-      // a 100-line window by default (SWE-agent's ACI study: the viewer size that worked best)
-      const end = optNum(a.end_line) ?? Math.min(total, start + Math.max(20, ctx.config.tools.readWindow ?? 100) - 1);
+      // a 100-line window by default (SWE-agent's ACI study: the viewer size that worked best for
+      // the small-window models of then); a 64k+ model gets 800 lines – a whole file in one step
+      // instead of a read per 100 lines (Qwen Code reads whole files too)
+      const window = ctx.config.tools.readWindow ?? ((ctx.contextWindow ?? 0) >= 65_536 ? 800 : 100);
+      const end = optNum(a.end_line) ?? Math.min(total, start + Math.max(20, window) - 1);
       const key = `${path}#${start}-${end}`;
       const hash = sha256(content);
       const seen = ctx.config.tools.readCache === false ? undefined : ctx.readCache?.get(key);
@@ -237,7 +268,8 @@ const TOOLS: Record<string, ToolDef> = {
       ctx.readCache?.set(key, { hash, step: ctx.step ?? 0 });
       const body = numbered(content, start, end);
       const more = end < total ? `\n… (showing lines ${start}-${end} of ${total}; continue with start_line=${end + 1})` : '';
-      return { output: `${r.note}${path} (${total} lines)\n${body}${more}` };
+      const ahead = ctx.config.tools.readAhead === false ? '' : readAhead(ctx, path, content.split('\n').slice(start - 1, end).join('\n'));
+      return { output: `${r.note}${path} (${total} lines)\n${body}${more}${ahead}` };
     },
   },
   list_dir: {

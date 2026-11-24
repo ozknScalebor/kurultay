@@ -23,6 +23,8 @@ interface Brain {
   record?: (kind: string, prompt: string, model: string) => void;
   /** answers of the localisation step */
   locate?: { files: string[]; locations: Array<{ file: string; symbol: string }> };
+  /** the localisation answers this late */
+  locateDelayMs?: number;
 }
 
 const call = (name: string, args: Record<string, unknown>): MockReply => ({ toolCall: { name, args } });
@@ -37,7 +39,7 @@ function brainHandler(b: Brain, model: string) {
       b.record?.('agent', `${q.messages[0].content}\n${first}`, model);
       return b.agent(id, toolResults(q.messages), q, model) ?? call('finish', { summary: `${id} done by ${model}` });
     }
-    if (b.locate && /Which files must be EDITED/.test(u)) return { content: JSON.stringify({ files: b.locate.files }) };
+    if (b.locate && /Which files must be EDITED/.test(u)) return { content: JSON.stringify({ files: b.locate.files }), delayMs: b.locateDelayMs };
     if (b.locate && /Skeleton of the files to edit/.test(u)) return { content: JSON.stringify({ locations: b.locate.locations }) };
     if (/You are the planner of a team/.test(u)) {
       b.record?.('plan', u, model);
@@ -369,7 +371,7 @@ describe('Orchestrator', () => {
     };
     const files: Record<string, string> = { 'src/uart.c': 'int uart_send(int n) {\n  return n + 1;\n}\n' };
     for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
-    const { run, s, bus, root } = await setup(brain, files);
+    const { run, s, bus, root } = await setup(brain, files, { cfg: { orchestrator: { parallelLocalize: false } } });
     const report = await run('uart_send writes one byte too many');
     assert.equal(plans, 0, 'no plan drafts');
     assert.equal(report.mode, 'single', 'no build/test commands: one coder and a reviewer, no race');
@@ -486,6 +488,27 @@ describe('Orchestrator', () => {
     const r3 = await good.run('change f1', { mode: 'race' });
     assert.equal(r3.subtasks[0].cascade, undefined, 'a race asked for is a race');
     assert.ok(r3.subtasks[0].candidates.length >= 2);
+  });
+
+  it('parallel localisation: the coder starts at once and gets the located code as a hint', async () => {
+    const seen: string[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/uart.c'], locations: [{ file: 'src/uart.c', symbol: 'uart_send' }] },
+      locateDelayMs: 150,
+      agent: (_id, step, q) => {
+        seen.push(q.messages.map((m) => m.content ?? '').join('\n'));
+        return step === 0 ? { toolCall: { name: 'read_file', args: { path: 'src/f1.c' } }, content: '', delayMs: 300 } as MockReply : step === 1 ? call('edit_file', { path: 'src/uart.c', old_text: 'return n + 1;', new_text: 'return n;' }) : undefined;
+      },
+    };
+    const files: Record<string, string> = { 'src/uart.c': 'int uart_send(int n) {\n  return n + 1;\n}\n' };
+    for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run, root } = await setup(brain, files);
+    const report = await run('uart_send writes one byte too many');
+    assert.equal(report.status, 'completed');
+    assert.ok(!/A parallel localisation finished/.test(seen[0] ?? ''), 'first step without the hint');
+    assert.ok(seen.slice(1).some((t) => /A parallel localisation finished[\s\S]*uart_send/.test(t)), 'a later step has it');
+    assert.match(read(root, 'src/uart.c'), /return n;/);
   });
 
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
