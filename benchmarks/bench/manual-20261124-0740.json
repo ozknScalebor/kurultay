@@ -1,0 +1,133 @@
+{
+ "name": "manual-20261124-0740",
+ "models": "Kurultay: main glm-5.3-flash + moonshotai/kimi-k3.1-pro (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-24T07:40:29.671Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "B3-son-stok",
+   "kurultay": {
+    "passed": true,
+    "seconds": 71.17,
+    "requests": 10,
+    "tokens": 90261,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 71.2,
+     "planning": 33,
+     "planCouncil": false,
+     "coding": 33.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 4.8,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 65.792,
+    "requests": 11,
+    "tokens": 118915,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 65.8,
+     "planning": 22.6,
+     "planCouncil": false,
+     "coding": 38.3,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 4.9,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 49.544,
+    "requests": 8,
+    "tokens": 155691,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "C2-crc",
+   "solo": {
+    "passed": true,
+    "seconds": 77.611,
+    "requests": 12,
+    "tokens": 119944,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 77.6,
+     "planning": 19.1,
+     "planCouncil": false,
+     "coding": 57.8,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.7,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 111.124,
+    "requests": 10,
+    "tokens": 192745,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 206.212,
+    "requests": 14,
+    "tokens": 190502,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 97.3,
+    "multiModelShare": 0.47187196896217265,
+    "timing": {
+     "totalSeconds": 206.2,
+     "planning": 97.3,
+     "planCouncil": true,
+     "coding": 108.1,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.8,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 97.3,
+     "multiModelShare": 0.47187196896217265
+    }
+   }
+  }
+ ]
+}
