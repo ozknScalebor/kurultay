@@ -1,0 +1,38 @@
+{
+ "name": "manual-20261124-0717",
+ "models": "Kurultay: main glm-5.3-flash + minimaxai/minimax-m3.1-flash (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-24T07:17:41.514Z",
+ "tasks": [
+  {
+   "suite": "cpp-telemetri",
+   "id": "C2-crc",
+   "kurultay": {
+    "passed": true,
+    "seconds": 189.354,
+    "requests": 32,
+    "tokens": 346759,
+    "status": "completed",
+    "rateLimitWait": 1.6,
+    "multiModelSeconds": 115.5,
+    "multiModelShare": 0.6098204857444561
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 134.035,
+    "requests": 13,
+    "tokens": 172708,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0.5,
+    "multiModelShare": 0.0037313432835820895
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 97.805,
+    "requests": 11,
+    "tokens": 219406,
+    "exit": 0
+   }
+  }
+ ]
+}
