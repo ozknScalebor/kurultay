@@ -52,6 +52,8 @@ describe('end-to-end with mock LLM servers', () => {
           { name: 'gpu2', baseUrl: s2.url },
         ],
         verify: { test: 'node test.js' },
+        // this test checks the full race and council
+        orchestrator: { cascade: false },
       }),
     );
     try {

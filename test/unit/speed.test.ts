@@ -171,3 +171,25 @@ describe('Router – speed band', () => {
     assert.equal(r.inSpeedBand(slow, 'coder'), true);
   });
 });
+
+describe('time line of a bench run', () => {
+  it('names the phases that took time and counts one candidate\'s checks as build/tests', async () => {
+    const t = new TimingTracker();
+    const s = 1_000_000;
+    for (const e of [
+      { type: 'run.start', ts: s },
+      { type: 'run.plan', ts: s + 5000, data: { fast: true } },
+      { type: 'worker.start', ts: s + 5000, source: 'T1-1' },
+      { type: 'worker.end', ts: s + 65_000, source: 'T1-1', data: { status: 'done' } },
+      { type: 'subtask.winner', ts: s + 95_000, source: 'T1' },
+      { type: 'run.verify', ts: s + 120_000 },
+      { type: 'run.requirements', ts: s + 120_000 },
+    ]) t.onEvent(e as unknown as KEvent);
+    const r = t.result(s + 121_000);
+    assert.equal(r.selection, 0);
+    assert.equal(r.verify, 55, '30 s checks of the only candidate + 25 s final verification');
+    assert.equal(r.multiModel, 0);
+    const bench = (await import(new URL('../../../scripts/bench.mjs', import.meta.url).href)) as { timingLine: (t: unknown) => string };
+    assert.match(bench.timingLine(r), /triage 5 s · coding 60 s · build\/tests 55 s \(total 121 s, multi-model 0%\)/);
+  });
+});

@@ -98,8 +98,26 @@ export function renderBench(b) {
   ].join('\n');
 }
 
+/** One log line: where a Kurultay run's time went. */
+export function timingLine(t) {
+  if (!t) return '';
+  const f = (x) => `${Math.round(x)} s`;
+  const parts = [
+    [t.planCouncil ? 'plan council' : 'triage', t.planning],
+    ['coding', t.coding],
+    ['slower candidates', t.slowerCandidates],
+    ['candidate checks', t.selection],
+    ['fix rounds', t.fixes],
+    ['build/tests', t.verify],
+    ['judges', t.requirements],
+    ['rate limit', t.rateLimitWait],
+    ['busy endpoint', t.slotWait],
+  ].filter(([, v]) => v >= 0.5);
+  return `   time: ${parts.map(([k, v]) => `${k} ${f(v)}`).join(' · ')} (total ${f(t.totalSeconds)}, multi-model ${Math.round(t.multiModelShare * 100)}%)`;
+}
+
 function kurultayResult(a) {
-  return a && { passed: a.passed, seconds: a.seconds, requests: a.requests, tokens: a.tokensIn + a.tokensOut, status: a.status, rateLimitWait: a.rateLimitWait ?? 0, multiModelSeconds: a.multiModelSeconds ?? 0, multiModelShare: a.multiModelShare ?? 0 };
+  return a && { passed: a.passed, seconds: a.seconds, requests: a.requests, tokens: a.tokensIn + a.tokensOut, status: a.status, rateLimitWait: a.rateLimitWait ?? 0, multiModelSeconds: a.multiModelSeconds ?? 0, multiModelShare: a.multiModelShare ?? 0, timing: a.timing };
 }
 
 async function main() {
@@ -136,6 +154,7 @@ async function main() {
           const config = key === 'solo' ? String(f['solo-config']) : f.config;
           const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${t.id}`), onProgress: (l) => console.log(l) });
           row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
+          if (row[key]?.timing) console.log(timingLine(row[key].timing));
           continue;
         }
         const work = join(out, `qwen-${name}`, t.id);

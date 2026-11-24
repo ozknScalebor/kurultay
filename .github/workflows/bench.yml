@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       quick:
-        description: 'quick check (~15 min): one small C++ task, 4 minutes per agent'
+        description: 'quick check (~20 min): one small C++ and one small Java task, 5 minutes per agent'
         type: boolean
         required: false
         default: false
@@ -110,8 +110,8 @@ jobs:
           name="${{ inputs.name }}"; [ -n "$name" ] || name="manual-$(date -u +%Y%m%d-%H%M)"
           echo "BENCH_NAME=$name" >> "$GITHUB_ENV"
           node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --solo-config "${{ steps.models.outputs.solo_config }}" \
-            --qwen qwen --minutes ${{ inputs.quick && 4 || inputs.minutes || 20 }} --stop-after 300 \
-            --name "$name" --models "${{ steps.models.outputs.label }}" ${{ inputs.quick && '--tasks C2-crc' || inputs.tasks && format('--tasks {0}', inputs.tasks) || '' }}
+            --qwen qwen --minutes ${{ inputs.quick && 5 || inputs.minutes || 20 }} --stop-after 300 \
+            --name "$name" --models "${{ steps.models.outputs.label }}" ${{ inputs.quick && '--tasks C2-crc,B3-son-stok' || inputs.tasks && format('--tasks {0}', inputs.tasks) || '' }}
           cat bench-out/BENCH.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the logs
         if: always() && steps.keys.outputs.skip != '1'

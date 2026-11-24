@@ -104,6 +104,7 @@ export class TimingTracker {
     let coding = 0;
     let slower = 0;
     let selection = 0;
+    let checks = 0;
     let fixes = 0;
     for (const [st, ws] of bySubtask) {
       const cands = ws.filter((w) => !w.fix);
@@ -117,10 +118,14 @@ export class TimingTracker {
       if (cands.length > 1) slower += lastEnd - firstDone;
       const won = this.winners.get(st);
       // the winner is announced before the fix rounds start
-      if (won) selection += Math.max(0, won - lastEnd);
+      // with one candidate the time before the winner is its build/test run, not multi-model work
+      if (won) {
+        if (cands.length > 1) selection += Math.max(0, won - lastEnd);
+        else checks += Math.max(0, won - lastEnd);
+      }
     }
     const lastWinner = this.winners.size ? Math.max(...this.winners.values()) : undefined;
-    const verify = this.verifyAt && lastWinner ? Math.max(0, this.verifyAt - lastWinner - fixes) : 0;
+    const verify = (this.verifyAt && lastWinner ? Math.max(0, this.verifyAt - lastWinner - fixes) : 0) + checks;
     const requirements = this.requirementsAt && this.verifyAt ? this.requirementsAt - this.verifyAt : 0;
     const planning = this.planAt ? this.planAt - start : 0;
     // with one model the waits are the provider's, not the price of the extra models

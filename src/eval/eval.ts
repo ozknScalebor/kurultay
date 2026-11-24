@@ -5,7 +5,7 @@ import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex } from '../app.js';
 import type { RunMode } from '../config.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
-import { TimingTracker } from '../orchestrator/timing.js';
+import { TimingTracker, type RunTiming } from '../orchestrator/timing.js';
 import { errorMessage } from '../util/async.js';
 import { EventBus, type KEvent } from '../util/events.js';
 
@@ -69,6 +69,8 @@ export interface EvalAttempt {
   multiModelSeconds?: number;
   multiModelShare?: number;
   rateLimitWait?: number;
+  /** where the run's time went (seconds per phase) */
+  timing?: RunTiming;
 }
 
 export interface EvalSummary {
@@ -362,6 +364,7 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
   a.multiModelSeconds = tm.multiModel;
   a.multiModelShare = tm.multiModelShare;
   a.rateLimitWait = tm.rateLimitWait;
+  a.timing = tm;
   addHidden(opts.suiteDir, task, work);
   const c = await check(cmd, work, timeoutSec);
   a.passed = c.ok;

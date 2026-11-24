@@ -120,6 +120,8 @@ export interface SubtaskReport {
   candidates: Array<{ worker: string; models: string[]; status: string; files: number; verify?: string; crossTests?: string; summary: string }>;
   verdict?: Pick<CouncilVerdict, 'ranking' | 'winnerIssues'> & { reviewers: string[]; independent: boolean };
   winner?: { worker: string; models: string[] };
+  /** race as a cascade: 'first' = the main model passed alone, 'raced' = the others joined */
+  cascade?: 'first' | 'raced';
   fixes: number;
   /** re-reviews of fix rounds by a model that did not write the code */
   fixReviews?: Array<{ round: number; reviewers: string[]; blocking: number; independent: boolean }>;
@@ -275,6 +277,7 @@ export class Orchestrator {
 
   /** Shared start-up of run() and resume(). */
   private begin(sessionId: string, opts: RunOptions, task: string): void {
+    this.requestedMode = opts.mode ?? this.cfg.orchestrator.defaultMode;
     this.router.speedBand = this.cfg.orchestrator.speedBand ?? 3;
     const slow = this.router.list().filter((h) => this.router.allows(h, 'coder') && !this.router.inSpeedBand(h, 'coder'));
     if (slow.length) this.bus.info('orchestrator', `much slower than ${this.router.rank('coder')[0]?.caps.key}: ${slow.map((h) => h.caps.key).join(', ')} – kept out of the steps that wait for everyone until the fast models fail`);
@@ -469,6 +472,9 @@ export class Orchestrator {
       },
     };
   }
+
+  /** the mode asked for: a race the user forced is not turned into a cascade */
+  private requestedMode: RunMode = 'auto';
 
   /** models that may code (helpers with rolesOnly do not count) */
   private codingModels(): number {
@@ -849,8 +855,31 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       ).finally(() => clearTimeout(timer));
     };
 
-    let runs = (await launch(models.map((m) => m.caps.key), '')).filter((r): r is { ok: true; value: Winner } => r.ok).map((r) => r.value);
-    let usable = runs.filter((r) => r.result.status !== 'failed' && r.overlay.ownChanges().length > 0);
+    const ok = (rs: Awaited<ReturnType<typeof launch>>) => rs.filter((r): r is { ok: true; value: Winner } => r.ok).map((r) => r.value);
+    const changed = (rs: Winner[]) => rs.filter((r) => r.result.status !== 'failed' && r.overlay.ownChanges().length > 0);
+    let runs: Winner[];
+    // Cascade (FrugalGPT / AutoMix): with build/tests the main model tries alone first; a
+    // candidate that passes them is the result, the race only starts when it does not.
+    // A successful task then costs what one agent costs; a hard one still gets every model.
+    const cascade = mode === 'race' && this.requestedMode === 'auto' && models.length > 1 && this.hasChecks() && this.cfg.orchestrator.cascade !== false;
+    if (cascade) {
+      const first = ok(await launch([models[0].caps.key], ''));
+      const done = changed(first)[0];
+      const v = done && (await verifyOverlay(done.overlay, this.materializer, this.cfg, signal));
+      if (done && v) early.set(done.overlay.id, v);
+      if (done && v?.ok) {
+        this.bus.info(st.id, `${models[0].caps.key} passed the build and tests on its own: no race needed`);
+        report.cascade = 'first';
+        runs = first;
+      } else {
+        this.bus.info(st.id, `${models[0].caps.key} alone did not pass the build and tests: racing ${models.length - 1} more candidates`);
+        this.escalate('the first candidate failed');
+        report.cascade = 'raced';
+        const rest = this.pickCoders(width).slice(1).map((m) => m.caps.key);
+        runs = first.concat(ok(await launch(rest, 'c')));
+      }
+    } else runs = ok(await launch(models.map((m) => m.caps.key), ''));
+    let usable = changed(runs);
     if (!usable.length) {
       // retry on models that were not tried yet
       const tried = new Set(runs.flatMap((r) => r.result.models).concat(models.map((m) => m.caps.key)));
@@ -858,7 +887,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const others = this.router.pick('coder', Math.max(1, Math.min(2, width)), [...tried]);
       if (others.length) {
         this.bus.warn(st.id, `no candidate produced changes; retrying with ${others.map((o) => o.caps.key).join(', ')}`);
-        const again = (await launch(others.map((o) => o.caps.key), 'r')).filter((r): r is { ok: true; value: Winner } => r.ok).map((r) => r.value);
+        const again = ok(await launch(others.map((o) => o.caps.key), 'r'));
         runs = runs.concat(again);
         usable = again.filter((r) => r.result.status !== 'failed' && r.overlay.ownChanges().length > 0);
       }
@@ -898,7 +927,8 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     });
     let winner: Winner = usable[0];
     let verdict: CouncilVerdict | undefined;
-    const reviewers = usable.length > 1 || mode === 'council' ? this.cfg.orchestrator.councilSize : this.router.size > 1 || reviewRules ? 1 : 0;
+    // a cascade whose first candidate passed the build and tests needs no reviewer (as one model alone)
+    const reviewers = report.cascade === 'first' && !reviewRules ? 0 : usable.length > 1 || mode === 'council' ? this.cfg.orchestrator.councilSize : this.router.size > 1 || reviewRules ? 1 : 0;
     if (reviewers > 0) {
       try {
         verdict = await councilReview(this.router, {
@@ -1017,8 +1047,9 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     const diff = integration.diff();
     if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
     // one model judging its own verified work adds a request and little else
-    if (this.codingModels() <= 1 && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
-      this.bus.info('requirements', 'one model, build and tests passed: no separate acceptance judge');
+    const firstTry = reports.length > 0 && reports.every((r) => r.cascade === 'first');
+    if ((this.codingModels() <= 1 || firstTry) && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
+      this.bus.info('requirements', firstTry ? 'the main model passed the build and tests on the first try: no separate acceptance judge' : 'one model, build and tests passed: no separate acceptance judge');
       return { complete: true, missing: [], judges: [] };
     }
     // judges that did not write the winning code come first

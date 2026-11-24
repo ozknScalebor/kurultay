@@ -442,15 +442,47 @@ describe('Orchestrator', () => {
     const ok = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { raceWidth: 3, maxIterations: 1 } } });
     const report = await ok.run('change f1');
     assert.equal(report.mode, 'race');
-    assert.ok(workers.length >= 2 && workers.every((m) => m === 'fast'), `only the fast model races (${workers.join(', ')})`);
+    assert.ok(workers.length >= 1 && workers.every((m) => m === 'fast'), `only the fast model works (${workers.join(', ')})`);
     assert.ok(ok.bus.ofType('log.info').some((e) => /much slower than fast@e: slow@e/.test(e.message ?? '')));
     assert.ok(!ok.s.log.some((l) => (l.body as { model?: string }).model === 'slow'), 'the slow model got no request at all');
     // the fast model's change fails the tests: the slower model joins the next iteration
     workers.length = 0;
     const bad = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'false' }, orchestrator: { raceWidth: 2, maxIterations: 2 } } });
     await bad.run('change f1');
-    assert.ok(bad.bus.ofType('log.info').some((e) => /the build or tests failed: the slower models join from now on \(slow@e\)/.test(e.message ?? '')));
+    assert.ok(bad.bus.ofType('log.info').some((e) => /(first candidate|build or tests) failed: the slower models join from now on \(slow@e\)/.test(e.message ?? '')));
     assert.ok((workers as string[]).includes('slow'));
+  });
+
+  it('cascade: with build/tests the main model tries alone first and the race starts only when it fails', async () => {
+    const workers: string[] = [];
+    let judges = 0;
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      agent: (_id, step, _q, model) => {
+        if (step === 0) workers.push(model);
+        return step === 0 ? call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' }) : undefined;
+      },
+      record: (kind) => {
+        if (kind === 'judge') judges++;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const good = await setup(brain, files, { models: ['m1', 'm2'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { raceWidth: 3 } } });
+    const r1 = await good.run('change f1');
+    assert.equal(workers.length, 1, 'one agent when it passes');
+    assert.equal(r1.subtasks[0].cascade, 'first');
+    assert.equal(judges, 0);
+    assert.ok(!r1.subtasks[0].verdict, 'no review either');
+    workers.length = 0;
+    const bad = await setup(brain, files, { models: ['m1', 'm2'], cfg: { verify: { build: 'true', test: 'false' }, orchestrator: { raceWidth: 3, maxIterations: 1 } } });
+    const r2 = await bad.run('change f1');
+    assert.equal(r2.subtasks[0].cascade, 'raced');
+    assert.ok(workers.length >= 3, 'the first one, then two more (and a fix round)');
+    const r3 = await good.run('change f1', { mode: 'race' });
+    assert.equal(r3.subtasks[0].cascade, undefined, 'a race asked for is a race');
+    assert.ok(r3.subtasks[0].candidates.length >= 2);
   });
 
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
