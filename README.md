@@ -194,7 +194,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.13.0 · all your local LLMs in one council · offline
+ v0.14.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -418,7 +418,7 @@ kurultay swebench collect --dir swe-qwen --name qwen-code
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.13.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.14.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 ```
 
