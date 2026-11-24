@@ -36,7 +36,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history', 'keep-tests']);
+  const booleans = new Set(['deep', 'quick', 'minimal', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history', 'keep-tests']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -60,7 +60,7 @@ Commands:
   console              Interactive console (--workspace <dir>, --continue | --resume [id], --worktree <name>,
                          --no-probe, --no-analyze)
   probe                Measure the models and save the capability profile (runs once; use this to re-measure)
-                         --deep (thorough, slower), --quick (no benchmark), --model <name> (only this model)
+                         --deep (thorough, slower), --quick (no benchmark), --minimal (4 requests per model), --model <name> (only this model)
   run "<task>"         Plan the task, distribute it to the models, verify, review and apply
                          --mode auto|single|split|race|council   --req <file>   --dry-run   --yes
                          --skill a,b (preload skills; $skill-name in the task text works too)
@@ -168,8 +168,8 @@ async function cmdProbe(app: App, flags: Args['flags']) {
   try {
     const models = typeof flags.model === 'string' ? flags.model.split(',').map((m) => m.trim()).filter(Boolean) : undefined;
     const t0 = Date.now();
-    out(`${color.bold('Capability probe')} – ${models ? models.join(', ') : 'all configured models'}${flags.deep ? ' (deep)' : flags.quick ? ' (quick)' : ''}`);
-    const run = await runProbe(app.config, app.bus, { deep: !!flags.deep, quick: !!flags.quick, scope: 'all', models });
+    out(`${color.bold('Capability probe')} – ${models ? models.join(', ') : 'all configured models'}${flags.deep ? ' (deep)' : flags.minimal ? ' (minimal)' : flags.quick ? ' (quick)' : ''}`);
+    const run = await runProbe(app.config, app.bus, { deep: !!flags.deep, quick: !!flags.quick || !!flags.minimal, minimal: !!flags.minimal, scope: 'all', models });
     if (!run) return;
     const paths = writeCapabilities(app.stateDir, run.profile);
     out('\n' + renderCapabilitiesMarkdown(run.measured));

@@ -80,15 +80,19 @@ export function candidates(ids, prefer) {
   }
 }
 
-/** First candidate that answers; every attempt is logged. A forced id is tried first even when the list does not show it. */
+/**
+ * Best-preferred candidate that answers. All candidates are asked at once (30 s each), so a
+ * free tier with several stuck models costs 30 s instead of a minute per model; every answer
+ * is logged. A forced id is tried first even when the list does not show it.
+ */
 async function firstAnswering(name, base, key, ids, prefer, forced) {
   const list = [...(forced ? [forced] : []), ...candidates(ids, prefer).filter((x) => x !== forced)].slice(0, 6);
-  for (const id of list) {
-    const r = await ping(base, key, id);
+  const results = await Promise.all(list.map((id) => ping(base, key, id, 30_000)));
+  list.forEach((id, i) => {
+    const r = results[i];
     console.error(`${name}: ${id} → ${r.ok ? `answered in ${(r.ms / 1000).toFixed(1)} s` : `${r.error} after ${(r.ms / 1000).toFixed(0)} s`}`);
-    if (r.ok) return id;
-  }
-  return undefined;
+  });
+  return list.find((_, i) => results[i].ok);
 }
 
 async function listModels(base, key) {

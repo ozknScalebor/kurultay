@@ -19,6 +19,12 @@ export interface ProbeOptions {
   deep?: boolean;
   /** connectivity + features only (no benchmark) */
   quick?: boolean;
+  /**
+   * The fewest requests that keep the work safe (about 4 per model): reachability, speed, tool
+   * calling and JSON mode. Instruction checks and the context ladder are skipped – the window
+   * comes from the server, the model family table or 32k. For a bench, CI, or a first start.
+   */
+  minimal?: boolean;
   /** base delay between reachability retries while a model is loading (default 1000 ms) */
   retryDelayMs?: number;
   signal?: AbortSignal;
@@ -55,6 +61,7 @@ class ModelProber {
   ) {}
 
   private steps(): string[] {
+    if (this.opts.minimal) return ['connect', 'speed', 'tool calling', 'JSON'];
     const s = ['connect', 'speed', 'tool calling', 'JSON', 'instructions', 'context window'];
     if (!this.opts.quick) s.push('coding', 'editing');
     return s;
@@ -176,6 +183,14 @@ class ModelProber {
     } catch {
       c.jsonMode = false;
     }
+    if (this.opts.minimal) {
+      // no instruction checks or context ladder: the JSON answer stands for instruction following
+      c.instructionScore = Math.round((instr / 2 + 0.25) * 1000) / 1000;
+      c.contextWindow = c.contextWindow > 0 ? c.contextWindow : (knownContextWindow(c.model) ?? 32_768);
+      c.maxOutputTokens = this.outputCap(c.contextWindow);
+      c.notes.push(`minimal probe: context ${c.contextWindow} ${knownContextWindow(c.model) ? 'from the model family' : 'assumed'}, no instruction or coding benchmark`);
+      return this.finishRun(started);
+    }
     try {
       const r = await this.call({
         messages: [{ role: 'user', content: 'Return the programming language C++ and the year 2011 as JSON.' }],
@@ -263,6 +278,11 @@ class ModelProber {
       c.editScore = scores[c.editFormat] ?? 0;
       if (c.editFormat === 'whole') c.notes.push('edits work best as whole files (search/replace was unreliable)');
     }
+    return this.finishRun(started);
+  }
+
+  private finishRun(started: number): ModelCapabilities {
+    const c = this.caps;
     c.probedAt = new Date().toISOString();
     c.probeSeconds = Math.round((Date.now() - started) / 100) / 10;
     return c;

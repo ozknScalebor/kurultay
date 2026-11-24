@@ -287,7 +287,7 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`, `--ascii`) |
 | `kurultay rewind [session]` | Undo the changes a task applied to the project (default: last task; `--yes`, `--force` for files changed since) |
 | `kurultay init` | Creates configuration and rule templates; guesses build/test commands (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
-| `kurultay probe [--model a,b] [--deep] [--quick]` | Measures the models again and saves the profile (all configured models, or only `--model`). Standard: 2 coding + 2 editing tasks, context up to 32K, 1→2→4 parallel requests. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the coding benchmark |
+| `kurultay probe [--model a,b] [--deep] [--quick]` | Measures the models again and saves the profile (all configured models, or only `--model`). Standard: 2 coding + 2 editing tasks, context up to 32K, 1→2→4 parallel requests. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the coding benchmark; `--minimal` sends about 4 requests per model (reachability, speed, tool calling, JSON) and takes the window from the server or the model family |
 | `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
 | `kurultay skills` | Lists the skills found and validates them against the specification. `skills new <name> --description "..."` creates a skill folder |
@@ -431,7 +431,7 @@ The `bench` workflow (Actions → bench, or after every release) runs the K task
 | Kurultay (main model only) | Kimi K2 alone – shows what the extra models add or cost |
 | Qwen Code | Kimi K2 |
 
-For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget (`minutes`, default 20), and the run order is rotated per task. The table reports time, requests, tokens, rate-limit waits and Kurultay's multi-model work; if all models were slower than the main model alone, a separate "Multi-model slowdown" line says by how much. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen`.
+Actions → bench → **quick** runs one small C++ task with 4 minutes per agent (about 15 minutes in all) to check the setup before a full run. For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget (`minutes`, default 20), and the run order is rotated per task. The table reports time, requests, tokens, rate-limit waits and Kurultay's multi-model work; if all models were slower than the main model alone, a separate "Multi-model slowdown" line says by how much. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen`.
 
 ## Rules and skills
 

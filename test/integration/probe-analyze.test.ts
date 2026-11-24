@@ -49,6 +49,21 @@ describe('probe – edge cases', () => {
     assert.equal(by['kimi-k3-tiny'].contextWindow, 16_384, 'a measured smaller window wins over the family value');
   });
 
+  it('minimal probe: four requests per model, window from the family table or 32k', async () => {
+    const s = await mock([
+      { id: 'kimi-k3.1-pro', quality: 'good', tools: true, ctx: 300_000, hideCtx: true },
+      { id: 'house-model', quality: 'good', tools: true, ctx: 100_000, hideCtx: true },
+    ]);
+    const file = await probeAll(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), recordingBus(), { quick: true, minimal: true });
+    const by = Object.fromEntries(file.models.map((m) => [m.model, m]));
+    assert.equal(by['kimi-k3.1-pro'].contextWindow, 262_144);
+    assert.equal(by['house-model'].contextWindow, 32_768);
+    assert.ok(by['house-model'].notes.some((n) => /minimal probe/.test(n)));
+    assert.ok(by['house-model'].nativeTools);
+    const chats = s.log.filter((l) => (l.body as { model?: string }).model === 'house-model').length;
+    assert.ok(chats <= 6, `few requests (${chats})`);
+  });
+
   it('waits out a 429 during the context test instead of reading it as a small window', async () => {
     let limited = 0;
     let failing = 0;
