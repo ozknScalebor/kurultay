@@ -1,6 +1,6 @@
 import type { Router } from '../llm/router.js';
 import { REVIEW_SCHEMA } from '../llm/schemas.js';
-import { errorMessage, settle } from '../util/async.js';
+import { errorMessage, settle, settleQuorum } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { truncateTokens, tryExtractJson } from '../util/text.js';
 
@@ -116,20 +116,21 @@ If you cannot produce JSON, write your evaluation and end with a line "FINAL RAN
   }
   args.bus?.info('council', `${candidates.length} candidates, ${reviewers.length} reviewers: ${reviewers.map((r) => r.caps.key).join(', ')}`);
 
-  const results = await settle(
-    reviewers.map((r) => {
+  const results = await settleQuorum(
+    reviewers.map((r) => (signal: AbortSignal) => {
       // a non-author reviewer that fails is replaced by another NON-author, never by the author
       const exclude = outsiders.includes(r) ? authors : undefined;
       return router.chat(
-        { messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: REVIEW_SCHEMA, maxTokens: 2500, purpose: 'council.review', signal: args.signal },
+        { messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: REVIEW_SCHEMA, maxTokens: 2500, purpose: 'council.review', signal },
         { prefer: [r.caps.key], role: 'reviewer', exclude },
       );
     }),
+    { signal: args.signal, onLate: (i, ms) => args.bus?.warn('council', `${reviewers[i].caps.key} stopped: no review after ${Math.round(ms / 1000)} s while another reviewer was done`) },
   );
   const reviews: Review[] = [];
   for (const [ri, r] of results.entries()) {
     if (!r.ok) {
-      args.bus?.warn('council', `review failed: ${errorMessage(r.error)}`);
+      if (!r.late) args.bus?.warn('council', `review failed: ${errorMessage(r.error)}`);
       router.recordOutcome(reviewers[ri].caps.key, 'reviewer', false);
       continue;
     }

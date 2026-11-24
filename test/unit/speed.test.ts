@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { multiModelNote, renderTiming, TimingTracker } from '../../src/orchestrator/timing.js';
-import { RateLimiter } from '../../src/util/async.js';
+import { RateLimiter, settleQuorum } from '../../src/util/async.js';
 import type { KEvent } from '../../src/util/events.js';
 import { caps, config, routerFor } from '../helpers.js';
 
@@ -90,5 +90,59 @@ describe('TimingTracker', () => {
     assert.equal(r.multiModel, 50, 'slower 30 + selection 10 + judges 10, no plan council, no waits');
     assert.equal(r.rateLimitWait, 5);
     assert.equal(multiModelNote({ ...r, totalSeconds: 20 }), undefined, 'short runs get no warning');
+  });
+});
+
+describe('known context windows', () => {
+  it('maps model ids of well-known families to their published window, capped at 256k', async () => {
+    const { knownContextWindow, normalizeModelId } = await import('../../src/llm/known-windows.js');
+    const { defaultCapabilities } = await import('../../src/llm/models.js');
+    assert.equal(normalizeModelId('moonshotai/Kimi-K3.1-Pro'), 'kimi-k3.1-pro');
+    assert.equal(knownContextWindow('moonshotai/kimi-k3.1-pro'), 262_144);
+    assert.equal(knownContextWindow('Qwen3.8-Flash-Next-FP8'), 262_144);
+    assert.equal(knownContextWindow('qwen2.5-coder-1.5b-instruct-q4_k_m.gguf'), 32_768);
+    assert.equal(knownContextWindow('z-ai/glm-5.3-flash'), 202_752);
+    assert.equal(knownContextWindow('mistralai/mistral-large-4-1t-a52b'), 131_072);
+    assert.equal(knownContextWindow('nvidia/nemotron-3.5-lightning-30b-a3b'), 131_072);
+    assert.equal(knownContextWindow('my-own-model'), undefined);
+    assert.equal(defaultCapabilities('moonshotai/kimi-k3.1-pro', 'e').contextWindow, 262_144, 'an unprobed model gets its family window');
+    assert.equal(defaultCapabilities('my-own-model', 'e').contextWindow, 32_768);
+  });
+});
+
+describe('settleQuorum', () => {
+  const wait = <T>(ms: number, v: T, signal: AbortSignal) =>
+    new Promise<T>((res, rej) => {
+      const t = setTimeout(() => res(v), ms);
+      signal.addEventListener('abort', () => (clearTimeout(t), rej(new Error('aborted'))), { once: true });
+    });
+
+  it('does not wait for a slow model once one has answered and the grace is over', async () => {
+    const late: number[] = [];
+    const t0 = Date.now();
+    const r = await settleQuorum([(s) => wait(10, 'a', s), (s) => wait(5000, 'b', s), (s) => wait(15, 'c', s)], { minGraceMs: 40, factor: 0, onLate: (i) => late.push(i) });
+    assert.ok(Date.now() - t0 < 1000);
+    assert.deepEqual(r.map((x) => x.ok), [true, false, true]);
+    assert.equal((r[1] as { late?: boolean }).late, true);
+    assert.deepEqual(late, [1]);
+  });
+
+  it('waits for everyone when nobody succeeds, and passes the caller\'s abort on', async () => {
+    const r = await settleQuorum([() => Promise.reject(new Error('x')), (s) => wait(20, 'b', s)], { minGraceMs: 1000 });
+    assert.deepEqual(r.map((x) => x.ok), [false, true]);
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(new Error('stop')), 20);
+    const a = await settleQuorum([(s) => wait(5000, 'a', s)], { signal: ctrl.signal });
+    assert.equal(a[0].ok, false);
+  });
+});
+
+describe('role scores of a model whose speed test failed', () => {
+  it('ranks it last instead of letting it plan or review', async () => {
+    const { computeRoleScores } = await import('../../src/llm/models.js');
+    const base = { contextWindow: 131_072, nativeTools: true, tokensPerSec: 0, codingScore: 0.5, editScore: 0.5, instructionScore: 1, thinking: true };
+    const ok = computeRoleScores({ ...base, tokensPerSec: 30, streaming: true }, 40);
+    const broken = computeRoleScores({ ...base, streaming: false }, 40);
+    assert.ok(broken.planner < ok.planner * 0.5 && broken.reviewer < ok.reviewer * 0.5);
   });
 });

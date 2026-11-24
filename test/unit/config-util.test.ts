@@ -57,6 +57,15 @@ describe('config', () => {
       assert.equal(config.tools.javaRelease, 8);
       const own = tmpProject({ 'kurultay.config.json': JSON.stringify({ endpoints: [{ name: 'own', baseUrl: 'http://o:1/v1' }] }) });
       assert.equal(loadConfig(own).config.orchestrator.raceWidth, 3, 'a project with its own endpoints does not inherit');
+      // an explicit config (the bench, --config) still gets the project's build/test commands
+      const explicit = join(home, 'bench.json');
+      writeFileSync(explicit, JSON.stringify({ endpoints: [{ name: 'nim', baseUrl: 'http://n:1/v1' }], verify: { lint: 'x-lint' } }));
+      const ex = loadConfig(proj, explicit).config;
+      assert.deepEqual(ex.endpoints.map((e) => e.name), ['nim'], 'models come from the explicit file');
+      assert.equal(ex.verify.test, 'ctest');
+      assert.equal(ex.verify.lint, 'x-lint');
+      assert.equal(ex.tools.javaRelease, 8);
+      assert.deepEqual(loadConfig(own, explicit).config.endpoints.map((e) => e.name), ['nim'], 'a project file with endpoints does not replace the explicit models');
     } finally {
       if (prev === undefined) delete process.env.KURULTAY_HOME;
       else process.env.KURULTAY_HOME = prev;

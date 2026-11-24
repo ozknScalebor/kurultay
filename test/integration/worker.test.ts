@@ -228,7 +228,7 @@ describe('AgentWorker', () => {
     );
     const { w } = make('small');
     const r = await w.run();
-    assert.equal(r.status, 'done');
+    assert.equal(r.status, 'done', r.summary);
     assert.ok(sawCleared, 'old outputs were cleared');
     assert.equal(summaries, 0, 'no summary needed');
     assert.ok(rereadContent, 'after clearing, a repeated read returns the content, not the cache note');
@@ -423,5 +423,57 @@ describe('AgentWorker', () => {
     const r = await w.run();
     assert.equal(r.status, 'failed');
     assert.match(r.error ?? '', /always broken/);
+  });
+});
+
+describe('AgentWorker – reasoning models and smaller windows', () => {
+  it('sends a Kimi model its reasoning back with the tool calls, and drops it when the server rejects it', async () => {
+    const seen: boolean[] = [];
+    let rejected = false;
+    const { make } = await setup([
+      {
+        id: 'kimi-k3.1-pro',
+        thinks: true,
+        script: (n, q) => {
+          const back = q.messages.some((m) => m.role === 'assistant' && typeof (m as { reasoning_content?: string }).reasoning_content === 'string');
+          seen.push(back);
+          if (n === 1 && back && !rejected) {
+            rejected = true;
+            return { status: 400, error: 'unknown field reasoning_content' };
+          }
+          const c = [call('read_file', { path: 'src/a.c' }), call('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 2;' }), call('finish', { summary: 'done' })][n];
+          return c && 'toolCall' in c ? { content: 'next step', toolCall: c.toolCall! } : c;
+        },
+      },
+    ]);
+    const { w, overlay } = make('kimi-k3.1-pro');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.equal(overlay.read('src/a.c'), 'int a = 2;\n');
+    assert.deepEqual(seen.slice(0, 3), [false, true, false], 'sent once, then left out after the 400');
+  });
+
+  it('lowers the window and tries again when the prompt does not fit the server', async () => {
+    let failed = false;
+    const { make, router } = await setup(
+      [
+        {
+          id: 'small',
+          script: (n) => {
+            if (n === 1 && !failed) {
+              failed = true;
+              return { status: 400, error: "This model's maximum context length is 8192 tokens" };
+            }
+            return [call('read_file', { path: 'src/a.c' }), call('edit_file', { path: 'src/a.c', old_text: 'int a = 1;', new_text: 'int a = 2;' }), call('finish', { summary: 'done' })][n];
+          },
+        },
+      ],
+      undefined,
+      { small: { contextWindow: 262_144 } },
+    );
+    const { w } = make('small');
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.ok(router.get('small@e')!.caps.contextWindow < 262_144);
   });
 });

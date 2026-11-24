@@ -113,6 +113,10 @@ async function main() {
   const bench = { name: String(f.name ?? 'bench'), models: String(f.models ?? process.env.BENCH_MODELS ?? '?'), at: new Date().toISOString(), tasks: [] };
   const keys = ['kurultay', ...(f['solo-config'] ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])];
   let i = 0;
+  // the CI job has a hard limit: stop starting runs that could not finish before it, so the
+  // results are still written, committed and added to the release notes
+  const stopAt = f['stop-after'] ? Date.now() + Number(f['stop-after']) * 60_000 : Infinity;
+  let stopped = false;
 
   for (const name of suites) {
     const suiteDir = join(root, 'samples', 'evals', name);
@@ -122,6 +126,11 @@ async function main() {
       const row = { suite: name, id: t.id };
       bench.tasks.push(row);
       for (const key of orderFor(i++, keys)) {
+        if (Date.now() + (minutes + 3) * 60_000 > stopAt) {
+          if (!stopped) console.log(`\n== time limit of the job near: no further runs (${t.id} and later are left out)`);
+          stopped = true;
+          break;
+        }
         if (key === 'kurultay' || key === 'solo') {
           console.log(`\n== ${key === 'solo' ? 'Kurultay (main model only)' : 'Kurultay'} · ${name}/${t.id}`);
           const config = key === 'solo' ? String(f['solo-config']) : f.config;
@@ -146,6 +155,7 @@ async function main() {
         row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };
         console.log(`${row.qwen.passed ? '✓' : '✗'} ${t.id} · ${seconds.toFixed(0)} s · ${s.requests} requests · exit ${r.status}`);
       }
+      if (stopped && !Object.keys(row).some((k) => keys.includes(k))) bench.tasks.pop();
       // partial results survive a cancelled job
       writeFileSync(join(out, 'bench.json'), JSON.stringify(bench, null, 1));
       writeFileSync(join(out, 'BENCH.md'), renderBench(bench));

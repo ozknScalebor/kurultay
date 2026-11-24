@@ -48,7 +48,7 @@ permissions:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 350
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
@@ -99,7 +99,7 @@ jobs:
           name="${{ inputs.name }}"; [ -n "$name" ] || name="manual-$(date -u +%Y%m%d-%H%M)"
           echo "BENCH_NAME=$name" >> "$GITHUB_ENV"
           node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --solo-config "${{ steps.models.outputs.solo_config }}" \
-            --qwen qwen --minutes ${{ inputs.minutes || 20 }} \
+            --qwen qwen --minutes ${{ inputs.minutes || 20 }} --stop-after 300 \
             --name "$name" --models "${{ steps.models.outputs.label }}" ${{ inputs.tasks && format('--tasks {0}', inputs.tasks) || '' }}
           cat bench-out/BENCH.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the logs

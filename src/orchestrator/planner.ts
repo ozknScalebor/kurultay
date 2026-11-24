@@ -1,5 +1,5 @@
 import type { Router } from '../llm/router.js';
-import { errorMessage, settle } from '../util/async.js';
+import { errorMessage, settleQuorum } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { truncateTokens, tryExtractJson } from '../util/text.js';
 import { PLAN_SCHEMA } from '../llm/schemas.js';
@@ -167,15 +167,17 @@ export async function makePlan(
   const prompt = `${PLAN_INSTRUCTIONS}\n\n${truncateTokens(context, opts.contextTokens)}${skills}\n\n# TASK\n${task}${opts.extra ? '\n\n' + opts.extra : ''}`;
   const planners = router.pick('planner', Math.max(1, opts.drafts));
   opts.bus?.info('planner', `plan drafts: ${planners.map((p) => p.caps.key).join(', ')}`);
-  const results = await settle(
-    planners.map((p) =>
-      router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, jsonMode: true, jsonSchema: PLAN_SCHEMA, maxTokens: 3000, purpose: 'plan.draft', signal: opts.signal }, { prefer: [p.caps.key], role: 'planner' }),
+  // the first plan does not wait for a slow or stuck planner beyond a grace period
+  const results = await settleQuorum(
+    planners.map((p) => (signal: AbortSignal) =>
+      router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0.2, jsonMode: true, jsonSchema: PLAN_SCHEMA, maxTokens: 3000, purpose: 'plan.draft', signal }, { prefer: [p.caps.key], role: 'planner' }),
     ),
+    { signal: opts.signal, onLate: (i, ms) => opts.bus?.warn('planner', `${planners[i].caps.key} stopped: no plan after ${Math.round(ms / 1000)} s while another planner was done`) },
   );
   const drafts: Array<{ model: string; plan: Omit<Plan, 'authors'>; raw: string }> = [];
   results.forEach((r, i) => {
     if (!r.ok) {
-      opts.bus?.warn('planner', `plan draft failed: ${errorMessage(r.error)}`);
+      if (!r.late) opts.bus?.warn('planner', `plan draft failed: ${errorMessage(r.error)}`);
       router.recordOutcome(planners[i].caps.key, 'planner', false);
       return;
     }

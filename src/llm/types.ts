@@ -12,6 +12,8 @@ export interface ChatMessage {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+  /** the model's own reasoning, sent back for families that expect it with tool calls (Kimi, DeepSeek, GLM, MiniMax) */
+  reasoning_content?: string;
 }
 
 export interface ToolSpec {

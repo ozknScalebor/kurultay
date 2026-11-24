@@ -11,7 +11,7 @@ import type { Router } from '../llm/router.js';
 import { JUDGE_SCHEMA } from '../llm/schemas.js';
 import type { ExternalTools } from '../mcp/manager.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
-import { errorMessage, settle } from '../util/async.js';
+import { errorMessage, settle, settleQuorum } from '../util/async.js';
 import type { EventBus, KEvent } from '../util/events.js';
 import { TimingTracker, renderTiming, type RunTiming } from './timing.js';
 import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
@@ -222,6 +222,8 @@ export class Orchestrator {
       const map = this.index.repoMap(Math.floor(budget * 0.35), { files: [...files, ...focus.files, ...hits], identifiers: focus.identifiers });
       parts.push(`# REPO MAP (most relevant files and their definitions)\n${map}`);
       if (hits.length) parts.push(`# FILES MATCHING THE TASK (search)\n${[...new Set(hits)].map((h) => `- ${h}`).join('\n')}`);
+      // the whole layout of a small project saves the agent its list_dir steps (Qwen Code sends the folder structure up front)
+      if (this.index.files.length <= 300) parts.push(truncateTokens(`# PROJECT FILES\n${this.index.files.map((f) => f.path).join('\n')}`, Math.floor(budget * 0.15)));
     }
     const notes = join(this.stateDir, 'PROJECT_NOTES.md');
     if (existsSync(notes)) parts.push(`# PROJECT NOTES (stack, commands, conventions)\n${truncateTokens(readFileSync(notes, 'utf8'), Math.floor(budget * 0.2))}`);
@@ -454,8 +456,13 @@ export class Orchestrator {
     };
   }
 
+  /** models that may code (helpers with rolesOnly do not count) */
+  private codingModels(): number {
+    return this.router.list().filter((h) => this.router.allows(h, 'coder')).length;
+  }
+
   /** localisation done while triaging the task, reused by the first subtask */
-  private preLocalized: { id: string; loc: Localization } | undefined;
+  private preLocalized: { id: string; loc: Localization | undefined } | undefined;
 
   /**
    * Small task → no plan council. A short task whose localisation names one or two files
@@ -471,9 +478,13 @@ export class Orchestrator {
     if (this.index.files.length >= 8 && o.localize !== false) {
       const coders = this.router.pick('coder', 1).map((h) => h.caps.key);
       const loc = await localize(this.index, this.router, fullTask, { retrieved: await this.retrieve(fullTask, signal) }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' });
-      if (!loc || !loc.files.length || loc.files.length > 2) return undefined;
-      files = loc.files;
+      // kept even when the plan council runs: a one-subtask plan reuses it instead of asking again
       this.preLocalized = { id: 'T1', loc };
+      // one coding model works through a whole medium task in one agent loop (Qwen Code);
+      // splitting it only adds plan requests and a fresh exploration per subtask
+      const maxFiles = o.fastPathMaxFiles ?? (this.codingModels() <= 1 ? 6 : 2);
+      if (!loc || !loc.files.length || loc.files.length > maxFiles) return undefined;
+      files = loc.files;
     } else if (this.index.files.length >= 8) return undefined;
     else files = [...filesOf({ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }, this.index.files.map((f) => f.path))].slice(0, 4);
     this.bus.info('planner', `small task${files.length ? ` (${files.join(', ')})` : ''}: no plan council, straight to the coders`);
@@ -745,11 +756,13 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     const contexts = new Map<number, string>();
     const retrieved = await this.retrieve(`${st.title}\n${st.description}`, signal);
     // Agentless-style localisation: files → functions → their code, shared by all candidates
-    const pre = this.preLocalized?.id === st.id && iteration === 1 ? this.preLocalized.loc : undefined;
-    if (pre) this.preLocalized = undefined;
-    const loc =
-      pre ??
-      (this.index && this.cfg.orchestrator.localize !== false && this.index.files.length >= 8
+    // the task was already localised while triaging it: a one-subtask plan does not ask again
+    const reuse = this.preLocalized?.id === st.id && iteration === 1 && plan.subtasks.length === 1;
+    const pre = reuse ? this.preLocalized!.loc : undefined;
+    if (reuse) this.preLocalized = undefined;
+    const loc = reuse
+      ? pre
+      : (this.index && this.cfg.orchestrator.localize !== false && this.index.files.length >= 8
         ? await localize(this.index, this.router, `${st.title}\n${st.description}`, { files: st.files, retrieved }, { budgetTokens: this.contextBudget(0.15, models.map((m) => m.caps.key)), signal, bus: this.bus, source: st.id })
         : undefined);
     const contextFor = (mk: string) => {
@@ -978,6 +991,11 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
   private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
     const diff = integration.diff();
     if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
+    // one model judging its own verified work adds a request and little else
+    if (this.codingModels() <= 1 && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
+      this.bus.info('requirements', 'one model, build and tests passed: no separate acceptance judge');
+      return { complete: true, missing: [], judges: [] };
+    }
     // judges that did not write the winning code come first
     const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
     const want = Math.min(2, this.router.size);
@@ -1003,7 +1021,10 @@ ${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}
 \`\`\`
 
 Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement as an actionable instruction"]}`;
-    const res = await settle(judges.map((j) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: JUDGE_SCHEMA, maxTokens: 1500, purpose: 'requirements', signal }, { prefer: [j.caps.key], role: 'judge' })));
+    const res = await settleQuorum(
+      judges.map((j) => (s: AbortSignal) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: JUDGE_SCHEMA, maxTokens: 1500, purpose: 'requirements', signal: s }, { prefer: [j.caps.key], role: 'judge' })),
+      { signal, onLate: (i, ms) => this.bus.warn('requirements', `${judges[i].caps.key} stopped: no verdict after ${Math.round(ms / 1000)} s while another judge was done`) },
+    );
     const verdicts = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => ({ model: r.value.model, j: tryExtractJson<{ complete?: boolean; missing?: string[] }>(r.value.content) }));
     verdicts.forEach((v) => {
       this.used.add(v.model);

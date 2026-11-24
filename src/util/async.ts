@@ -161,3 +161,70 @@ export function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   return String(e);
 }
+
+export interface QuorumOptions {
+  signal?: AbortSignal;
+  /** once this many have answered, the rest get a grace period (default 1) */
+  quorum?: number;
+  /** grace = max(minGraceMs, factor × time the quorum took); defaults 30 s and 0.5 */
+  minGraceMs?: number;
+  factor?: number;
+  /** called for each call stopped because it was slower than the others */
+  onLate?: (index: number, waitedMs: number) => void;
+}
+
+/**
+ * Like settle(), but a fan-out to several models does not wait for the slowest: once `quorum`
+ * calls have succeeded, the others get a grace period and are then stopped. A broken or
+ * overloaded model can no longer hold every council step until its timeout. Stopped calls
+ * come back as `{ ok: false, late: true }`.
+ */
+export async function settleQuorum<T>(
+  calls: Array<(signal: AbortSignal) => Promise<T>>,
+  opts: QuorumOptions = {},
+): Promise<Array<{ ok: true; value: T } | { ok: false; error: unknown; late?: boolean }>> {
+  const t0 = Date.now();
+  const need = Math.min(Math.max(1, opts.quorum ?? 1), calls.length);
+  const ctrls = calls.map(() => new AbortController());
+  const onAbort = () => ctrls.forEach((c) => c.abort(opts.signal?.reason ?? new Error('aborted')));
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
+  const out: Array<{ ok: true; value: T } | { ok: false; error: unknown; late?: boolean } | undefined> = calls.map(() => undefined);
+  let ok = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((done) => {
+      let left = calls.length;
+      const settled = () => {
+        if (--left === 0) done();
+      };
+      calls.forEach((call, i) => {
+        call(ctrls[i].signal).then(
+          (value) => {
+            if (!out[i]) out[i] = { ok: true, value };
+            if (++ok === need && left > 1 && !timer) {
+              const grace = Math.max(opts.minGraceMs ?? 30_000, (opts.factor ?? 0.5) * (Date.now() - t0));
+              timer = setTimeout(() => {
+                ctrls.forEach((c, j) => {
+                  if (out[j]) return;
+                  out[j] = { ok: false, error: new Error('stopped: slower than the other models'), late: true };
+                  opts.onLate?.(j, Date.now() - t0);
+                  c.abort(new Error('stopped: slower than the other models'));
+                });
+                done();
+              }, grace);
+            }
+            settled();
+          },
+          (error: unknown) => {
+            if (!out[i]) out[i] = { ok: false, error };
+            settled();
+          },
+        );
+      });
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
+  }
+  return out.map((r) => r ?? { ok: false, error: new Error('no result') });
+}

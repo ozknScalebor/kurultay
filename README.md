@@ -131,7 +131,11 @@ A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurulta
 
 | Rule | What happens | Setting |
 |---|---|---|
-| **Fast path** | A short task whose localisation names one or two files skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval) | `orchestrator.fastPath` |
+| **Fast path** | A short task whose localisation names one or two files – up to six with a single coding model – skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval). The localisation is made once and reused | `orchestrator.fastPath`, `fastPathMaxFiles` |
+| **No waiting for the slowest model** | Plan drafts, council reviews and acceptance judges go on once one model has answered; the others get half of that time (at least 30 s) and are then stopped. A model whose speed test failed in the probe is ranked last for every role | – |
+| **Real context windows** | Without a window reported by the server, well-known families get their published window (Kimi, Qwen3: 256k; GLM: 200k; DeepSeek, gpt-oss, Mistral Large, Gemma, Llama: 128k) once the probe's 32k test passed. A context-length error lowers the window and the step is retried after compaction | `"contextWindow"` per model |
+| **Reasoning models** | Thinking models get at least 8k (up to 32k) output tokens even for short structured answers, and Kimi / DeepSeek / GLM / MiniMax get their `reasoning_content` back with their tool calls (dropped if the server rejects it) | – |
+| **Few round-trips** | Workers are told to call independent tools in one step, and the context lists the files of projects up to 300 files. With one coding model, verified work gets no separate acceptance judge | – |
 | **Race only with checks** | Several candidates only help when build/tests can tell them apart. Without build/test commands auto mode runs one coder plus an independent reviewer | `verify.build`, `verify.test` |
 | **Small plans** | Test-only and check-only subtasks ("verify…", "edge cases…") are folded into the subtask whose code they test; subtasks that edit the same file run one after the other instead of in parallel | – |
 | **Fix rounds with progress only** | A second fix round runs only if the first one resolved something: a fixer that hit its step limit, or a re-review with the same blocking findings, ends the loop. Open findings go to the requirement check | – |
@@ -185,7 +189,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.11.1 · all your local LLMs in one council · offline
+ v0.12.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -409,7 +413,7 @@ kurultay swebench collect --dir swe-qwen --name qwen-code
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.11.1.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.12.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 ```
 

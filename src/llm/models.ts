@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { Role } from '../config.js';
+import { knownContextWindow } from './known-windows.js';
 
 /** What we know about a single model on a single endpoint (filled by the probe). */
 export interface ModelCapabilities {
@@ -52,7 +53,7 @@ export function defaultCapabilities(model: string, endpoint: string): ModelCapab
     model,
     endpoint,
     reachable: true,
-    contextWindow: 32_768,
+    contextWindow: knownContextWindow(model) ?? 32_768,
     maxOutputTokens: 4096,
     nativeTools: true,
     jsonMode: false,
@@ -72,12 +73,15 @@ export function defaultCapabilities(model: string, endpoint: string): ModelCapab
 }
 
 /** Turn raw measurements into per-role suitability scores (0..1). */
-export function computeRoleScores(c: Pick<ModelCapabilities, 'contextWindow' | 'nativeTools' | 'tokensPerSec' | 'codingScore' | 'editScore' | 'instructionScore' | 'thinking'>, fleetMaxTps: number): Record<Role, number> {
+export function computeRoleScores(c: Pick<ModelCapabilities, 'contextWindow' | 'nativeTools' | 'tokensPerSec' | 'codingScore' | 'editScore' | 'instructionScore' | 'thinking'> & { streaming?: boolean }, fleetMaxTps: number): Record<Role, number> {
   const ctx = Math.min(1, Math.log2(Math.max(4096, c.contextWindow) / 4096) / Math.log2(262_144 / 4096)); // 4k→0, 256k→1
   const speed = fleetMaxTps > 0 ? Math.min(1, c.tokensPerSec / fleetMaxTps) : 0.5;
   const tools = c.nativeTools ? 1 : 0.6; // prompt-based fallback still works
   const think = c.thinking ? 1 : 0.7;
-  const clamp = (x: number) => Math.round(Math.max(0, Math.min(1, x)) * 1000) / 1000;
+  // a model that answered "PONG" but could not produce a streamed answer in the speed test
+  // (overloaded free tier, broken server) is ranked last everywhere instead of holding a role
+  const broken = c.streaming === false && !(c.tokensPerSec > 0) ? 0.3 : 1;
+  const clamp = (x: number) => Math.round(Math.max(0, Math.min(1, x * broken)) * 1000) / 1000;
   return {
     planner: clamp(0.45 * c.codingScore + 0.25 * c.instructionScore + 0.15 * ctx + 0.15 * think),
     coder: clamp(0.45 * c.codingScore + 0.3 * c.editScore + 0.15 * tools + 0.1 * speed),

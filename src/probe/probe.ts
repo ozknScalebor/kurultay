@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EndpointConfig, KurultayConfig } from '../config.js';
 import { OpenAICompatClient, clientFor } from '../llm/client.js';
+import { knownContextWindow } from '../llm/known-windows.js';
 import { computeRoleScores, defaultCapabilities, type CapabilitiesFile, type ModelCapabilities } from '../llm/models.js';
 import { LlmError, type ChatRequest, type ChatResult, type ToolSpec } from '../llm/types.js';
 import { RateLimiter, errorMessage, mapLimit, sleep } from '../util/async.js';
@@ -276,9 +277,10 @@ class ModelProber {
     const c = this.caps;
     const reported = c.contextWindow > 0 ? c.contextWindow : undefined;
     if (reported && !this.opts.deep) {
-      c.maxOutputTokens = Math.max(1024, Math.min(16_384, Math.floor(reported / 4)));
+      c.maxOutputTokens = this.outputCap(reported);
       return;
     }
+    const known = reported ? undefined : knownContextWindow(c.model);
     const ladder = this.opts.deep ? [8_192, 16_384, 32_768, 65_536, 131_072, 262_144] : [8_192, 32_768];
     const filler = 'lorem ipsum dolor sit amet consectetur ';
     // calibrate tokens-per-char with the server's own tokenizer (usage.prompt_tokens)
@@ -355,7 +357,18 @@ class ModelProber {
     } else {
       c.contextWindow = reported || 4096;
     }
-    c.maxOutputTokens = Math.max(1024, Math.min(16_384, Math.floor(c.contextWindow / 4)));
+    // a known family whose 32k rung passed (the standard ladder's top) gets its published window
+    if (known && !this.opts.deep && lastOk >= top && known > lastOk) {
+      c.contextWindow = known;
+      c.notes = c.notes.filter((n) => !/kurultay probe --deep measures more/.test(n));
+      c.notes.push(`context ${known} from the model family's published window (${top} measured; set "contextWindow" if the server runs less)`);
+    }
+    c.maxOutputTokens = this.outputCap(c.contextWindow);
+  }
+
+  /** Output budget: a quarter of the window, up to 16k – 32k for reasoning models, whose thinking counts too. */
+  private outputCap(window: number): number {
+    return Math.max(1024, Math.min(this.caps.thinking ? 32_768 : 16_384, Math.floor(window / 4)));
   }
 }
 

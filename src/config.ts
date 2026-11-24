@@ -137,6 +137,8 @@ export interface OrchestratorConfig {
    * straight to the coders (default true; only in auto mode without plan approval).
    */
   fastPath?: boolean;
+  /** most files a fast-path task may touch (default 2; 6 with a single coding model) */
+  fastPathMaxFiles?: number;
   /** model id or key of the main model (see ModelOverride.primary) */
   primaryModel?: string;
   /**
@@ -415,6 +417,18 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
     const base = normalizeRawConfig(readJson(home)) as Record<string, unknown>;
     raw = deepMerge(base, raw as Record<string, unknown>);
     (raw as { endpoints?: unknown[] }).endpoints = base.endpoints as unknown[];
+  }
+  // An explicit or user-level config with the models still gets the project's own settings
+  // (build/test commands, rules): without them nothing is verified and no race runs.
+  const project = CONFIG_FILE_NAMES.map((n) => join(projectRoot, n)).find((p) => existsSync(p));
+  if (project && resolve(project) !== resolve(path)) {
+    const own = normalizeRawConfig(readJson(project)) as Record<string, unknown> | null;
+    const ownEps = (own as { endpoints?: unknown[] } | null)?.endpoints;
+    if (own && (!Array.isArray(ownEps) || !ownEps.length)) {
+      const eps = (raw as { endpoints?: unknown[] }).endpoints;
+      raw = deepMerge(raw as Record<string, unknown>, own);
+      (raw as { endpoints?: unknown[] }).endpoints = eps;
+    }
   }
   const config = parseConfig(raw);
   return { config, path };

@@ -36,6 +36,19 @@ describe('probe – edge cases', () => {
     assert.equal(deep.models[0].contextWindow, 131_072, 'deep ladder climbs to the last rung that fits');
   });
 
+  it('gives a known family its published window once the 32k test passes, and a thinking model a bigger output budget', async () => {
+    const s = await mock([
+      { id: 'kimi-k3.1-pro', quality: 'good', tools: true, ctx: 300_000, hideCtx: true, thinks: true },
+      { id: 'kimi-k3-tiny', quality: 'good', tools: true, ctx: 16_384, hideCtx: true },
+    ]);
+    const file = await probeAll(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), recordingBus(), { quick: true });
+    const by = Object.fromEntries(file.models.map((m) => [m.model, m]));
+    assert.equal(by['kimi-k3.1-pro'].contextWindow, 262_144);
+    assert.ok(by['kimi-k3.1-pro'].notes.some((n) => /published window/.test(n)));
+    assert.equal(by['kimi-k3.1-pro'].maxOutputTokens, 32_768);
+    assert.equal(by['kimi-k3-tiny'].contextWindow, 16_384, 'a measured smaller window wins over the family value');
+  });
+
   it('waits out a 429 during the context test instead of reading it as a small window', async () => {
     let limited = 0;
     let failing = 0;

@@ -390,6 +390,42 @@ describe('Orchestrator', () => {
     assert.ok(plans > after);
   });
 
+  it('one coding model: a medium task stays one agent loop, is localised once, and needs no separate acceptance judge', async () => {
+    let plans = 0;
+    let judges = 0;
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }, { id: 'T2', title: 'y', description: 'y' }] },
+      locate: { files: ['src/f1.c', 'src/f2.c', 'src/f3.c', 'src/f4.c'], locations: [] },
+      agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' }) : undefined),
+      record: (kind) => {
+        if (kind === 'plan') plans++;
+        if (kind === 'judge') judges++;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run, s } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
+    const report = await run('change f1 to f4');
+    assert.equal(plans, 0, 'no plan council for one model and four files');
+    assert.equal(report.subtasks.length, 1);
+    assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1, 'localised once');
+    assert.equal(judges, 0, 'verified work of the only model is not judged again');
+    assert.equal(report.status, 'completed');
+  });
+
+  it('a one-subtask plan reuses the localisation made while triaging the task', async () => {
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c', 'src/f2.c', 'src/f3.c'], locations: [] },
+      agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' }) : undefined),
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run, s } = await setup(brain, files);
+    await run('change f1, f2 and f3');
+    assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1);
+  });
+
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
     let judgePrompt = '';
     const brain: Brain = {

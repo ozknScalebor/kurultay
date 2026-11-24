@@ -449,7 +449,13 @@ export class Router {
         if (waited > 0) this.bus?.emitEvent('llm.wait', { source: h.caps.key, data: { reason: 'rate_limit', ms: waited, purpose: req.purpose } });
       }
       // reasoning models spend part of the output budget on thinking – give them more room
-      const asked = req.maxTokens ?? (h.caps.thinking ? Math.min(Math.max(h.caps.maxOutputTokens, 8192), 16_384) : Math.min(h.caps.maxOutputTokens, 8192));
+      // a small structured budget (3000 for a plan) is consumed by the thinking alone when the
+      // model cannot switch it off (Kimi K3) – floor it, bounded by the room left in the window
+      const room = Math.max(1024, h.caps.contextWindow - promptEstimate - 256);
+      const thinkingFloor = Math.min(room, Math.max(8192, Math.min(h.caps.maxOutputTokens, 32_768)));
+      const asked = h.caps.thinking
+        ? Math.max(req.maxTokens ?? 0, thinkingFloor)
+        : (req.maxTokens ?? Math.min(h.caps.maxOutputTokens, 8192));
       const maxTokens = h.outputBoost && req.maxTokens ? Math.round(Math.min(asked * h.outputBoost, Math.max(asked, h.caps.contextWindow - promptEstimate - 256))) : asked;
       try {
         const send = async (tokens: number, messages = req.messages): Promise<ChatResult> => {

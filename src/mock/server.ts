@@ -376,6 +376,8 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
     if (body.stream && !model.noStream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (toolCalls) {
+        // reasoning models (Kimi, DeepSeek) stream their reasoning separately before a tool call
+        if (model.thinks) sse(res, { id, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'reasoning…' } }] });
         sse(res, { id, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: toolCalls[0].id, type: 'function', function: { name: toolCalls[0].function.name, arguments: '' } }] } }] });
         const args = toolCalls[0].function.arguments;
         for (let i = 0; i < args.length; i += 16) sse(res, { id, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(i, i + 16) } }] } }] });
@@ -389,7 +391,7 @@ export function startMockServer(models: MockModel[], port = 0): Promise<MockServ
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id, choices: [{ index: 0, message: { role: 'assistant', content: toolCalls ? null : content, tool_calls: toolCalls }, finish_reason: out.finish ?? (toolCalls ? 'tool_calls' : 'stop') }], usage }));
+    res.end(JSON.stringify({ id, choices: [{ index: 0, message: { role: 'assistant', content: toolCalls ? null : content, tool_calls: toolCalls, ...(toolCalls && model.thinks ? { reasoning_content: 'reasoning…' } : {}) }, finish_reason: out.finish ?? (toolCalls ? 'tool_calls' : 'stop') }], usage }));
   });
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {

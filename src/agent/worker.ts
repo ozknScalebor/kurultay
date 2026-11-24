@@ -7,6 +7,7 @@ import { errorMessage } from '../util/async.js';
 import type { EventBus } from '../util/events.js';
 import { estimateTokens, truncateMiddle, tryExtractJson } from '../util/text.js';
 import { LoopGuard } from './loop-guard.js';
+import { normalizeModelId } from '../llm/known-windows.js';
 import { TOOLSHIM_SCHEMA } from '../llm/schemas.js';
 import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
 import type { ExternalTools } from '../mcp/manager.js';
@@ -75,7 +76,11 @@ Principles:
 - Make the smallest correct change that fully solves the task; follow existing style and project rules.
 - Keep the build green: after editing, run the project's build/test commands when available and fix what you broke.
 - Never touch files unrelated to the task. Never run destructive or networked commands.
+- Work in few steps: every step is a full round-trip to the model. Call independent tools together in ONE step (read all the files you need at once, search several terms at once); only chain calls that depend on each other.
 - Communicate only through tool calls; when finished call finish with a short summary (what changed, how verified).`;
+
+/** families whose reasoning is sent back with their tool calls */
+const REASONING_ROUND_TRIP = /^(?:kimi-|k3[.-]|deepseek|glm-|minimax-)/;
 
 const READ_ONLY_TOOLS = ['read_file', 'list_dir', 'search_code', 'grep', 'find_symbol', 'repo_map', 'skill', 'skill_file', 'finish'];
 
@@ -104,6 +109,10 @@ export class AgentWorker {
   private readonly failedModels = new Set<string>();
   private readonly failovers: WorkerResult['failovers'] = [];
   private step = 0;
+  /** send reasoning_content back (off once a server rejects it) */
+  private keepReasoning = true;
+  /** times the window was lowered after a context-length error */
+  private shrinks = 0;
   private readonly toolCtx: ToolContext;
   private tokens = { in: 0, out: 0 };
   private readonly guard: LoopGuard;
@@ -239,13 +248,14 @@ export class AgentWorker {
     const llm = this.cfg.llm ?? {};
     const microAt = usable * (llm.microcompactAt ?? 0.6);
     const autoAt = usable * (llm.compactAt ?? 0.85);
-    const size = () => estimateTokens(this.messages.map((m) => (m.content ?? '') + JSON.stringify(m.tool_calls ?? '')).join('\n'));
+    const size = () => estimateTokens(this.messages.map((m) => (m.content ?? '') + JSON.stringify(m.tool_calls ?? '') + (m.reasoning_content ?? '')).join('\n'));
     if (size() <= microAt) return;
     // 1) microcompaction: shrink to well below the mark so it does not run on every step
     const keepTail = 8;
     let cleared = 0;
     for (let i = 2; i < this.messages.length - keepTail && size() > microAt * 0.8; i++) {
       const m = this.messages[i];
+      if (m.reasoning_content) delete m.reasoning_content;
       if ((m.role === 'tool' || (m.role === 'user' && m.content?.startsWith('<tool_result'))) && (m.content?.length ?? 0) > 400 && !m.content!.includes('[old tool output cleared')) {
         const first = m.content!.replace(/^<tool_result[^>]*>\n?/, '').split('\n')[0].slice(0, 160);
         m.content = `${m.content!.startsWith('<tool_result') ? m.content!.match(/^<tool_result[^>]*>/)![0] + '\n' : ''}${first}\n[old tool output cleared to save context – run the tool again if you still need it]`;
@@ -341,6 +351,7 @@ export class AgentWorker {
         return await this.router.chat(req(), { only: [this.currentModel], fallback: false, role: 'coder', recoveryWaitMs: 0 });
       } catch (e) {
         if (e instanceof LlmError && e.kind === 'aborted') throw e;
+        if (await this.adaptTo(e)) continue;
         if (toolsRejected(e)) {
           this.bus?.warn(this.spec.id, 'native tool calling rejected; switching to prompt-based tool calls');
           this.switchToTextTools();
@@ -361,6 +372,31 @@ export class AgentWorker {
         return r;
       }
     }
+  }
+
+  /**
+   * Errors the same model gets past once the request changes: a window smaller than assumed
+   * (lower it, compact, ask again) and a server that rejects reasoning_content in the history.
+   */
+  private async adaptTo(e: unknown): Promise<boolean> {
+    if (!(e instanceof LlmError)) return false;
+    const h = this.handle();
+    if (e.kind === 'context_length' && h && this.shrinks < 2) {
+      this.shrinks++;
+      const used = estimateTokens(this.messages.map((m) => (m.content ?? '') + (m.tool_calls ? JSON.stringify(m.tool_calls) : '') + (m.reasoning_content ?? '')).join('\n'));
+      h.caps.contextWindow = Math.max(8192, Math.min(h.caps.contextWindow, Math.floor(used * 0.75)));
+      h.caps.maxOutputTokens = Math.min(h.caps.maxOutputTokens, Math.floor(h.caps.contextWindow / 4));
+      this.bus?.warn(this.spec.id, `${h.caps.key}: the prompt did not fit; window lowered to ${h.caps.contextWindow} tokens`);
+      await this.condense();
+      return true;
+    }
+    if (e.kind === 'bad_request' && /reasoning/i.test(e.message) && this.messages.some((m) => m.reasoning_content)) {
+      for (const m of this.messages) delete m.reasoning_content;
+      this.keepReasoning = false;
+      this.bus?.info(this.spec.id, 'the server does not accept reasoning_content; not sending it back');
+      return true;
+    }
+    return false;
   }
 
   /** Best available coder that has not failed for this worker and can hold the transcript. */
@@ -482,7 +518,12 @@ export class AgentWorker {
       }
       idle = 0;
 
-      if (useNative) this.messages.push({ role: 'assistant', content: r.content || null, tool_calls: r.toolCalls });
+      if (useNative) {
+        // Kimi / DeepSeek-style reasoning models expect their reasoning back with the tool calls
+        // (Qwen Code sends reasoning_content too); without it they reason from scratch every step
+        const reasoning = this.keepReasoning && r.thinking && REASONING_ROUND_TRIP.test(normalizeModelId(r.model.split('@')[0])) ? r.thinking.slice(-6000) : undefined;
+        this.messages.push({ role: 'assistant', content: r.content || (reasoning ? '' : null), tool_calls: r.toolCalls, ...(reasoning ? { reasoning_content: reasoning } : {}) });
+      }
       else this.messages.push({ role: 'assistant', content: r.content || `(tool calls: ${calls.map((c) => c.name).join(', ')})` });
 
       const results: string[] = [];

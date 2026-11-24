@@ -188,3 +188,16 @@ describe('Router – resilience', () => {
     assert.ok(bus.ofType('log.warn').some((e) => /gone/.test(e.message ?? '')));
   });
 });
+
+describe('Router – output budget of reasoning models', () => {
+  it('gives a thinking model room beyond a small structured budget, bounded by the window', async () => {
+    const s = await mock([{ id: 'think', quality: 'good', tools: true, ctx: 262_144 }, { id: 'plain', quality: 'good', tools: true, ctx: 262_144 }]);
+    const cfg = config({ endpoints: [{ name: 'e', baseUrl: s.url }] });
+    const r = routerFor(cfg, [caps('think', 'e', { thinking: true, contextWindow: 262_144, maxOutputTokens: 32_768 }), caps('plain', 'e', { contextWindow: 262_144, maxOutputTokens: 16_384 })]);
+    await r.chat({ ...PING, maxTokens: 3000 }, { prefer: ['think@e'], fallback: false });
+    await r.chat({ ...PING, maxTokens: 3000 }, { prefer: ['plain@e'], fallback: false });
+    const sent = s.log.map((l) => (l.body as { model: string; max_tokens?: number }));
+    assert.equal(sent.find((b) => b.model === 'think')!.max_tokens, 32_768);
+    assert.equal(sent.find((b) => b.model === 'plain')!.max_tokens, 3000);
+  });
+});
