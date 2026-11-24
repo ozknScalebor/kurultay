@@ -182,8 +182,11 @@ async function main() {
     const suiteDir = join(root, 'samples', 'evals', name);
     const suite = evalMod.loadSuite(suiteDir);
     const tasks = suite.tasks.filter((t) => (wanted ? wanted.has(t.id) : t.id.startsWith('K')));
-    for (const t of tasks) {
-      const row = { suite: name, id: t.id };
+    const repeat = Math.max(1, Number(f.repeat ?? 1));
+    for (const t of tasks.flatMap((x) => Array.from({ length: repeat }, (_, r) => ({ ...x, rep: r + 1 })))) {
+      // --repeat N: the same task N times (a pass rate instead of one draw – model speed and luck vary)
+      const row = { suite: name, id: repeat > 1 ? `${t.id} #${t.rep}` : t.id };
+      const tag = repeat > 1 ? `${t.id}-${t.rep}` : t.id;
       bench.tasks.push(row);
       for (const key of orderFor(i++, keys)) {
         if (Date.now() + (minutes + 3) * 60_000 > stopAt) {
@@ -195,7 +198,7 @@ async function main() {
           console.log(`\n== ${key === 'solo' ? 'Kurultay (main model only)' : 'Kurultay'} · ${name}/${t.id}`);
           const config = key === 'solo' ? String(f['solo-config']) : kurultayConfig;
           proxy?.reset?.();
-          const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${t.id}`), onProgress: (l) => console.log(l) });
+          const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${tag}`), onProgress: (l) => console.log(l) });
           row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
           if (row[key]?.timing) console.log(timingLine(row[key].timing));
           const att = k.summary.attempts.find((x) => x.task === t.id);
@@ -208,7 +211,7 @@ async function main() {
           if (att && !att.passed) console.log(`   hidden tests (last lines):\n${att.checkOutput.split('\n').filter((l) => l.trim()).slice(-25).map((l) => `     | ${l}`).join('\n')}`);
           continue;
         }
-        const work = join(out, `qwen-${name}`, t.id);
+        const work = join(out, `qwen-${name}`, tag);
         rmSync(work, { recursive: true, force: true });
         mkdirSync(dirname(work), { recursive: true });
         cpSync(join(suiteDir, suite.project), work, { recursive: true, filter: (p) => !/[\\/](\.kurultay|build|\.build)$/.test(p) });
@@ -220,7 +223,7 @@ async function main() {
         proxy?.reset?.();
         const r = await run(cmd, [...pre, '-p', t.prompt, '--yolo', '--max-wall-time', `${minutes}m`, '--output-format', 'json', ...qwenExtra], { cwd: work, timeout: (minutes + 5) * 60_000, env: qwenEnv });
         const seconds = (Date.now() - t0) / 1000;
-        writeFileSync(join(out, `qwen-${name}-${t.id}.log`), `${r.stdout ?? ''}\n--- stderr\n${r.stderr ?? ''}`);
+        writeFileSync(join(out, `qwen-${name}-${tag}.log`), `${r.stdout ?? ''}\n--- stderr\n${r.stderr ?? ''}`);
         const s = qwenStats(r.stdout ?? '');
         const score = await evalMod.scoreFolder({ suiteDir, dir: work, tasks: [t.id] });
         row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };

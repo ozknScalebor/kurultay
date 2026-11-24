@@ -6,13 +6,14 @@ Given your OpenAI-compatible endpoints and API keys, Kurultay:
 
 1. **Measures every model.** Context window, tool calling, JSON, speed, concurrency capacity, coding and editing accuracy are measured, and each model gets a score per role.
 2. **Indexes the project.** It extracts symbols, the dependency graph, PageRank and a BM25 search index. Then a map-reduce summarisation **spread over all models in parallel** produces `ARCHITECTURE.md`, module documents, end-to-end **flow documents** (DeepWiki style, with source line references and Mermaid diagrams) and `PROJECT_NOTES.md`, which the agents read on every task.
-3. **Does the work.** A council of models drafts the plan. Subtasks are distributed to the models **concurrently**; on critical work several models race. Every candidate is verified with build/test, candidates are ranked by an **anonymous council review**, and finally a requirement check runs; if something is missing, the loop continues.
+3. **Does the work.** Short tasks go straight to the coders; longer ones are planned first (one plan by default, a council of drafts on request). Subtasks are distributed to the models **concurrently**; when the main model's change fails build/tests, several models race. Every candidate is verified with build/test, candidates are ranked by an **anonymous council review**, the task's requirements are tracked as a **todo list**, and finally a requirement check runs; if something is missing, the loop continues.
+4. **Keeps going when a model stops answering.** Hung or failing models are quarantined and the work continues on another model from the step where it stopped.
 
 There are **no npm runtime dependencies**. All it needs is Node.js ≥ 20: no native builds, Python, Docker, CDN or telemetry.
 
 > The name: a *kurultay* is the assembly where decisions were taken together in the Turkic-Mongol tradition. Here, the members of the assembly are your LLMs.
 
-The console UI and generated reports are in Turkish.
+The console UI, reports and messages are in English; tasks and questions can be written in any language the models understand (Turkish is recognised by the question/task detection).
 
 ---
 
@@ -47,7 +48,7 @@ For licensing reasons **no code was copied from any project**; the ideas were re
 flowchart TB
   CLI["CLI / web dashboard"] --> ORCH
   subgraph ORCH[Orchestrator]
-    P["Planner council<br/>(N drafts + judge)"] --> DAG["Subtask DAG"]
+    P["Planner<br/>(fast path · 1 plan · council on request)"] --> DAG["Subtask DAG"]
     DAG --> W1["Worker 1<br/>overlay"]
     DAG --> W2["Worker 2<br/>overlay"]
     DAG --> W3["Worker N<br/>overlay"]
@@ -73,10 +74,10 @@ flowchart TB
 |---|---|
 | `probe` | All endpoints are probed in parallel. Each endpoint gets a throughput ramp with 1→2→4→8 requests and the best concurrency level is recorded. |
 | `analyze` | File batches are summarised with as many parallel requests as **all models' slots combined**; faster models take more work (load-aware router). For the architecture document N models write independent drafts and a judge merges them. |
-| Planning | The best 3 planners draft in parallel, a judge merges. |
+| Planning | Short tasks skip planning (fast path). Otherwise the best planner drafts one plan (`orchestrator.planDrafts`, default 1); `council` mode or `planDrafts: 3` lets several planners draft in parallel and a judge merge them. |
 | Execution | **split**: independent subtasks run on different models at the same time. **race**: N models race on the same subtask. **council**: race + a full council review every time. **auto**: race for a single subtask, split for several (critical ones with 2 models). |
 | Review | All reviewers run in parallel; candidates are anonymised as A/B/C and shuffled. A model never reviews its own code (not at all with one candidate; in a council it cannot vote for its own candidate); fixes are re-reviewed by a model that did not write them. |
-| Requirement check | 2 judges decide in parallel; both must say "done". |
+| Requirement check | 2 judges decide in parallel; both must say "done". Skipped for single-model or first-try verified work unless the task has 4+ requirements. |
 
 ### Resilience
 
@@ -120,7 +121,7 @@ Each measure below comes from an open-source project that measured it; none of t
 | **Repeated sampling** | In race mode the candidate count is `raceWidth` even with fewer models: the best models are sampled again, the repeats with a freer temperature (`orchestrator.repeatModels: false` keeps one candidate per model) | Agentless (40 samples), SWE-Gym best@k: 20.6% → 32.0% from 1 to 16 samples |
 | **Selection by rival tests** | Every candidate's own test that FAILS on the original code is run against the other candidates; passing the rivals' tests weighs more than the council's vote. Shown as `rival tests: 2/2` in REPORT.md (`orchestrator.crossTest: false` turns it off) | Agentless: voting 77 → + regression tests 81 → + reproduction tests 96 solved; CodeMonkeys: selection is the bottleneck |
 | **Localisation first** | Before the workers start, one model picks the files, then the functions from a skeleton of those files; their code goes into every worker's prompt as `LIKELY EDIT LOCATIONS` (projects with 8+ files; `orchestrator.localize: false`) | Agentless hierarchical localisation; Chroma "Context Rot": focused prompts beat long ones on every model tested |
-| **Agent–computer interface** | `read_file` shows 100 lines per call by default (`tools.readWindow`), silent commands answer "ran successfully and printed nothing", broken edits are rejected by the syntax/compiler check | SWE-agent ACI study |
+| **Agent–computer interface** | `read_file` shows 100 lines per call (800 for models with a 64K+ window; `tools.readWindow`), silent commands answer "ran successfully and printed nothing", broken edits are rejected by the syntax/compiler check | SWE-agent ACI study |
 | **Failure counters** | Failed edits, replies without a tool call and loop-guard stops are counted per model (`/stats` "Problems", REPORT.md) – this shows which model fights the tool interface | aider's "well-formed edits" metric |
 | **Fine-tuning data** | Every verified task saves the winning conversation (`sessions/<id>/trajectories.jsonl`, OpenAI chat format with tools); `kurultay trajectories` collects them into one file for LoRA training with LLaMA-Factory, axolotl or Unsloth (`orchestrator.saveTrajectories: false`) | SWE-Gym: 491 trajectories took Qwen2.5-Coder-32B from 7.0% to 20.6%; SWE-smith: SWE-agent-LM-32B 40.2% |
 
@@ -133,14 +134,16 @@ A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurulta
 |---|---|---|
 | **Fast path** | A short task whose localisation names up to six files skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval). The localisation is made once and reused | `orchestrator.fastPath`, `fastPathMaxFiles` |
 | **Cascade** | In auto mode with build/tests, the main model tries alone first; when its change passes them that is the result (no race, review or acceptance judge – what one agent costs). Only when it fails do the other candidates race | `orchestrator.cascade` |
-| **Hedged steps** | A worker step that takes 2.5× its model's usual time (at least 30 s) also goes to the best other coder; the first answer wins. After two late answers in a row the worker moves to the other model and the slow one is left out for 5 minutes | `llm.hedge`, `llm.hedgeMinMs` |
+| **Hedged steps** | A worker step that takes 2.5× its model's usual time (at least 30 s) also goes to the best other coder **inside the speed band** (a hedge to a slower model would only add load); the first answer wins. After two late answers in a row the worker moves to the other model and the slow one is left out for 5 minutes | `llm.hedge`, `llm.hedgeMinMs` |
 | **No wait for the localisation** | Short tasks: the coders start at once with the repo map and the search hits; the localisation runs alongside and reaches them as a hint a few steps in | `orchestrator.parallelLocalize` |
 | **Read-ahead** | Models with a 64k+ window get up to 800 lines per read_file (a whole file instead of 100-line pieces), and every read names where the functions and types the code uses are defined elsewhere – the usual next lookup | `tools.readWindow`, `tools.readAhead` |
 | **Speed band** | A model more than 3× slower than the best one (probe speed, then the live average) stays out of the steps that wait for everyone – plan drafts, race, reviews, judges. A race then samples the fast model several times; after a candidate passes the build and tests the others get only 15% of its time. When the fast models fail the tests, the slower models join for the rest of the run (cascade) | `orchestrator.speedBand` (0 = off), `raceGraceVerified` |
 | **No waiting for the slowest model** | Plan drafts, council reviews and acceptance judges go on once one model has answered; the others get half of that time (at least 30 s) and are then stopped. A model whose speed test failed in the probe is ranked last for every role | – |
 | **Real context windows** | Without a window reported by the server, well-known families get their published window (Kimi, Qwen3: 256k; GLM: 200k; DeepSeek, gpt-oss, Mistral Large, Gemma, Llama: 128k) once the probe's 32k test passed. A context-length error lowers the window and the step is retried after compaction | `"contextWindow"` per model |
 | **Reasoning models** | Thinking models get at least 8k (up to 32k) output tokens even for short structured answers, and Kimi / DeepSeek / GLM / MiniMax get their `reasoning_content` back with their tool calls (dropped if the server rejects it) | – |
-| **Few round-trips** | Workers are told to call independent tools in one step, and the context lists the files of projects up to 300 files. With one coding model, verified work gets no separate acceptance judge | – |
+| **Todo list for requirements** | A task with 3+ requirements (list items, sentences) gives the coder a checklist it keeps with `todo_write` (pending / in_progress / completed / dropped with a reason), like Qwen Code's todo tool. `finish` is refused once while items are open, and the list goes into the hand-over notes after compaction – fast runs no longer skip rules hidden in a long task text | – |
+| **Few round-trips** | Workers are told to call independent tools in one step, and the context lists the files of projects up to 300 files. Verified work from one model (or a first-try pass) gets no separate acceptance judge – unless the task has 4+ requirements, where tests often miss a rule | – |
+| **One plan by default** | Longer tasks get one plan from the best planner instead of three drafts and a judge (the C++ bench task spent over 4 minutes in the plan council). `council` mode keeps the council | `orchestrator.planDrafts` |
 | **Race only with checks** | Several candidates only help when build/tests can tell them apart. Without build/test commands auto mode runs one coder plus an independent reviewer | `verify.build`, `verify.test` |
 | **Small plans** | Test-only and check-only subtasks ("verify…", "edge cases…") are folded into the subtask whose code they test; subtasks that edit the same file run one after the other instead of in parallel | – |
 | **Fix rounds with progress only** | A second fix round runs only if the first one resolved something: a fixer that hit its step limit, or a re-review with the same blocking findings, ends the loop. Open findings go to the requirement check | – |
@@ -171,7 +174,7 @@ On a machine with internet access:
 git clone https://github.com/ozknScalebor/kurultay.git
 cd kurultay
 npm ci            # build tools only (typescript, eslint)
-npm test          # ≈290 tests – unit, integration and CLI against mock LLM servers
+npm test          # ≈380 tests – unit, integration and CLI against mock LLM servers
 npm run pack:offline
 ```
 
@@ -460,17 +463,26 @@ swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 
 Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
 
-## Bench: Kurultay vs Qwen Code (GitHub, free NVIDIA NIM models)
+## Bench: Kurultay vs Qwen Code (GitHub, Z.AI GLM + free NVIDIA NIM models)
 
-The `bench` workflow (Actions → bench, or after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with three agents and scores them with the same hidden tests. It needs one repository secret, `NVIDIA_API_KEY` (free key from build.nvidia.com). With a `ZAI_API_KEY` secret as well, a Z.AI GLM model becomes the main model of Kurultay and the model of Qwen Code, with a NIM model of another family second; the repository variable `ZAI_BASE_URL` selects the endpoint (default `https://api.z.ai/api/paas/v4`, the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`).
+The `bench` workflow (Actions → bench, and automatically after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with three agents and scores them with the same hidden tests. Secrets: `ZAI_API_KEY` (Z.AI GLM, the main model) and `NVIDIA_API_KEY` (free key from build.nvidia.com, the second model family). The repository variable `ZAI_BASE_URL` selects the Z.AI endpoint (default `https://api.z.ai/api/paas/v4`; the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`). Without `ZAI_API_KEY` a NIM model is the main model.
 
 | Agent | Models |
 |---|---|
-| Kurultay (all models) | main model Kimi K2 (`orchestrator.primaryModel`) + a second NIM model of another family + a small helper |
-| Kurultay (main model only) | Kimi K2 alone – shows what the extra models add or cost |
-| Qwen Code | Kimi K2 |
+| Kurultay (all models) | main model GLM (`orchestrator.primaryModel`) + a NIM model of another family + a small helper |
+| Kurultay (main model only) | GLM alone – shows what the extra models add or cost |
+| Qwen Code | GLM |
 
-Actions → bench → **fault** `hang` or `error` adds a fault test: a proxy makes the main model stop answering (or answer 503) after a few requests in every run; Kurultay has its other models, Qwen Code gets `--fallback-model` with the same second model. Actions → bench → **quick** runs one small C++ and one small Java task with 5 minutes per agent (about 20 minutes in all) to check the setup before a full run. For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget (`minutes`, default 20), and the run order is rotated per task. The table reports time, requests, tokens, rate-limit waits and Kurultay's multi-model work; if all models were slower than the main model alone, a separate "Multi-model slowdown" line says by how much. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen`.
+Workflow inputs:
+
+| Input | What it does |
+|---|---|
+| `quick` | One small C++ and one small Java task, 5 minutes per agent (about 20 minutes in all) – checks the setup before a full run |
+| `fault` = `hang` / `error`, `fault_after` | Fault test: a proxy makes the main model stop answering (or answer 503) after N requests in every run. Kurultay has its other models; Qwen Code gets `--fallback-model` with a second GLM model, so both sides have a backup |
+| `repeat` | Runs every task N times (rows `K3-iade #1`, `#2` …) to tell flaky results from real ones |
+| `minutes`, `tasks`, `model`, `second` | Wall-clock budget per agent and task (default 20), task subset, model overrides |
+
+For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget, and the run order is rotated per task. The table reports time, requests, tokens, rate-limit waits and Kurultay's multi-model work (models used, own checks, acceptance judge, the tail of the hidden test output); if all models were slower than the main model alone, a separate "Multi-model slowdown" line says by how much. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen [--quick] [--fault hang --fault-after 6] [--repeat 2]`.
 
 ## Rules and skills
 
@@ -567,7 +579,7 @@ kurultay eval samples/evals/cpp-telemetri --validate
 
 ```bash
 npm ci
-npm test                  # unit + integration + CLI (≈290 tests)
+npm test                  # unit + integration + CLI (≈380 tests)
 npm run lint              # ESLint (floating promises, unused code, unsafe patterns)
 npm run test:unit         # unit tests only
 npm run test:integration  # integration against mock multi-model LLM servers

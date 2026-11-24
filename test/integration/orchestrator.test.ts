@@ -511,6 +511,33 @@ describe('Orchestrator', () => {
     assert.match(read(root, 'src/uart.c'), /return n;/);
   });
 
+  it('a task with many requirements: the coder gets them as a todo list and the acceptance judge runs although the tests passed', async () => {
+    let judges = 0;
+    let firstPrompt = '';
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      agent: (_id, step, q) => {
+        if (step === 0) firstPrompt = q.messages.map((m) => m.content ?? '').join('\n');
+        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
+        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: 'completed' })) });
+        return undefined;
+      },
+      record: (kind) => {
+        if (kind === 'judge') judges++;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
+    const task = 'Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.';
+    const report = await run(task);
+    assert.equal(report.status, 'completed');
+    assert.match(firstPrompt, /your todo list[\s\S]*\[ \] 1\. Add the f1 rules\./);
+    assert.equal(judges, 1, 'judged although one model passed the tests');
+    assert.ok(report.plan.acceptance.length >= 4);
+  });
+
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
     let judgePrompt = '';
     const brain: Brain = {

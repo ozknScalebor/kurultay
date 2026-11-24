@@ -255,3 +255,32 @@ describe('read_file – window and read-ahead', () => {
     assert.doesNotMatch(off.output, /defined elsewhere/);
   });
 });
+
+describe('todo list and requirements', () => {
+  it('splits a task paragraph into requirements and keeps one-rule tasks short', async () => {
+    const { splitRequirements } = await import('../../src/agent/tools.js');
+    const long = 'Add returns. returnItems(id, n) gives the refund as BigDecimal. Only SHIPPED orders can be returned, others throw IllegalStateException. Returned units go back to stock.\n- Report must subtract returned units\n- Existing tests keep passing';
+    const items = splitRequirements(long);
+    assert.ok(items.length >= 5, items.join(' | '));
+    assert.ok(items.some((i) => /IllegalStateException/.test(i)) && items.some((i) => /Report must subtract/.test(i)));
+    assert.ok(splitRequirements('Fix the crash when the list is empty.').length < 3);
+  });
+
+  it('todo_write keeps the list; finish is refused once while items are open', async () => {
+    const root = tmpProject(SRC);
+    const c = ctx(root, { todos: [{ id: '1', content: 'a', status: 'pending' }, { id: '2', content: 'b', status: 'pending' }] });
+    const refused = await executeTool('finish', { summary: 'done' }, c);
+    assert.equal(refused.isError, true);
+    assert.match(refused.output, /2 item\(s\) of your todo list are still open/);
+    const bad = await executeTool('todo_write', { todos: [{ id: '1', content: 'a', status: 'dropped' }] }, c);
+    assert.match(bad.output, /needs a reason/);
+    const ok = await executeTool('todo_write', { todos: [{ id: '1', content: 'a', status: 'completed' }, { id: '2', content: 'b', status: 'dropped', note: 'out of scope' }] }, c);
+    assert.match(ok.output, /Todo list \(2\/2 done\):\n\[x\] 1\. a\n\[-\] 2\. b – out of scope/);
+    const done = await executeTool('finish', { summary: 'done' }, c);
+    assert.ok(done.finished);
+    // a wrong checklist does not trap the model: the second refusal lets it finish
+    const c2 = ctx(root, { todos: [{ id: '1', content: 'a', status: 'pending' }] });
+    await executeTool('finish', { summary: 'x' }, c2);
+    assert.ok((await executeTool('finish', { summary: 'x' }, c2)).finished);
+  });
+});

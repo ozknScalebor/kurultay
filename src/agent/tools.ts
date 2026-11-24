@@ -31,6 +31,13 @@ export interface ToolContext {
   explicitSkills?: Set<string>;
   /** names already loaded into this worker (avoid duplicates) */
   loadedSkills?: Set<string>;
+  /**
+   * The worker's todo list (Qwen Code todo_write): seeded with the acceptance criteria of a
+   * task with several requirements; finish is refused while an item is still open.
+   */
+  todos?: TodoItem[];
+  /** finish calls refused because todo items were open */
+  finishRefusals?: number;
   /** context window of the worker's model (sizes the default read window) */
   contextWindow?: number;
   /** files this worker has read (read-before-edit guard – Qwen/Crush/OMO) */
@@ -161,6 +168,35 @@ export function readAhead(ctx: ToolContext, path: string, shown: string): string
 }
 
 const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'return', 'new', 'catch', 'throw', 'try', 'else', 'this', 'super', 'sizeof', 'static_cast', 'const', 'auto', 'void', 'int', 'String', 'std', 'public', 'private', 'protected', 'class', 'struct', 'import', 'package', 'final', 'static', 'function', 'await', 'async', 'let', 'var', 'def', 'self', 'null', 'true', 'false', 'List', 'Map', 'Set', 'Optional', 'Override', 'vector', 'string', 'size_t']);
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'dropped';
+  note?: string;
+}
+
+export function renderTodos(list: TodoItem[]): string {
+  const mark = { pending: '[ ]', in_progress: '[~]', completed: '[x]', dropped: '[-]' } as const;
+  const done = list.filter((t) => t.status === 'completed' || t.status === 'dropped').length;
+  return `Todo list (${done}/${list.length} done):\n${list.map((t) => `${mark[t.status]} ${t.id}. ${t.content}${t.note ? ` – ${t.note}` : ''}`).join('\n')}`;
+}
+
+/**
+ * The requirements of a task as separate items: sentences and list lines of the task text.
+ * No model call – a long task paragraph becomes a checklist the agent works through (and
+ * the acceptance judge checks). Short or single-requirement tasks give fewer than 3 items.
+ */
+export function splitRequirements(task: string, max = 16): string[] {
+  const body = task
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\r/g, '');
+  const parts = body
+    .split(/\n\s*(?:[-*•]|\d+[.)])\s+|\n{2,}|(?<=[.;!?])\s+(?=[A-ZÇĞİÖŞÜ0-9"'(`])/u)
+    .map((p) => p.replace(/\s+/g, ' ').trim().replace(/^[-*•]\s*/, ''))
+    .filter((p) => p.length >= 18 && /[a-zçğıöşü]/i.test(p));
+  return parts.slice(0, max);
+}
 
 const str = (v: unknown, name: string): string => {
   if (typeof v !== 'string') throw new Error(`parameter "${name}" must be a string`);
@@ -554,6 +590,43 @@ const TOOLS: Record<string, ToolDef> = {
       return { output: `${s.name}/${a.path}\n${ctx.skills!.readFile(s, str(a.path, 'path'))}` };
     },
   },
+  todo_write: {
+    readOnly: true,
+    spec: {
+      type: 'function',
+      function: {
+        name: 'todo_write',
+        description:
+          'Replace your todo list (the acceptance criteria of the task are in it already). Mark an item completed only when it is implemented AND covered by a test or a check you ran; "dropped" needs a reason in note. Keep at most one item in_progress. Send it together with your other tool calls in the same step – it costs no extra round-trip.',
+        parameters: {
+          type: 'object',
+          properties: {
+            todos: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { id: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'dropped'] }, note: { type: 'string' } },
+                required: ['id', 'content', 'status'],
+              },
+            },
+          },
+          required: ['todos'],
+        },
+      },
+    },
+    async run(a, ctx) {
+      if (!Array.isArray(a.todos)) return { output: 'todos must be an array of {id, content, status}', isError: true };
+      const list: TodoItem[] = [];
+      for (const raw of a.todos as Array<Record<string, unknown>>) {
+        const status = String(raw.status ?? 'pending') as TodoItem['status'];
+        if (!['pending', 'in_progress', 'completed', 'dropped'].includes(status)) return { output: `invalid status "${status}" (pending, in_progress, completed, dropped)`, isError: true };
+        if (status === 'dropped' && !String(raw.note ?? '').trim()) return { output: `item ${String(raw.id)}: "dropped" needs a reason in note`, isError: true };
+        list.push({ id: String(raw.id ?? list.length + 1), content: String(raw.content ?? ''), status, note: raw.note ? String(raw.note) : undefined });
+      }
+      ctx.todos = list;
+      return { output: renderTodos(list) };
+    },
+  },
   finish: {
     readOnly: true,
     spec: {
@@ -564,8 +637,20 @@ const TOOLS: Record<string, ToolDef> = {
         parameters: { type: 'object', properties: { summary: { type: 'string' }, status: { type: 'string', enum: ['done', 'blocked'] } }, required: ['summary'] },
       },
     },
-    async run(a) {
+    async run(a, ctx) {
       const status = a.status === 'blocked' ? 'blocked' : 'done';
+      // the todo list is the checklist of the task: "done" only with every item completed or dropped
+      const open = status === 'done' ? (ctx.todos ?? []).filter((t) => t.status === 'pending' || t.status === 'in_progress') : [];
+      if (open.length) {
+        ctx.finishRefusals = (ctx.finishRefusals ?? 0) + 1;
+        // the second refusal lets the model finish anyway (a wrong checklist must not trap it)
+        if (ctx.finishRefusals <= 1) {
+          return {
+            output: `Not finished: ${open.length} item(s) of your todo list are still open:\n${open.map((t) => `- [${t.status}] ${t.id}: ${t.content}`).join('\n')}\nImplement and test them, or mark them "dropped" with a reason (todo_write), then call finish again.`,
+            isError: true,
+          };
+        }
+      }
       return { output: 'ok', finished: { summary: typeof a.summary === 'string' ? a.summary : '', status } };
     },
   },

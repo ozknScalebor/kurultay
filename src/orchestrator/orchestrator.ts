@@ -17,6 +17,7 @@ import { TimingTracker, renderTiming, type RunTiming } from './timing.js';
 import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
 import { crossTest } from './cross-test.js';
 import { localize, type Localization } from './localize.js';
+import { splitRequirements } from '../agent/tools.js';
 import { councilReview, type Candidate, type CouncilVerdict } from './council.js';
 import { cleanTitle, consolidatePlan, filesOf, makePlan, type Plan, type SubTask } from './planner.js';
 import { renderVerify, verifyFailureText, verifyOverlay, type VerifyResult } from './verify.js';
@@ -476,6 +477,12 @@ export class Orchestrator {
   /** the mode asked for: a race the user forced is not turned into a cascade */
   private requestedMode: RunMode = 'auto';
 
+  /** The requirements of a short task as acceptance criteria (no model call); empty for a one-rule task. */
+  private requirementsOf(task: string): string[] {
+    const items = splitRequirements(task);
+    return items.length >= 3 ? items : [];
+  }
+
   /** models that may code (helpers with rolesOnly do not count) */
   private codingModels(): number {
     return this.router.list().filter((h) => this.router.allows(h, 'coder')).length;
@@ -504,7 +511,7 @@ export class Orchestrator {
       const pending = localize(this.index, this.router, fullTask, { retrieved }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' }).catch(() => undefined);
       this.preLocalized = { id: 'T1', loc: undefined, pending };
       this.bus.info('planner', 'small task: no plan council, the coders start at once (localisation runs alongside)');
-      return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }], authors: [] };
+      return { understanding: '', acceptance: this.requirementsOf(fullTask), subtasks: [{ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }], authors: [] };
     }
     if (this.index.files.length >= 8 && o.localize !== false) {
       const coders = this.router.pick('coder', 1).map((h) => h.caps.key);
@@ -520,7 +527,7 @@ export class Orchestrator {
     } else if (this.index.files.length >= 8) return undefined;
     else files = [...filesOf({ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }, this.index.files.map((f) => f.path))].slice(0, 4);
     this.bus.info('planner', `small task${files.length ? ` (${files.join(', ')})` : ''}: no plan council, straight to the coders`);
-    return { understanding: '', acceptance: [], subtasks: [{ id: 'T1', title, description: fullTask, files, dependsOn: [], critical: false }], authors: [] };
+    return { understanding: '', acceptance: this.requirementsOf(fullTask), subtasks: [{ id: 'T1', title, description: fullTask, files, dependsOn: [], critical: false }], authors: [] };
   }
 
   /** Plan with the council of planners; with approvePlan the user may revise it before any code is written. */
@@ -537,7 +544,11 @@ export class Orchestrator {
       const text = prev
         ? `${fullTask}\n\n# USER FEEDBACK ON THE PREVIOUS PLAN (must be followed)\n${feedback}\n\n# PREVIOUS PLAN (revise it)\n${prev.subtasks.map((s) => `- ${s.id} ${s.title}: ${s.description.split('\n')[0]}`).join('\n')}`
         : fullTask;
-      const drafts = Math.min(3, this.router.size);
+      // one plan from the main model (Self-MoA: the best model again beats a mix); a council
+      // of planners only when asked for (mode "council" or orchestrator.planDrafts) – it cost
+      // 2–4 minutes on the long bench task and did not change the result
+      const asked = opts.mode === 'council' ? 3 : (this.cfg.orchestrator.planDrafts ?? 1);
+      const drafts = Math.max(1, Math.min(asked, this.router.size));
       const planners = [...this.router.pick('planner', drafts), ...this.router.pick('judge', 1)].map((h) => h.caps.key);
       const context = this.buildContext(text, [], this.contextBudget(0.3, planners), await this.retrieve(text, signal));
       const plan = await makePlan(this.router, text, context, {
@@ -1068,7 +1079,10 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
     // one model judging its own verified work adds a request and little else
     const firstTry = reports.length > 0 && reports.every((r) => r.cascade === 'first');
-    if ((this.codingModels() <= 1 || firstTry) && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
+    // a task with many requirements is judged even when the build and tests passed: the
+    // project's tests rarely cover every new rule (the bench lost such a task 2 times in 6)
+    const manyRequirements = (plan.acceptance?.length ?? 0) >= REQUIREMENT_HEAVY;
+    if (!manyRequirements && (this.codingModels() <= 1 || firstTry) && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
       this.bus.info('requirements', firstTry ? 'the main model passed the build and tests on the first try: no separate acceptance judge' : 'one model, build and tests passed: no separate acceptance judge');
       return { complete: true, missing: [], judges: [] };
     }
@@ -1123,6 +1137,9 @@ Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement a
 function emptyUsage(): RunUsage {
   return { requests: 0, tokensIn: 0, tokensOut: 0, seconds: 0, byModel: {} };
 }
+
+/** acceptance criteria from which a task counts as requirement-heavy (always judged) */
+const REQUIREMENT_HEAVY = 4;
 
 function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
   const list = signals.filter((x): x is AbortSignal => !!x);

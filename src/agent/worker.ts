@@ -11,7 +11,7 @@ import { normalizeModelId } from '../llm/known-windows.js';
 import { TOOLSHIM_SCHEMA } from '../llm/schemas.js';
 import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './text-tools.js';
 import type { ExternalTools } from '../mcp/manager.js';
-import { executeTool, toolTokens, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
+import { executeTool, renderTodos, toolTokens, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
 
 export interface WorkerSkills {
@@ -78,6 +78,7 @@ Principles:
 - Make the smallest correct change that fully solves the task; follow existing style and project rules.
 - Keep the build green: after editing, run the project's build/test commands when available and fix what you broke.
 - Never touch files unrelated to the task. Never run destructive or networked commands.
+- A todo list holds the task's requirements (todo_write): mark an item completed only when it is implemented and covered by a test or a check you ran; you cannot finish while items are open. Update it in the same step as your other tool calls.
 - Work in few steps: every step is a full round-trip to the model. Call independent tools together in ONE step (read all the files you need at once, search several terms at once); only chain calls that depend on each other.
 - Communicate only through tool calls; when finished call finish with a short summary (what changed, how verified).`;
 
@@ -168,6 +169,8 @@ export class AgentWorker {
       staleFiles: this.staleFiles,
       external: deps.external,
       readCache: new Map(),
+      // the acceptance criteria are the checklist (Qwen Code todo_write); one-rule tasks need none
+      todos: (spec.acceptance?.length ?? 0) >= 3 && !spec.readOnly ? spec.acceptance!.map((c, i) => ({ id: String(i + 1), content: c, status: 'pending' as const })) : undefined,
     };
     this.applyEditFormat();
     this.guard = new LoopGuard({ maxConsecutiveErrors: cfg.orchestrator.maxConsecutiveErrors ?? 6 });
@@ -219,7 +222,11 @@ export class AgentWorker {
   }
 
   private firstUserMessage(): string {
-    const acc = this.spec.acceptance?.length ? `\n\nAcceptance criteria:\n${this.spec.acceptance.map((a) => `- ${a}`).join('\n')}` : '';
+    const acc = this.toolCtx.todos?.length
+      ? `\n\nAcceptance criteria – your todo list (todo_write to update it):\n${renderTodos(this.toolCtx.todos)}`
+      : this.spec.acceptance?.length
+        ? `\n\nAcceptance criteria:\n${this.spec.acceptance.map((a) => `- ${a}`).join('\n')}`
+        : '';
     let skills = '';
     const sk = this.spec.skills;
     if (sk?.preload.length) {
@@ -316,7 +323,8 @@ export class AgentWorker {
       notes = `${files}\n\n${transcript.slice(-4000)}`;
     }
     this.previousSummary = notes;
-    this.messages = [this.messages[0], this.messages[1], { role: 'user', content: `<progress_notes>\n${notes}\n</progress_notes>\nContinue the task from these notes.` }, ...this.messages.slice(cut)];
+    const todos = this.toolCtx.todos?.length ? `\n\n${renderTodos(this.toolCtx.todos)}` : '';
+    this.messages = [this.messages[0], this.messages[1], { role: 'user', content: `<progress_notes>\n${notes}\n</progress_notes>${todos}\nContinue the task from these notes.` }, ...this.messages.slice(cut)];
     while (this.messages[3]?.role === 'tool') this.messages.splice(3, 1);
     this.toolCtx.readCache?.clear();
     this.interventions.push('condense');
@@ -492,7 +500,8 @@ export class AgentWorker {
     const native = this.nativeTools;
     return this.router
       .rank('coder', { exclude: [this.currentModel, ...this.failedModels], minContext: need })
-      .find((h) => this.router.allows(h, 'coder') && h.caps.nativeTools === native)?.caps.key;
+      // a backup much slower than the model it stands in for never wins the race – only costs requests
+      .find((h) => this.router.allows(h, 'coder') && h.caps.nativeTools === native && this.router.inSpeedBand(h, 'coder'))?.caps.key;
   }
 
   /** A late hint that arrived since the last step goes into the conversation (once). */

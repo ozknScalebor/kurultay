@@ -152,6 +152,8 @@ export interface OrchestratorConfig {
   speedBand?: number;
   /** race mode with build/tests: the main model tries alone first, the race starts only if it fails (default true) */
   cascade?: boolean;
+  /** plan drafts of the plan step (default 1: the main model plans; mode "council" asks 3) */
+  planDrafts?: number;
   /** short tasks: the coders start at once and the localisation joins them as a hint (default true) */
   parallelLocalize?: boolean;
   /** most files a fast-path task may touch (default 6) */
