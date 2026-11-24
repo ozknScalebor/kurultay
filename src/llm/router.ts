@@ -295,7 +295,9 @@ export class Router {
   /** Is the model within the speed band of the role's best model? Unmeasured models are. */
   inSpeedBand(h: ModelHandle, role: Role): boolean {
     const band = this.speedBand;
-    if (!band) return true;
+    // summaries and other light work are spread over every model for throughput – nobody waits
+    // for one particular answer there, so the band only applies to the deciding roles
+    if (!band || role === 'summarizer' || role === 'fast') return true;
     const ref = this.rank(role)[0];
     const a = this.msPerToken(h);
     const b = ref && this.msPerToken(ref);

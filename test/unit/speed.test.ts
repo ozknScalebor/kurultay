@@ -158,6 +158,7 @@ describe('Router – speed band', () => {
     assert.equal(r.inSpeedBand(r.get('slow@b')!, 'coder'), false);
     assert.deepEqual(r.pick('reviewer', 1, ['fast@a', 'new@b']).map((h) => h.caps.model), ['slow'], 'the only one left is still used');
     assert.deepEqual(r.pick('reviewer', 1, ['fast@a', 'new@b'], { strictBand: true }), [], 'strict: not waited for');
+    assert.equal(r.pick('summarizer', 3).length, 3, 'light, spread-out work uses every model');
     r.speedBand = 0;
     assert.equal(r.pick('coder', 3).length, 3, 'band off after an escalation');
   });
