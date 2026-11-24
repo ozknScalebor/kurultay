@@ -1,0 +1,385 @@
+{
+ "name": "manual-20261124-2123",
+ "models": "Kurultay: main glm-5.3-flash + minimaxai/minimax-m3.1-flash (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-24T21:23:19.934Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "K1-depo-transfer",
+   "kurultay": {
+    "passed": true,
+    "seconds": 103.076,
+    "requests": 14,
+    "tokens": 204015,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 14,
+    "multiModelShare": 0.13579049466537343,
+    "timing": {
+     "totalSeconds": 103.1,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 80.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.5,
+     "requirements": 14,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 14,
+     "multiModelShare": 0.13579049466537343
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 149.559,
+    "requests": 14,
+    "tokens": 242616,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 24.7,
+    "multiModelShare": 0.16510695187165775,
+    "timing": {
+     "totalSeconds": 149.6,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 116.1,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.7,
+     "requirements": 24.7,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 24.7,
+     "multiModelShare": 0.16510695187165775
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 206.22,
+    "requests": 13,
+    "tokens": 356269,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K2-siparis-guncelleme",
+   "solo": {
+    "passed": true,
+    "seconds": 214.888,
+    "requests": 14,
+    "tokens": 280566,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 25.6,
+    "multiModelShare": 0.11912517449976734,
+    "timing": {
+     "totalSeconds": 214.9,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 180.7,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.5,
+     "requirements": 25.6,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 25.6,
+     "multiModelShare": 0.11912517449976734
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 198.987,
+    "requests": 22,
+    "tokens": 700327,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 187.851,
+    "requests": 16,
+    "tokens": 331108,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 30.8,
+    "multiModelShare": 0.16391697711548697,
+    "timing": {
+     "totalSeconds": 187.9,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 148.6,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.4,
+     "requirements": 30.8,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 30.8,
+     "multiModelShare": 0.16391697711548697
+    }
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K3-iade",
+   "qwen": {
+    "passed": true,
+    "seconds": 337.672,
+    "requests": 18,
+    "tokens": 741686,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 523.351,
+    "requests": 24,
+    "tokens": 820278,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 100.5,
+    "multiModelShare": 0.1920137562094001,
+    "timing": {
+     "totalSeconds": 523.4,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 414.2,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.6,
+     "requirements": 100.5,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 100.5,
+     "multiModelShare": 0.1920137562094001
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 402.992,
+    "requests": 23,
+    "tokens": 736102,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 30.1,
+    "multiModelShare": 0.07468982630272954,
+    "timing": {
+     "totalSeconds": 403,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 364,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.8,
+     "requirements": 30.1,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 30.1,
+     "multiModelShare": 0.07468982630272954
+    }
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu",
+   "kurultay": {
+    "passed": true,
+    "seconds": 386.235,
+    "requests": 14,
+    "tokens": 274889,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 58.8,
+    "multiModelShare": 0.15225271879854996,
+    "timing": {
+     "totalSeconds": 386.2,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 326.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1,
+     "requirements": 58.8,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 58.8,
+     "multiModelShare": 0.15225271879854996
+    }
+   },
+   "solo": {
+    "passed": false,
+    "seconds": 498.873,
+    "requests": 30,
+    "tokens": 857328,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 108.6,
+    "multiModelShare": 0.21767889356584486,
+    "timing": {
+     "totalSeconds": 498.9,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 389.3,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1,
+     "requirements": 108.6,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 108.6,
+     "multiModelShare": 0.21767889356584486
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 267.05,
+    "requests": 0,
+    "tokens": 0,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K2-zaman-penceresi",
+   "solo": {
+    "passed": true,
+    "seconds": 781.724,
+    "requests": 71,
+    "tokens": 1822307,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 56.7,
+    "multiModelShare": 0.07253422028911347,
+    "timing": {
+     "totalSeconds": 781.7,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 891.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 6.3,
+     "requirements": 56.7,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 56.7,
+     "multiModelShare": 0.07253422028911347
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 219.444,
+    "requests": 15,
+    "tokens": 507819,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 302.59,
+    "requests": 29,
+    "tokens": 402949,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 28.6,
+    "multiModelShare": 0.0945142101784534,
+    "timing": {
+     "totalSeconds": 302.6,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 231.8,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 2.8,
+     "requirements": 28.6,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 28.6,
+     "multiModelShare": 0.0945142101784534
+    }
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K3-alarm-hatti",
+   "qwen": {
+    "passed": true,
+    "seconds": 390.684,
+    "requests": 23,
+    "tokens": 1109138,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 499.724,
+    "requests": 23,
+    "tokens": 592900,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 219.2,
+    "multiModelShare": 0.43866319791875125,
+    "timing": {
+     "totalSeconds": 499.7,
+     "planning": 122.8,
+     "planCouncil": true,
+     "coding": 266.1,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1,
+     "requirements": 96.4,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 219.2,
+     "multiModelShare": 0.43866319791875125
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 859.406,
+    "requests": 41,
+    "tokens": 1111248,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 171.3,
+    "multiModelShare": 0.19932511054223878,
+    "timing": {
+     "totalSeconds": 859.4,
+     "planning": 89.5,
+     "planCouncil": true,
+     "coding": 643.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1.6,
+     "requirements": 81.8,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 171.3,
+     "multiModelShare": 0.19932511054223878
+    }
+   }
+  }
+ ]
+}
