@@ -131,7 +131,7 @@ A single-agent tool (Qwen Code, Aider) fixes a one-file bug in a minute. Kurulta
 
 | Rule | What happens | Setting |
 |---|---|---|
-| **Fast path** | A short task whose localisation names one or two files – up to six with a single coding model – skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval). The localisation is made once and reused | `orchestrator.fastPath`, `fastPathMaxFiles` |
+| **Fast path** | A short task whose localisation names up to six files skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval). The localisation is made once and reused | `orchestrator.fastPath`, `fastPathMaxFiles` |
 | **Cascade** | In auto mode with build/tests, the main model tries alone first; when its change passes them that is the result (no race, review or acceptance judge – what one agent costs). Only when it fails do the other candidates race | `orchestrator.cascade` |
 | **Speed band** | A model more than 3× slower than the best one (probe speed, then the live average) stays out of the steps that wait for everyone – plan drafts, race, reviews, judges. A race then samples the fast model several times; after a candidate passes the build and tests the others get only 15% of its time. When the fast models fail the tests, the slower models join for the rest of the run (cascade) | `orchestrator.speedBand` (0 = off), `raceGraceVerified` |
 | **No waiting for the slowest model** | Plan drafts, council reviews and acceptance judges go on once one model has answered; the others get half of that time (at least 30 s) and are then stopped. A model whose speed test failed in the probe is ranked last for every role | – |

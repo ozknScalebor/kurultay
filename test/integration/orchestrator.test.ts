@@ -381,9 +381,12 @@ describe('Orchestrator', () => {
     assert.ok(bus.ofType('log.info').some((e) => /small task/.test(e.message ?? '')));
     assert.match(read(root, 'src/uart.c'), /return n;/);
     assert.match(read(report.reportPath, ''), /## Prompt makeup \(\d+ coding requests?\)[\s\S]*\| Tool declarations \| \d+ \|/);
-    // a task that touches more files, a forced mode or plan approval go through the planners
-    brain.locate = { files: ['src/f1.c', 'src/f2.c', 'src/f3.c'], locations: [] };
-    await run('change f1, f2 and f3');
+    // localisation names at most four files: a short task stays one agent loop, with several models too
+    brain.locate = { files: ['src/f1.c', 'src/f2.c', 'src/f3.c', 'src/f4.c'], locations: [] };
+    await run('change f1 to f4');
+    assert.equal(plans, 0);
+    // a long task, a forced mode or plan approval go through the planners
+    await run(`change f1 to f4\n${'more detail. '.repeat(130)}`);
     assert.ok(plans > 0);
     const after = plans;
     await run('x', { mode: 'race' });
@@ -416,13 +419,13 @@ describe('Orchestrator', () => {
   it('a one-subtask plan reuses the localisation made while triaging the task', async () => {
     const brain: Brain = {
       plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
-      locate: { files: ['src/f1.c', 'src/f2.c', 'src/f3.c'], locations: [] },
+      locate: { files: ['src/f0.c', 'src/f1.c', 'src/f2.c', 'src/f3.c', 'src/f4.c', 'src/f5.c', 'src/f6.c'], locations: [] },
       agent: (_id, step) => (step === 0 ? call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' }) : undefined),
     };
     const files: Record<string, string> = {};
     for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run, s } = await setup(brain, files);
-    await run('change f1, f2 and f3');
+    await run('change f0 to f6');
     assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1);
   });
 

@@ -145,7 +145,7 @@ export interface OrchestratorConfig {
   speedBand?: number;
   /** race mode with build/tests: the main model tries alone first, the race starts only if it fails (default true) */
   cascade?: boolean;
-  /** most files a fast-path task may touch (default 2; 6 with a single coding model) */
+  /** most files a fast-path task may touch (default 6) */
   fastPathMaxFiles?: number;
   /** model id or key of the main model (see ModelOverride.primary) */
   primaryModel?: string;

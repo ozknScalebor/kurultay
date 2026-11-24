@@ -500,9 +500,10 @@ export class Orchestrator {
       const loc = await localize(this.index, this.router, fullTask, { retrieved: await this.retrieve(fullTask, signal) }, { budgetTokens: this.contextBudget(0.15, coders), signal, bus: this.bus, source: 'T1' });
       // kept even when the plan council runs: a one-subtask plan reuses it instead of asking again
       this.preLocalized = { id: 'T1', loc };
-      // one coding model works through a whole medium task in one agent loop (Qwen Code);
-      // splitting it only adds plan requests and a fresh exploration per subtask
-      const maxFiles = o.fastPathMaxFiles ?? (this.codingModels() <= 1 ? 6 : 2);
+      // a medium task is worked through in one agent loop (Qwen Code); splitting it only adds
+      // plan requests and a fresh exploration per subtask. With several models the cascade and
+      // the race still apply to that one subtask (a plan council cost 1.5 min in the bench).
+      const maxFiles = o.fastPathMaxFiles ?? 6;
       if (!loc || !loc.files.length || loc.files.length > maxFiles) return undefined;
       files = loc.files;
     } else if (this.index.files.length >= 8) return undefined;
