@@ -36,7 +36,7 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-  const booleans = new Set(['deep', 'quick', 'minimal', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history', 'keep-tests']);
+  const booleans = new Set(['deep', 'quick', 'minimal', 'watch', 'remove', 'force', 'dry-run', 'yes', 'ui', 'verbose', 'help', 'version', 'json', 'v', 'h', 'y', 'no-index', 'no-probe', 'no-analyze', 'continue', 'c', 'validate', 'keep', 'approve-plan', 'embed', 'ascii', 'history', 'keep-tests']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -79,6 +79,10 @@ Commands:
                          --dir --mode --timeout <min> --instances a,b --name)
   swebench collect     Patches of folders another agent worked on → predictions (--dir --name qwen-code)
                          Grade with the official harness: swebench eval verified -p <predictions> --run-id <id>
+  jira                 Do the Jira issues assigned to you that mention @kurultay: clone/update the GitLab
+                         repository, a branch per issue, run, merge request, MR link as a Jira comment
+                         (--watch: look again every jira.intervalMinutes; --issue ABC-1; --dry-run)
+  jira startup         Start "kurultay jira --watch" when you log in (Windows Startup folder; --remove)
   rewind [session]     Undo what a task applied to the project (default: last task; --yes, --force)
   init                 Create kurultay.config.json and rule/skill templates in the project root
   index                Index the project (symbols, dependency graph, PageRank) – no LLM needed
@@ -429,6 +433,29 @@ async function cmdEval(args: Args) {
 }
 
 /** SWE-bench: prepare checkouts, run Kurultay on them, or collect another agent's patches. */
+async function cmdJira(args: Args) {
+  const jw = await import('./integrations/jira-worker.js');
+  const config = typeof args.flags.config === 'string' ? args.flags.config : undefined;
+  if (args.positional[0] === 'startup') {
+    const r = jw.installStartup({ remove: !!args.flags.remove, config });
+    out(r.removed ? `${color.green('✓')} removed ${r.file}` : `${color.green('✓')} ${r.file}\n  "kurultay jira --watch" starts when you log in (log: ${join(kurultayHome(), 'jira.log')})`);
+    return;
+  }
+  const ctrl = new AbortController();
+  process.once('SIGINT', () => ctrl.abort(new Error('stopped')));
+  const worker = new jw.JiraWorker({
+    config,
+    dryRun: !!args.flags['dry-run'],
+    issue: typeof args.flags.issue === 'string' ? args.flags.issue : undefined,
+    intervalMinutes: args.flags.interval !== undefined ? Number(args.flags.interval) : undefined,
+    onProgress: (l) => out(l),
+    signal: ctrl.signal,
+  });
+  if (args.flags.watch) return worker.watch();
+  const r = await worker.pass();
+  out(`${color.bold('Jira')}: ${plural(r.seen, 'issue')} mention ${worker.jira.mention ?? '@kurultay'}; ${r.done.length ? r.done.map((d) => `${d.key} ${d.status}${d.mr ? ` ${d.mr}` : ''}`).join(', ') : 'nothing new to do'}`);
+}
+
 async function cmdSwebench(args: Args) {
   const sub = args.positional[0];
   const list = (v: unknown) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
@@ -559,7 +586,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = await c.run();
     return;
   }
-  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'swebench', 'stats', 'trajectories'];
+  const KNOWN = ['init', 'mock', 'probe', 'index', 'analyze', 'run', 'ask', 'status', 'map', 'search', 'skills', 'rewind', 'eval', 'swebench', 'jira', 'stats', 'trajectories'];
   if (!KNOWN.includes(args.cmd)) {
     out(`Unknown command: ${args.cmd}\n`);
     out(HELP);
@@ -597,6 +624,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         return await cmdEval(args);
       case 'swebench':
         return await cmdSwebench(args);
+      case 'jira':
+        return await cmdJira(args);
       case 'mock': {
         const port = Number(args.flags.port ?? 9100);
         // --latency <ms>: answer slowly, to watch the live progress display

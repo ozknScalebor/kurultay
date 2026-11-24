@@ -194,7 +194,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.14.0 · all your local LLMs in one council · offline
+ v0.15.0 · all your local LLMs in one council · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -400,6 +400,40 @@ Other sections:
 - **MCP**: tools of stdio MCP servers are offered to the workers as `mcp__<server>__<tool>`; read-only ones (`readOnlyHint` or `readOnlyTools`) are also available to reviewers. `/mcp` in the console.
 - **LSP**: the configured language server starts once per project and its diagnostics are collected after every edit; if it cannot start, the compiler check takes over.
 
+## Jira → merge request
+
+Issues **assigned to you** whose **description mentions `@kurultay`** are done by Kurultay and come back as a GitLab merge request; the merge request link is written under the issue as a comment.
+
+```jsonc
+// ~/.kurultay/config.json (next to the models)
+"jira": {
+  "url": "https://jira.company.local",
+  "token": "${JIRA_TOKEN}",            // personal access token (Server / Data Center) …
+  "username": "ozkan.eren",            // … or user name + password; Jira Cloud: e-mail + API token
+  "password": "${JIRA_PASSWORD}",
+  "intervalMinutes": 5                 // watch mode
+},
+"gitlab": {
+  "repo": "https://gitlab.company.local/team/app.git",
+  "username": "ozkan.eren",
+  "password": "${GITLAB_PASSWORD}",    // git over HTTPS
+  "token": "${GITLAB_TOKEN}"           // optional, scope "api": merge request through the API
+}
+```
+
+| Command | What it does |
+|---|---|
+| `kurultay jira` | Looks once: every waiting issue is done one after another |
+| `kurultay jira --watch` | Looks again every `intervalMinutes` (log: `~/.kurultay/jira.log`) |
+| `kurultay jira startup` | Starts `kurultay jira --watch` when you log in (Windows: a `.cmd` in the Startup folder; Linux: an autostart entry); `--remove` takes it out |
+| `kurultay jira --dry-run` / `--issue ABC-12` | Only lists what would be done / only this issue |
+
+Per issue: the repository is cloned once into `~/.kurultay/jira-work` (later fetched), a branch `kurultay/<KEY>` starts from the target branch (`gitlab.targetBranch`, default the repository's default branch), Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands), commits, pushes and opens the merge request – through the API with `gitlab.token`, otherwise with GitLab push options (needs only git access). The comment holds the merge request link, the build/test result and the changed files; with `jira.transition` (e.g. `"In Review"`) the issue is also moved. An issue is done once; editing its description hands it over again (same branch, the merge request is updated). If nothing changed or the work failed, the comment says so.
+
+- Several repositories: `"jira": { "repos": { "ABC": "https://…/abc.git", "*": "https://…/other.git" } }` by project key, or a line `repo: <url>` in the description.
+- Passwords and tokens: use `${ENV_VAR}` as above. Git gets them from an inline credential helper (never written to disk or into the remote URL) and they are masked in messages.
+- Company certificates: set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem` for the Jira/GitLab API calls; git uses its own settings (`http.sslCAInfo`).
+
 ## SWE-bench
 
 Patches are generated and graded in separate steps, so the agents can run on the offline machine and the grading (Docker, about 120 GB of images) on any x86_64 machine with internet access.
@@ -418,7 +452,7 @@ kurultay swebench collect --dir swe-qwen --name qwen-code
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.14.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.15.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 ```
 

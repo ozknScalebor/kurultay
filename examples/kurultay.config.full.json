@@ -172,5 +172,22 @@
     "includeUser": true,
     "maxPreload": 3
   },
+  "jira": {
+    "url": "https://jira.company.local",
+    "token": "${JIRA_TOKEN}",
+    "username": "",
+    "password": "",
+    "mention": "@kurultay",
+    "intervalMinutes": 5,
+    "comment": true,
+    "transition": ""
+  },
+  "gitlab": {
+    "repo": "https://gitlab.company.local/team/app.git",
+    "username": "ozkan.eren",
+    "password": "${GITLAB_PASSWORD}",
+    "token": "${GITLAB_TOKEN}",
+    "targetBranch": ""
+  },
   "language": "en"
 }

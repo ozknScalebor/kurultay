@@ -282,6 +282,48 @@ export interface SkillsConfig {
   maxPreload: number;
 }
 
+export interface JiraConfig {
+  /** e.g. https://jira.company.local (Server / Data Center) or https://company.atlassian.net (Cloud) */
+  url: string;
+  /** user name (Server/DC with password) or e-mail address (Cloud with an API token) */
+  username?: string;
+  password?: string;
+  /** personal access token (Server/DC, sent as Bearer) or Cloud API token (sent with the e-mail as username) */
+  token?: string;
+  /** the word that hands an issue to Kurultay (default "@kurultay"), looked for in the description */
+  mention?: string;
+  /** replaces the built-in query (assigned to you, mention in the description, not done) */
+  jql?: string;
+  /** minutes between two looks at Jira in watch mode (default 5) */
+  intervalMinutes?: number;
+  /**
+   * optional: Jira project key → repository URL when issues of several projects live in
+   * different repositories ("*" = any other project). Without it gitlab.repo is used. A line
+   * "repo: <url>" in the description overrides both for one issue.
+   */
+  repos?: Record<string, string>;
+  /** write the result (merge request, summary, tests) as a comment on the issue (default true) */
+  comment?: boolean;
+  /** move the issue to this status after the merge request was opened (e.g. "In Review"; default: leave it) */
+  transition?: string;
+}
+
+export interface GitLabConfig {
+  /** the repository the Jira work is done in, e.g. https://gitlab.company.local/team/app.git */
+  repo?: string;
+  /** GitLab base URL, e.g. https://gitlab.company.local (default: taken from the repository URL) */
+  url?: string;
+  /** user name and password for git over HTTPS */
+  username?: string;
+  password?: string;
+  /** personal access token (scope api): opens the merge request through the API; without it git push options are used */
+  token?: string;
+  /** branch the merge request targets (default: the repository's default branch) */
+  targetBranch?: string;
+  /** where the repositories are cloned (default ~/.kurultay/jira-work) */
+  workDir?: string;
+}
+
 export interface KurultayConfig {
   endpoints: EndpointConfig[];
   models: Record<string, ModelOverride>;
@@ -296,6 +338,10 @@ export interface KurultayConfig {
   mcp?: McpConfig;
   /** LSP servers for diagnostics after edits: {"servers": {"clangd": {"command": "clangd", "extensions": [".c", ".cpp", ".h"]}}} */
   lsp?: LspConfig;
+  /** Jira: issues assigned to you that mention @kurultay are done and sent as merge requests (`kurultay jira`) */
+  jira?: JiraConfig;
+  /** GitLab access for the Jira work: clone, push, merge request */
+  gitlab?: GitLabConfig;
   /** UI language */
   language: 'tr' | 'en';
   /** where per-project state lives (relative to project root) */
