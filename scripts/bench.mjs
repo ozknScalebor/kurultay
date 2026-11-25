@@ -205,7 +205,7 @@ async function main() {
           if (att?.models?.length) console.log(`   models: ${att.models.join(', ')}${att.llmErrors ? ` · ${att.llmErrors} failed requests` : ''}`);
           if (att) {
             const j = att.judges;
-            console.log(`   project's own checks: ${att.ownChecks ?? '?'} · acceptance judge: ${j ? (j.ran.length ? `${j.ran.join(', ')} → ${j.complete ? 'complete' : `missing: ${j.missing.join(' | ').slice(0, 300)}`}` : 'skipped') : '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
+            console.log(`   project's own checks: ${att.ownChecks ?? '?'} · acceptance judge: ${j ? (j.ran.length ? `${j.ran.join(', ')}${j.alongside ? ' (alongside the coder)' : ''} → ${j.complete ? 'complete' : `missing: ${j.missing.join(' | ').slice(0, 300)}`}` : 'skipped') : '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
           }
           // a failed run: which hidden tests failed and why (the end of the check output)
           if (att && !att.passed) console.log(`   hidden tests (failures first, then the last lines):\n${evalMod.failureLines(att.checkOutput).split('\n').map((l) => `     | ${l}`).join('\n')}`);
@@ -249,8 +249,21 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
+  let finished = false;
+  // a promise nobody will ever settle lets Node exit with code 0 in the middle of a run –
+  // the job would then look successful with half of the table missing
+  process.on('beforeExit', () => {
+    if (finished) return;
+    console.error('::error::bench: the process ran out of work before the bench finished (a promise that never settles) – the results are incomplete');
+    process.exit(2);
   });
+  main().then(
+    () => {
+      finished = true;
+    },
+    (e) => {
+      console.error(e);
+      process.exit(1);
+    },
+  );
 }

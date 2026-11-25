@@ -73,7 +73,7 @@ export interface EvalAttempt {
   timing?: RunTiming;
   /** the project's own build/tests at the end of the run, and the acceptance judges' verdict */
   ownChecks?: 'passed' | 'failed' | 'none';
-  judges?: { ran: string[]; complete: boolean; missing: string[] };
+  judges?: { ran: string[]; complete: boolean; missing: string[]; alongside?: boolean };
   /** files the agent changed */
   files?: string[];
 }
@@ -366,7 +366,7 @@ async function runAttempt(opts: EvalOptions, suite: EvalSuite, task: EvalTask, m
     a.changedFiles = report.changedFiles.length;
     a.iterations = report.iterations;
     a.ownChecks = !report.finalVerify || report.finalVerify.skipped ? 'none' : report.finalVerify.ok ? 'passed' : 'failed';
-    if (report.requirementCheck) a.judges = { ran: report.requirementCheck.judges, complete: report.requirementCheck.complete, missing: report.requirementCheck.missing };
+    if (report.requirementCheck) a.judges = { ran: report.requirementCheck.judges, complete: report.requirementCheck.complete, missing: report.requirementCheck.missing, alongside: report.requirementCheck.alongside };
     a.files = report.changedFiles;
   } catch (e) {
     a.error = errorMessage(e).slice(0, 300);

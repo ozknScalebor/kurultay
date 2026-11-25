@@ -183,6 +183,8 @@ export async function settleQuorum<T>(
   calls: Array<(signal: AbortSignal) => Promise<T>>,
   opts: QuorumOptions = {},
 ): Promise<Array<{ ok: true; value: T } | { ok: false; error: unknown; late?: boolean }>> {
+  // nothing to wait for: an empty fan-out would never settle (and Node would just exit)
+  if (!calls.length) return [];
   const t0 = Date.now();
   const need = Math.min(Math.max(1, opts.quorum ?? 1), calls.length);
   const ctrls = calls.map(() => new AbortController());

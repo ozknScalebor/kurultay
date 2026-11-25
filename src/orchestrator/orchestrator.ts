@@ -143,7 +143,7 @@ export interface RunReport {
   plan: Plan;
   subtasks: SubtaskReport[];
   finalVerify?: VerifyResult;
-  requirementCheck?: { complete: boolean; missing: string[]; judges: string[] };
+  requirementCheck?: { complete: boolean; missing: string[]; judges: string[]; /** the judge ran while the coder finished */ alongside?: boolean };
   merge?: MergeReport;
   /** pre-apply snapshot for rewinding (absent when nothing was applied) */
   checkpointPath?: string;
@@ -1079,7 +1079,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     return report;
   }
 
-  private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
+  private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<NonNullable<RunReport['requirementCheck']>> {
     const diff = integration.diff();
     if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
     // one model judging its own verified work adds a request and little else
@@ -1098,7 +1098,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const r = await ev.result;
       if (r.judges.length) {
         this.bus.info('requirements', `acceptance judge ran while the coder finished (${r.judges.join(', ')}): ${r.complete ? 'complete' : 'gaps found'}`);
-        return r;
+        return { ...r, alongside: true };
       }
     }
     return this.judge(task, plan, diff, renderVerify(verify) + (!verify.skipped && !verify.ok ? `\n${truncateTokens(verifyFailureText(verify), 1200)}` : ''), writers, reports, signal, !verify.skipped && verify.ok);
@@ -1119,6 +1119,11 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     let judges = this.router.pick('judge', 1, writers);
     if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, [...writers, ...judges.map((j) => j.caps.key)], { strictBand: verified })];
     if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
+    // every model is resting after a failure: nobody can judge now → rely on the verification
+    if (!judges.length) {
+      this.bus.warn('requirements', 'no model is available for the acceptance judge right now: the verification decides');
+      return { complete: true, missing: [], judges: [] };
+    }
     const budget = this.contextBudget(0.55, judges.map((j) => j.caps.key));
     const prompt = `You are the final acceptance judge. Decide whether the combined change fully satisfies the task and its acceptance criteria. Be strict but do not invent requirements.
 

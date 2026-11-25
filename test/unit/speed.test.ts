@@ -111,6 +111,10 @@ describe('known context windows', () => {
 });
 
 describe('settleQuorum', () => {
+  it('an empty fan-out settles at once (it used to never settle, and Node exited mid-run)', async () => {
+    assert.deepEqual(await settleQuorum([]), []);
+  });
+
   const wait = <T>(ms: number, v: T, signal: AbortSignal) =>
     new Promise<T>((res, rej) => {
       const t = setTimeout(() => res(v), ms);

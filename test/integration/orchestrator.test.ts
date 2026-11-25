@@ -592,6 +592,7 @@ describe('Orchestrator', () => {
     assert.equal(report.status, 'completed');
     assert.equal(judges, 1);
     assert.ok(bus.ofType('log.info').some((e) => /ran while the coder finished/.test(e.message ?? '')));
+    assert.equal(report.requirementCheck?.alongside, true);
   });
 
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
