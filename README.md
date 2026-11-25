@@ -2,169 +2,134 @@
 
 **A coding agent for air-gapped networks that keeps working when a local LLM stops answering.**
 
-Given your OpenAI-compatible endpoints and API keys, Kurultay:
+Give it your OpenAI-compatible endpoints and API keys. Kurultay:
 
-1. **Measures every model.** Context window, tool calling, JSON, speed, concurrency capacity, coding and editing accuracy are measured, and each model gets a score per role.
-2. **Indexes the project.** It extracts symbols, the dependency graph, PageRank and a BM25 search index. Then a map-reduce summarisation **spread over all models in parallel** produces `ARCHITECTURE.md`, module documents, end-to-end **flow documents** (DeepWiki style, with source line references and Mermaid diagrams) and `PROJECT_NOTES.md`, which the agents read on every task.
-3. **Does the work like Qwen Code.** One agent with **one model at a time** works the whole task through: it explores the code, edits, runs the build and tests itself and keeps the task's requirements as a **todo list**. The build and tests decide when it is done; when they fail, a coder gets the failures in the next round. There is no separate judge or reviewer model.
-4. **Keeps going when a model stops answering.** A model that hangs, fails or becomes much slower than usual is quarantined and the same conversation continues on another model from the step where it stopped – unlike Qwen Code, whose `--fallback-model` only takes over on 429/503/529 answers.
-
-Several models at once (race, council reviews, parallel subtasks) are still there, but only with `--mode multi` (or `race`, `council`, `split`): in the bench they made results worse, not better.
+1. **Measures every model.** Context window, tool calling, JSON, speed, concurrency capacity, coding and editing accuracy are measured once, and each model gets a score per role.
+2. **Indexes the project.** Symbols, the dependency graph, PageRank and a BM25 search index are built without any model. A map-reduce summarisation spread over all models in parallel then writes `ARCHITECTURE.md`, module documents, end-to-end **flow documents** (with source line references and Mermaid diagrams) and `PROJECT_NOTES.md`, which the agent reads on every task.
+3. **Does the work like Qwen Code.** One agent with **one model at a time** works the whole task through: it explores the code, edits, runs the build and tests itself and keeps the task's requirements as a **todo list**. The build and tests decide when it is done; when they fail, the failures go to a coder in the next round. There is no separate judge or reviewer model.
+4. **Keeps going when a model stops answering.** A model that hangs, fails or becomes much slower than usual is quarantined, and the same conversation continues on another model from the step where it stopped. Qwen Code's `--fallback-model` only takes over on 429/503/529 answers, so a hanging model stops it.
 
 There are **no npm runtime dependencies**. All it needs is Node.js ≥ 20: no native builds, Python, Docker, CDN or telemetry.
 
-> The name: a *kurultay* is the assembly where decisions were taken together in the Turkic-Mongol tradition. Here, the members of the assembly are your LLMs.
+> The name: a *kurultay* is the assembly where decisions were taken together in the Turkic-Mongol tradition. Here, the members of the assembly are your LLMs – one speaks at a time, the others step in when it falls silent.
 
 The console UI, reports and messages are in English; tasks and questions can be written in any language the models understand (Turkish is recognised by the question/task detection).
+
+### Measured against Qwen Code
+
+Same task text, a fresh copy of the project per agent, the same hidden tests, GLM-5.3-flash as the main model for both ([bench](#bench-kurultay-vs-qwen-code)):
+
+| Run (v0.16.0) | Kurultay | Qwen Code |
+|---|---|---|
+| 6 feature tasks (Java 8 + C++17), 20 min each | **6/6 in 24.1 min** | 5/6 in 27.8 min |
+| Main model stops answering after 3 requests (2 tasks) | **2/2** – continued on the backup model | 0/2 – waited until the time ran out |
+
+Earlier versions ran several models at once (races, council reviews, an acceptance judge from a second model). In the same bench that was slower and less reliable – a second model's judge sent passing work into extra rounds until the time ran out – so since v0.16.0 it is only available on request (`--mode multi`, see [Several models at once](#several-models-at-once-opt-in)).
 
 ---
 
 ## Why?
 
-Fifteen open-source agents were studied before this project. None of them distributed the same work to all local models concurrently and merged the results with tests and cross-review. They either worked by role (one model per agent) or started parallel instances that knew nothing about each other. Kurultay fills that gap and combines the best ideas of the projects it studied:
+Fifteen open-source agents were studied before this project (Aider, OpenHands, Cline, Kilo Code, Qwen Code, omp, oh-my-openagent, Serena, Crush, Goose, DeepWiki-Open and others). For an offline company network none of them covered everything at once: measuring an unknown set of local models, indexing a large C/C++/Java code base, and – above all – carrying on when one of the local servers hangs. Kurultay combines the ideas that held up:
 
 | Idea | Source project | In Kurultay |
 |---|---|---|
+| One agent loop with a todo list, tool output to files, compaction at 85% | Qwen Code | `src/agent/worker.ts` – the default way of working |
 | Tree-sitter + PageRank repo map | Aider | `src/index/*` – dependency-free symbol extractor, reference graph, personalised PageRank |
-| Architect / editor split | Aider | Planner and coder roles, model choice by role score |
-| Role-based model routing + fallback chain | omp, oh-my-openagent | `Router` – role score × load × reliability; automatic fallback model |
+| Role-based model routing + fallback chain | omp, oh-my-openagent | `Router` – role score × load × reliability; quarantine and permanent failover |
 | Robust hash/anchor based editing | omp | `edits.ts` – exact → whitespace-tolerant → indentation-tolerant matching, "closest match" hint |
 | Minimal, extensible core | Pi (pi-mono) | Small modules; also usable as a library (`import { Orchestrator } from 'kurultay'`) |
-| Sisyphus orchestration / TODO tracking | oh-my-openagent | Plan DAG, parallel execution in dependency order, iteration loop |
-| Parallel agent isolation with git worktrees | Kilo Code, Cline | **Copy-on-write overlays**: lighter than worktrees, no repository copy, 3-way merge |
+| Parallel agent isolation | Kilo Code, Cline | **Copy-on-write overlays**: lighter than worktrees, no repository copy, 3-way merge |
 | LSP / symbol-level navigation | Serena, Crush | `find_symbol`, `repo_map`, dependent-file tools; optional LSP diagnostics |
 | Hierarchical wiki / architecture document | DeepWiki-Open | File → module → architecture summaries, deterministic Mermaid module graph |
-| LLM council (anonymous peer ranking + chair) | karpathy/llm-council | Council for the plan, the architecture document, code review and `ask` |
 | Prompt-based tool calling fallback | OpenHands, Goose (toolshim) | Models without native tools work with `<tool_call>`, Qwen3-Coder XML or SEARCH/REPLACE |
 | Context condenser, event sourcing | OpenHands | History is summarised in long sessions; every event goes to `events.jsonl` |
 | Reading other agents' rule files | omp | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` |
-| Plan → act flow, headless mode | Cline, Qwen Code | `run` plans and applies in one go; runs non-interactively in CI |
+| LLM council (anonymous peer ranking + chair) | karpathy/llm-council | `ask` questions and the architecture document; code review only in `--mode multi` |
 
-For licensing reasons **no code was copied from any project**; the ideas were rewritten from scratch under the MIT licence. The FSL-licensed Crush was studied as a source of ideas only.
+For licensing reasons **no code was copied from any project**; the ideas were rewritten from scratch under the MIT licence. The FSL-licensed Crush was studied as a source of ideas only. Notes from the code-level study: [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) (Turkish).
 
 ---
 
-## Architecture
+## How a task runs
 
 ```mermaid
 flowchart TB
-  CLI["CLI / web dashboard"] --> ORCH
-  subgraph ORCH[Orchestrator]
-    P["Task → one agent<br/>(mode multi: planner + subtask DAG)"] --> DAG["Subtasks"]
-    DAG --> W1["Worker 1<br/>overlay"]
-    DAG --> W2["Worker 2<br/>overlay"]
-    DAG --> W3["Worker N<br/>overlay"]
-    W1 & W2 & W3 --> V["Verification<br/>build/test/lint"]
-    V --> C["Anonymous council review<br/>+ Borda + test evidence"]
-    C --> FIX["Fix round"] --> INT["Integration overlay"]
-    INT --> V2["Build + tests"]
-    V2 -- failing --> DAG
-    V2 -- green --> MERGE["3-way merge into the project"]
+  T["Task (console, kurultay run, Jira issue)"] --> A
+  subgraph A["One agent – one model at a time"]
+    direction TB
+    C["context: repo map, search hits, project notes, rules, skills"] --> L["agent loop: read · search · edit · run build/tests · todo_write"]
+    L --> F["finish (refused once while todo items are open)"]
   end
-  ORCH --> R
-  subgraph R[Router]
-    S["Semaphore per endpoint"] --- CB["Retry / backoff / circuit breaker"] --- FB["Role + load based choice, fallback"]
+  A --> V{"build + tests<br/>on the result"}
+  V -- failing --> R["next round: one coder gets the failures"] --> A
+  V -- green / no commands --> M["3-way merge into the project<br/>(the console asks first)"]
+  subgraph FB["When the model stops answering"]
+    H["no first token · silent stream · error · much slower than usual"] --> Q["quarantine the model"] --> S["same conversation continues on the next model"]
   end
-  R --> E1["vLLM"] & E2["llama.cpp"] & E3["Ollama"] & E4["LM Studio / TGI / LiteLLM"]
-  IDX["Index: symbols, graph, PageRank, BM25, embeddings"] --> ORCH
-  AN["Analyzer: parallel map-reduce summaries"] --> IDX
+  A -.-> FB
 ```
 
-### Where several models are used
+1. **Context.** The agent starts with a repo map (most referenced symbols), the search hits for the task, `PROJECT_NOTES.md`, the project's rules and the skills that match the task. It explores the rest itself.
+2. **Todo list.** A task with three or more requirements (list items, sentences) is turned into a checklist the agent keeps with `todo_write` (pending / in_progress / completed / dropped with a reason). `finish` is refused once while items are open; the list survives context compaction.
+3. **Checks while it works.** After every edit the file goes through a compiler or LSP check; the agent runs the project's build and test commands itself (`verify` in the configuration) and is told to reproduce bugs with a failing test first.
+4. **Done or not.** When the agent finishes, the build and tests run once more on the combined result in a sandbox copy. Green (or no commands configured) → the change is applied: the console asks first (unless `/auto-apply on`), `kurultay run` asks when `orchestrator.confirmMerge` is true, `--dry-run` only writes `changes.diff`. Red → the failures go to a coder in the next round, up to `orchestrator.maxIterations`.
+5. **Failover.** Every request is watched by three clocks (first token, stream silence, total time) and a hedge timer. A model that misses them is quarantined; the conversation moves to the best other model whose context fits, converted to the text protocol if that model has no native tool calling. The switch is listed in `REPORT.md`.
 
-| Stage | Concurrency |
-|---|---|
-| `probe` | All endpoints are probed in parallel. Each endpoint gets a throughput ramp with 1→2→4→8 requests and the best concurrency level is recorded. |
-| `analyze` | File batches are summarised with as many parallel requests as **all models' slots combined**; faster models take more work (load-aware router). For the architecture document N models write independent drafts and a judge merges them. |
-| Execution (default `auto` = `single`) | One model at a time; the others are only the fallback when it stops answering. |
-| Execution (`--mode multi`, opt-in) | Planning first (fast path for short tasks, one plan by default, `planDrafts` for a council); **split**: independent subtasks run on different models at the same time; **race**: N models race on the same subtask; **council**: race + a full council review every time. `multi` picks race for a single subtask and split for several. |
-| Review (multi-model modes only) | All reviewers run in parallel; candidates are anonymised as A/B/C and shuffled. A model never reviews its own code (not at all with one candidate; in a council it cannot vote for its own candidate); fixes are re-reviewed by a model that did not write them. |
+Several models are still used in parallel where it costs the user no waiting time: the capability probe, the project analysis (`analyze`) and questions (`ask`, answered by a small council).
 
 ### Resilience
 
-- **When a model stops answering** (hang, timeout): every request is watched by three clocks — time to first token (180 s by default + extra time for long prompts), stream silence (90 s) and total time (10 min). A model that times out is not retried for that request; it is **quarantined** (2 min, growing up to 16 min on repeats) and no worker sends it requests.
-- **Workers fail over permanently**: if the model running a task drops out, the task continues where it stopped on the best fallback model whose context fits; the failed model is not used again for that task. If the fallback has no native tool calling, the conversation history is converted to the text protocol. Switches are listed in the report.
+- **When a model stops answering** (hang, timeout): time to first token (180 s by default + extra time for long prompts), stream silence (90 s) and total time (10 min). A model that times out is not retried for that request; it is **quarantined** (2 min, growing up to 16 min on repeats) and no worker sends it requests.
+- **When a model gets slow**: a step that takes 2.5× the model's usual time (at least 30 s) is also sent to the best other coder of similar speed; the first answer wins. After two late answers in a row the agent moves to the other model and the slow one is left out for 5 minutes (`llm.hedge`).
+- **The agent fails over permanently**: the failed model is not used again for that task (`llm.stickyFailover`).
 - **When the connection drops** requests are retried with exponential backoff. If every model is down, Kurultay waits up to 10 minutes and tries again (circuit breakers are reset).
-- **When the context overflows** the request is routed to models whose window fits the prompt. In long runs the condenser first trims old tool output, then turns the history into a structured hand-over note (goal / done / decisions / files / next steps), updated incrementally on every condensation.
-- **When the server answers `429`/`503` + `Retry-After`** Kurultay waits as long as asked.
-- **Loop protection**: the same call with the same result warns on the 3rd time and stops the worker on the 5th. A-B-A-B ping-pong, long read-only exploration and consecutive failing calls are caught too.
-- **Safe editing**: an existing file must be read before it is overwritten or deleted. After an edit that did not match, the file must be re-read before the next edit. Bracket balance and JSON validity are checked after edits. CRLF line endings are preserved; Unicode differences such as smart quotes and dashes do not break matching; mistyped paths with a single match are corrected.
-- **Models that describe tool calls in prose** (e.g. "now I'll open it with read_file") are handled by a fast model that turns the text into real tool calls (toolshim).
-- **Servers without native tool calling**, or that reject the `tools` field, are switched to prompt-based tool calling automatically.
-- **Crash safety**: candidate changes are written to disk only inside the worker's sandbox copy; in-place mode is protected by a journal and the original files are restored on the next run if it was interrupted. Other workers always see the pristine content.
+- **When the server answers `429`/`503` + `Retry-After`** Kurultay waits as long as asked; `requestsPerMinute` spaces requests for rate-limited providers.
+- **When the context overflows** the request goes to a model whose window fits. In long runs old tool outputs are cleared first (60% of the window), then the middle of the conversation becomes a structured hand-over note (85%).
+- **Loop protection**: the same call with the same result warns on the 3rd time and stops the agent on the 5th. A-B-A-B ping-pong, long read-only exploration and consecutive failing calls are caught too.
+- **Safe editing**: an existing file must be read before it is overwritten or deleted, and re-read after an edit that did not match. Bracket balance and JSON validity are checked after edits. CRLF line endings are preserved; smart quotes and dashes do not break matching; mistyped paths with a single match are corrected.
+- **Models that describe tool calls in prose** are handled by a fast model that turns the text into real tool calls (toolshim). Servers without native tool calling, or that reject the `tools` field, are switched to prompt-based tool calling automatically.
+- **Crash safety**: changes live in an overlay and in sandbox copies until the final merge; in-place mode is protected by a journal and the original files are restored on the next run if it was interrupted.
 - **Your changes are kept**: if you edited a file while the agent was working, the result is merged 3-way. Conflicts get git-style markers and are listed in the report.
-- **Truncated answers** (`finish_reason=length`): when JSON or a tool call was cut off it is requested once more with a larger `max_tokens`; plain-text answers are continued where they stopped (at most 2 rounds). Reasoning models get a larger output budget by default.
-- **Context budget per model**: every prompt is built for the context window of the model that will read it; a small model in the fleet does not shrink the context of the 128K models.
+- **Truncated answers** (`finish_reason=length`): cut-off JSON or tool calls are requested once more with a larger `max_tokens`; plain text is continued where it stopped.
 
-### Quality: evidence, measurement and learning
+### Quality and speed
 
-| Feature | What it does |
+| Feature | What it does | Setting |
+|---|---|---|
+| **Compiler check after every edit** | C/C++: `-fsyntax-only` with the flags from `compile_commands.json` (headers through a translation unit that includes them). Java: `javac -sourcepath` (`tools.javaRelease: 8` enforces the Java 8 API). **LSP** diagnostics first when configured (clangd, jdtls…). Only real errors in the edited file are fed back | `tools.syntaxCheck`, `lsp` |
+| **Test first** | Bugs are reproduced with a failing test first, every change leaves tests behind, existing tests are never weakened | `orchestrator.testFirst` |
+| **Definitions in words** | A value the task only describes (a count, a size, what a getter returns) gets its most natural reading, pinned in a test with concrete numbers | – |
+| **Isolated builds** | Build/test commands run in a copy under `.kurultay/sandboxes/sb-N` (copy-on-write clone, `node_modules` linked); the real project only changes at the merge | `tools.isolation`, `tools.sandbox` |
+| **Read-ahead** | Models with a 64K+ window get up to 800 lines per `read_file` (a whole file instead of 100-line pieces), and every read names where the functions and types the code uses are defined elsewhere | `tools.readWindow`, `tools.readAhead` |
+| **Few round-trips** | The agent is told to call independent tools in one step; the context lists the files of projects up to 300 files | – |
+| **Long tool output to a file** | Output over 8000 characters is saved under `.kurultay/tool-output/`; the model sees the start, the end, the path and a sha256 and reads the part it needs | `tools.maxToolOutputChars` |
+| **Read cache** | Re-reading the same lines of an unchanged file returns a one-line note instead of the content | `tools.readCache` |
+| **Context ladder** | 60%: old tool outputs cleared (no model call); 85%: hand-off summary; above 100%: fewer recent turns kept | `llm.microcompactAt`, `llm.compactAt` |
+| **Real context windows** | Without a window reported by the server, well-known families get their published window (Kimi, Qwen3: 256K; GLM: 200K; DeepSeek, gpt-oss, Mistral Large, Gemma, Llama: 128K) once the probe's 32K test passed; a context-length error lowers it | `"contextWindow"` per model |
+| **Reasoning models** | At least 8K (up to 32K) output tokens; Kimi / DeepSeek / GLM / MiniMax get their `reasoning_content` back with their tool calls; short structured answers (summaries, toolshim) are asked without hidden thinking | `llm.quickStructured`, `"thinking"` per model |
+| **Publisher sampling settings** | Known families get their recommended sampling (Qwen3-Coder `0.7 / 0.8 / top_k 20 / 1.05`, Devstral `0.15`, gpt-oss `1.0 / 1.0` …); hybrid Qwen3 gets `/no_think`. Servers that reject `top_k`/`min_p` are asked again without them | `llm.samplingPresets`, `"preset"` per model |
+| **Edit format per model** | The probe measures `edit_file`, SEARCH/REPLACE and whole-file editing; the agent uses the best one | `tools.editFormat` |
+| **Silent context cuts** | A server that cuts the prompt without an error (Ollama's `/v1`, 4K by default) is measured at its real size and you get the fix | – |
+| **MCP tools trimmed** | When MCP tool declarations would take more than 1500 tokens per request, the model gets `mcp_describe` and `mcp_call` with a one-line list instead | `tools.mcpToolBudgetTokens` |
+| **Learning from outcomes** | Success/failure per role (`~/.kurultay/model-stats.json`) is blended with the probe score | – |
+| **Semantic search** | With an embedding model (bge, e5, nomic-embed, Qwen3-Embedding…) search fuses BM25 and cosine similarity with RRF | `embeddings` |
+| **Fine-tuning data** | Every verified task saves its conversation (`sessions/<id>/trajectories.jsonl`, OpenAI chat format with tools); `kurultay trajectories` collects them for LoRA training | `orchestrator.saveTrajectories` |
+| **Where the time went** | Every `REPORT.md` has a "Time" table and a per-model table of requests / tokens / latency / errors / failovers; `kurultay stats` and `/stats` | – |
+| **Evaluation harness** | `kurultay eval <suite>` runs every task in a fresh copy and adds hidden tests afterwards; `--repeat N` gives pass@k and pass^k; `--score <folder>` grades another agent's work with the same tests | – |
+
+### Several models at once (opt-in)
+
+`--mode multi` (in the console `/mode multi`, in the configuration `orchestrator.defaultMode: "multi"`) brings back the multi-model flow of earlier versions. `race`, `council` and `split` choose one of its parts directly; `single` is the same as `auto`.
+
+| Mode | What happens |
 |---|---|
-| **Isolated parallel builds** | Each worker's build/test commands run in its own copy under `.kurultay/sandboxes/sb-N` (copy-on-write clone, `node_modules` linked); the real project only changes at the final merge. `tools.isolation: "inplace"` restores the old behaviour |
-| **Compiler check after every edit** | C/C++: `-fsyntax-only` with the flags from `compile_commands.json` (headers through a translation unit that includes them; missing headers are replaced by empty stubs). Java: `javac -sourcepath` (`tools.javaRelease: 8` enforces the Java 8 API). When configured, **LSP** diagnostics come first (clangd, jdtls…). Only real errors in the edited file are fed back to the model |
-| **Test first** | The worker prompt asks to reproduce bugs with a failing test first, to leave tests behind for every change and never to weaken existing tests (`orchestrator.testFirst: false` turns it off) |
-| **Constrained JSON** | Plan, review, judge and summary requests use `response_format: json_schema` (constrained decoding in vLLM/llama.cpp/SGLang). Servers without support fall back to `json_object` automatically |
-| **Model choice that learns from outcomes** | Success/failure per role (`~/.kurultay/model-stats.json`) is blended with the probe score; a model that keeps failing moves down for that role |
-| **Semantic search** | If an endpoint serves an embedding model (bge, e5, nomic-embed, Qwen3-Embedding…) code chunks are embedded incrementally and search fuses BM25 and cosine similarity with **RRF**: "where is the temperature limit checked?" finds the `MAX_TEMPERATURE` code |
-| **Evaluation harness** | `kurultay eval <suite>` runs every task in a fresh copy and adds hidden tests once the agent is done; success, requests, tokens and time per mode go to `EVAL.md` / `results.json`. `--validate` checks that each task fails on the base project and passes with the reference solution |
-| **Observability** | `REPORT.md` has a per-model table of requests / input-output tokens / mean latency / errors / truncations; `kurultay stats` and `/stats` in the console |
+| `multi` | Planning first (short tasks skip it); one subtask → **race**, several → **split** |
+| `race` | `raceWidth` candidates (the best models, sampled again when there are fewer) solve the same subtask in separate sandboxes. With build/tests the main model tries alone first and the race starts only when it fails (`cascade`). Candidates are ranked by build/test results, their rivals' reproducing tests and an anonymous review; once one passes, the others get 15% of its time |
+| `council` | race + a full council review (`councilSize` reviewers) every time, three plan drafts |
+| `split` | Independent subtasks run on different models at the same time; subtasks that edit the same file run one after the other |
 
-### Getting more out of weak local models
-
-Each measure below comes from an open-source project that measured it; none of them needs a new model.
-
-| Measure | What Kurultay does | Evidence |
-|---|---|---|
-| **Publisher sampling settings** | Known families get the settings their publishers recommend: Qwen3-Coder `temperature 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05`; Qwen3 / Qwen3-2507 Instruct and Thinking; Devstral `0.15`; gpt-oss `1.0 / 1.0`. Used for agent steps and the probe's benchmarks; structured calls keep a low temperature. A model's own `temperature`/`extraBody` wins; `llm.samplingPresets: false` or `"preset": false` per model turns it off. Servers that reject `top_k`/`min_p` are retried without them | Qwen, Mistral and OpenAI model cards |
-| **Thinking off for hybrid Qwen3** | Qwen3 hybrid models get the `/no_think` switch (`"thinking": true` per model keeps reasoning on) – long hidden reasoning makes slow local models time out | Qwen3 model card; [local aider bench](https://lostechies.com/erichexter/2026/06/03/local-llm-bench-part-4-harness-optimization/) |
-| **Edit format per model** | The probe measures three edit formats – `edit_file` tool call, SEARCH/REPLACE blocks, whole file – and the worker uses the best one (a whole-file model does not see `edit_file`). Shown as `edits` in `/models` and in CAPABILITIES.md; `tools.editFormat` forces one | aider: qwen3-coder:30b scored 0/100 with `diff` and 100/100 with `whole` |
-| **Silent context cuts** | The context test puts a code word at the start of the prompt and checks the server's prompt-token count: a server that cuts the prompt without an error (Ollama's `/v1` endpoint, 4K by default) is measured at its real size and you get a warning with the fix (`OLLAMA_CONTEXT_LENGTH` / Modelfile `num_ctx`) | aider: Qwen2.5-Coder-32B fell from 71.4% to 51.9% under Ollama's 2K default |
-| **Repeated sampling** | In race mode the candidate count is `raceWidth` even with fewer models: the best models are sampled again, the repeats with a freer temperature (`orchestrator.repeatModels: false` keeps one candidate per model) | Agentless (40 samples), SWE-Gym best@k: 20.6% → 32.0% from 1 to 16 samples |
-| **Selection by rival tests** | Every candidate's own test that FAILS on the original code is run against the other candidates; passing the rivals' tests weighs more than the council's vote. Shown as `rival tests: 2/2` in REPORT.md (`orchestrator.crossTest: false` turns it off) | Agentless: voting 77 → + regression tests 81 → + reproduction tests 96 solved; CodeMonkeys: selection is the bottleneck |
-| **Localisation first** | Before the workers start, one model picks the files, then the functions from a skeleton of those files; their code goes into every worker's prompt as `LIKELY EDIT LOCATIONS` (projects with 8+ files; `orchestrator.localize: false`) | Agentless hierarchical localisation; Chroma "Context Rot": focused prompts beat long ones on every model tested |
-| **Agent–computer interface** | `read_file` shows 100 lines per call (800 for models with a 64K+ window; `tools.readWindow`), silent commands answer "ran successfully and printed nothing", broken edits are rejected by the syntax/compiler check | SWE-agent ACI study |
-| **Failure counters** | Failed edits, replies without a tool call and loop-guard stops are counted per model (`/stats` "Problems", REPORT.md) – this shows which model fights the tool interface | aider's "well-formed edits" metric |
-| **Fine-tuning data** | Every verified task saves the winning conversation (`sessions/<id>/trajectories.jsonl`, OpenAI chat format with tools); `kurultay trajectories` collects them into one file for LoRA training with LLaMA-Factory, axolotl or Unsloth (`orchestrator.saveTrajectories: false`) | SWE-Gym: 491 trajectories took Qwen2.5-Coder-32B from 7.0% to 20.6%; SWE-smith: SWE-agent-LM-32B 40.2% |
-
-
-### Speed: no ceremony for small tasks
-
-The default is one agent like Qwen Code. The rows marked *(multi)* only apply with `--mode multi`:
-
-| Rule | What happens | Setting |
-|---|---|---|
-| **Fast path** *(multi)* | A short task whose localisation names up to six files skips the plan drafts and the plan judge and goes straight to the coders as one subtask (auto mode, no plan approval). The localisation is made once and reused | `orchestrator.fastPath`, `fastPathMaxFiles` |
-| **Cascade** *(multi)* | With build/tests, the main model tries alone first; when its change passes them that is the result (no race or review – what one agent costs). Only when it fails do the other candidates race | `orchestrator.cascade` |
-| **Hedged steps** | A worker step that takes 2.5× its model's usual time (at least 30 s) also goes to the best other coder **inside the speed band** (a hedge to a slower model would only add load); the first answer wins. After two late answers in a row the worker moves to the other model and the slow one is left out for 5 minutes | `llm.hedge`, `llm.hedgeMinMs` |
-| **No wait for the localisation** | Short tasks: the coders start at once with the repo map and the search hits; the localisation runs alongside and reaches them as a hint a few steps in | `orchestrator.parallelLocalize` |
-| **Read-ahead** | Models with a 64k+ window get up to 800 lines per read_file (a whole file instead of 100-line pieces), and every read names where the functions and types the code uses are defined elsewhere – the usual next lookup | `tools.readWindow`, `tools.readAhead` |
-| **Speed band** *(multi)* | A model more than 3× slower than the best one (probe speed, then the live average) stays out of the steps that wait for everyone – plan drafts, race, reviews, judges. A race then samples the fast model several times; after a candidate passes the build and tests the others get only 15% of its time. When the fast models fail the tests, the slower models join for the rest of the run (cascade) | `orchestrator.speedBand` (0 = off), `raceGraceVerified` |
-| **No waiting for the slowest model** *(multi)* | Plan drafts and council reviews go on once one model has answered; the others get half of that time (at least 30 s) and are then stopped. A model whose speed test failed in the probe is ranked last for every role | – |
-| **Real context windows** | Without a window reported by the server, well-known families get their published window (Kimi, Qwen3: 256k; GLM: 200k; DeepSeek, gpt-oss, Mistral Large, Gemma, Llama: 128k) once the probe's 32k test passed. A context-length error lowers the window and the step is retried after compaction | `"contextWindow"` per model |
-| **Reasoning models** | Thinking models get at least 8k (up to 32k) output tokens even for short structured answers, and Kimi / DeepSeek / GLM / MiniMax get their `reasoning_content` back with their tool calls (dropped if the server rejects it) | – |
-| **Todo list for requirements** | A task with 3+ requirements (list items, sentences) gives the coder a checklist it keeps with `todo_write` (pending / in_progress / completed / dropped with a reason), like Qwen Code's todo tool. `finish` is refused once while items are open, and the list goes into the hand-over notes after compaction – fast runs no longer skip rules hidden in a long task text | – |
-| **Few round-trips** | Workers are told to call independent tools in one step, and the context lists the files of projects up to 300 files. | – |
-| **Definitions in words** | Coders are told to pick the most natural reading of a value the task only describes (a count, a size, what a getter returns) and pin it in a test with concrete numbers | – |
-| **One plan by default** *(multi)* | Longer tasks get one plan from the best planner instead of three drafts and a judge (the C++ bench task spent over 4 minutes in the plan council). `council` mode keeps the council | `orchestrator.planDrafts` |
-| **Race only with checks** *(multi)* | Several candidates only help when build/tests can tell them apart. Without build/test commands auto mode runs one coder plus an independent reviewer | `verify.build`, `verify.test` |
-| **Small plans** *(multi)* | Test-only and check-only subtasks ("verify…", "edge cases…") are folded into the subtask whose code they test; subtasks that edit the same file run one after the other instead of in parallel | – |
-| **Fix rounds with progress only** *(multi)* | A second fix round runs only if the first one resolved something: a fixer that hit its step limit, or a re-review with the same blocking findings, ends the loop. Open findings go into the report | – |
-| **Race deadline** *(multi)* | Once one candidate is done (and passes build/tests, if there are any), the others get half of that time, at least 90 s; slower ones are stopped and not counted as failures | `orchestrator.raceGrace`, `raceGraceMinSeconds` |
-| **No hidden thinking for short JSON** | Plans, localisation and summaries ask reasoning models to answer without thinking (`chat_template_kwargs.enable_thinking: false` for Qwen3/GLM templates in vLLM, SGLang and llama.cpp; `reasoning_effort: low` for gpt-oss). Coding and reviews keep thinking. A server that rejects the field is asked again without it | `llm.quickStructured`, `"thinking": true` per model |
-| **Helpers stay helpers** *(multi)* | A `rolesOnly` helper is never picked as a reviewer just because the real models wrote the code under review | – |
-| **One main model** | The model named as `orchestrator.primaryModel` (or `"primary": true` per model) is the one agent's model; the others take over when it stops answering (with `--mode multi` they also race and review) | `orchestrator.primaryModel` |
-| **Where the time went** | Every REPORT.md has a "Time" table (planning, coding, waiting for slower candidates, cross-checks, fix rounds, rate-limit waits). When the multi-model work takes 25% or more of a run of 30 s or longer, the console and `kurultay run` print a separate warning with the breakdown | – |
-
-
-### Context and measurement (adopted from Qwen Code)
-
-| Measure | What Kurultay does | Setting |
-|---|---|---|
-| **Long tool output to a file** | Output longer than 8000 characters is saved in full under `.kurultay/tool-output/`; the model sees the start, the end, the file path and a sha256 of the whole output, and reads the part it needs with `read_file` (never part of the change) | `tools.maxToolOutputChars`, `tools.toolOutputPreviewChars` |
-| **Read cache** | Reading the same lines of an unchanged file again returns a one-line note pointing to the earlier output instead of the content; an edit, or an output removed by compaction, makes the next read show the content again | `tools.readCache` |
-| **Context ladder** | At 60% of the usable window old tool outputs are cleared (no model call); at 85% the middle of the conversation becomes a hand-off summary; above 100% the summary keeps fewer recent turns | `llm.microcompactAt`, `llm.compactAt` |
-| **Tool declarations measured and trimmed** | REPORT.md shows the average prompt makeup of a coding request (system prompt, tool declarations, task + project context, conversation). When MCP tools would take more than 1500 tokens per request, the model gets `mcp_describe` and `mcp_call` with a one-line list instead | `tools.mcpToolBudgetTokens` |
-| **Measurement discipline** | `kurultay eval --repeat N` reports the average score, pass@k (solved at least once) and pass^k (solved every time) per mode; every run is appended to `~/.kurultay/eval-history.jsonl` and `kurultay eval --history` compares versions. `kurultay eval <suite> --score <folder>` grades a folder another agent (Qwen Code, Aider, a person) worked on with the same hidden tests | – |
+In these modes a reviewer that did not write the code looks at the winner, blocking findings get up to two fix rounds, and models more than 3× slower than the best one stay out of the waiting steps (`orchestrator.speedBand`). The settings marked *(multi)* in the [configuration reference](#orchestrator) only matter here.
 
 ---
 
@@ -239,20 +204,18 @@ Applied to the project: 3 files written
 - **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/analyze` do it by hand).
 - **The capability probe runs once.** Its result is saved in `~/.kurultay/capabilities.json` and used by every project; later starts do not probe again. Only a model added to the configuration later is probed (on its own). `/probe` re-measures every model, `/probe <model>` one of them, `/probe --deep` measures more (bigger context, more parallel requests).
 - **Typing `/` opens the command menu**; it filters as you type, ↑/↓ selects, Tab/Enter runs. Command arguments (`/mode r` → `race`), `@file` and `$skill` complete too.
-- **Plain text**: a question (`where is …?`, `how does … work`, `explain …`; Turkish questions are recognised too) is answered by the models as a council and follow-up questions know the previous answers; a task is planned and distributed to all models, and you are asked before it is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
+- **Plain text**: a question (`where is …?`, `how does … work`, `explain …`; Turkish questions are recognised too) is answered by the models as a council and follow-up questions know the previous answers; a task goes to the agent, and you are asked before the result is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
 - A running job stops with **Ctrl+C** (half-done changes are rolled back). Whatever you typed meanwhile goes to the next prompt.
 - **UI**: answers and reports are rendered as Markdown (headings, lists, tables, highlighted code blocks). Below the prompt is a status line: git branch, mode, ready models, **tokens spent in this session and the context fill of the last answer**, session.
 - **Token and context tracking**: during long jobs the spinner shows elapsed time, LLM requests in flight, input/output tokens spent on this job and **the fullest context right now** (e.g. `context 62% (80K/128K)`). When the job ends a one-line summary is printed (`⟡ 18 requests · 16K in / 829 out tokens · peak context 11% (1.8K/16K) (model)`). `/stats` (or `/context`, `/tokens`) shows the session totals, the last answer's context as a bar, and a per-model table of requests / tokens / mean latency / **peak context fill** / errors; `/stats reset` clears the counters.
-- **Plan mode** (`/plan on`): the plan is shown before any code is written; Enter or `y` approves, `n` cancels, anything else you type makes the planners revise the plan with your feedback.
+- **Plan mode** (`/plan on`): a planner writes a plan first and shows it before any code is written; Enter or `y` approves, `n` cancels, anything else you type makes the planner revise it with your feedback.
 - **Budget and resume**: when `orchestrator.maxTokens` / `maxMinutes` runs out, the job stops without touching the project. An interrupted task (budget, Ctrl+C, crash) continues from the subtask where it stopped with `/continue-run`; finished subtasks are not run again.
 - **Output** is grouped by phase. Each phase starts with a heading line (`── Planning ────`, `── Coding`, `── Checks`, `── Apply`, `── Summary`) and one dim line saying what happens in it. A rule separates the output from the prompt. Retried requests (a dropped connection, a timeout that is retried) show as a dim `↻ … retrying` line instead of a warning. Tool calls, shell commands and single LLM requests only appear with `/verbose on`.
 - **Live activity**: while a job runs, the rows under the spinner say what is happening now and which model does what:
   ```
-  ⠧ Task · 2m 13s · 3 LLM requests running · 120K↑ 8K↓ tokens · Ctrl+C to cancel
-    now: T1: 2 candidates are coding in separate sandboxes
+  ⠧ Task · 2m 13s · 1 LLM request running · 120K↑ 8K↓ tokens · Ctrl+C to cancel
+    now: T1: the agent is coding in its sandbox
     T1-1  qwen3-coder-30b     editing CsvProductLoader.java · step 7
-    T1-2  gemma-4-31B-it      thinking (after reading CsvProductLoaderTest.java) · step 3
-          gpt-oss-120b        reviewing the candidates
   ```
 - **Old Windows consoles** (cmd.exe / PowerShell in conhost) cannot draw some symbols; Kurultay detects them and prints plain ASCII instead (`+` for ✓, `>` for →, …). Windows Terminal, VS Code and Git Bash get the Unicode version. Force it with `--ascii` or `KURULTAY_ASCII=1` (`=0` forces Unicode).
 - Main commands: `/models`, `/model add|remove`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
@@ -298,12 +261,12 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
 | `kurultay skills` | Lists the skills found and validates them against the specification. `skills new <name> --description "..."` creates a skill folder |
-| `kurultay run "<task>"` | `--mode auto\|single\|split\|race\|council`, `--req requirements.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui`, `--approve-plan`, `--max-tokens N`, `--max-minutes N` |
+| `kurultay run "<task>"` | `--mode auto\|single\|multi\|split\|race\|council` (default `auto`: one agent), `--req requirements.md`, `--skill a,b`, `--dry-run`, `--yes`, `--ui`, `--approve-plan`, `--max-tokens N`, `--max-minutes N` |
 | `kurultay run --resume [session]` | Continues an interrupted / out-of-budget task from the subtask where it stopped |
 | `kurultay eval <suite>` | Quality measurement with hidden tests: `--modes single,race,council`, `--tasks a,b`, `--repeat N`, `--out <dir>`, `--keep`, `--validate` |
 | `kurultay stats [--runs N]` | Per-model requests/tokens/time of the last tasks and the learned success rates |
 | `kurultay trajectories [--out file]` | Collects the conversations of verified tasks into one JSONL file for fine-tuning |
-| `kurultay ask "<question>"` | A question about the project; models answer separately, a chair model merges |
+| `kurultay ask "<question>"` | A question about the project; the models answer separately, a chair model merges |
 | `kurultay map [--tokens N] [--focus a,b]` | Repo map (Aider style) |
 | `kurultay search "<query>"` | Code search (BM25; BM25 + embeddings with RRF once vectors exist) |
 | `kurultay status` | Models, index and recent sessions |
@@ -312,95 +275,183 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 ## Configuration
 
-One server, one key, a list of model names – that is all most setups need (`~/.kurultay/config.json` for every project, or `kurultay.config.json` in a project):
+### Where the settings live
+
+| File | Used for |
+|---|---|
+| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names). `KURULTAY_HOME` moves the folder |
+| `<project>/kurultay.config.json` (or `<project>/.kurultay/config.json`) | Project settings: build/test commands, rules, tool options. **Without endpoints it extends the user file** – the project only carries what is its own. With endpoints it replaces the user file |
+| `--config <file>` | An explicit file (CI, the bench); the project's own file is still merged on top of it |
+
+The files are plain JSON (the `//` comments below are explanations only – leave them out). Any string can use environment variables: `"${JIRA_TOKEN}"` or `"${KURULTAY_API_KEY:-none}"` with a default, so keys and passwords need not be written into the file. `kurultay init` writes a project file with the build/test commands it guesses (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make).
+
+### The smallest configuration
+
+One server, one key, a list of model names:
 
 ```jsonc
 {
   "baseUrl": "http://10.0.0.11:8000/v1",
   "apiKey": "${KURULTAY_API_KEY}",
   "models": [
-    "qwen3-coder-30b-a3b",
+    "qwen3-coder-30b-a3b",                              // the first is not special – see primaryModel
     "gpt-oss-120b",
-    "devstral-small",
-    { "id": "glm-4.5-air", "apiKey": "another-key" }   // only this model uses its own key
+    { "id": "glm-4.5-air", "apiKey": "another-key" }    // a model with its own key
   ],
+  "orchestrator": { "primaryModel": "qwen3-coder-30b-a3b" },   // the agent's model; the others are its backup
   "verify": { "build": "cmake --build build -j", "test": "ctest --test-dir build" }
 }
 ```
 
-Every model uses the main `apiKey` unless it has its own. In the console `/model add <name> [apiKey]` and `/model remove <name>` edit the list. Short example: [`examples/kurultay.config.simple.json`](examples/kurultay.config.simple.json).
+- **`primaryModel`** picks the model the agent works with. Without it the model with the best coder score from the probe is used. The other models only take over when it stops answering (and do the analysis and `ask` in parallel).
+- **`verify`** matters most: the build and tests are what decide whether a task is done. Without them the result is applied unchecked and you get a warning.
+- In the console `/model add <name> [apiKey]`, `/model remove <name>`, `/endpoint add|remove` and `/llm set …` edit the user file. Examples: [`examples/kurultay.config.simple.json`](examples/kurultay.config.simple.json), [`examples/kurultay.config.full.json`](examples/kurultay.config.full.json).
 
-### Helper model (light work only)
-
-A small extra model – for example one running on the PC itself with llama.cpp, LM Studio or Ollama – can take the light work so the big models stay free for coding:
-
-```jsonc
-{
-  "baseUrl": "http://10.0.0.11:8000/v1",
-  "apiKey": "${KURULTAY_API_KEY}",
-  "models": ["qwen3-coder-30b", "gpt-oss-120b"],
-  "helper": {
-    "baseUrl": "http://127.0.0.1:8080/v1",          // apiKey defaults to "none"
-    "models": ["qwen2.5-coder-1.5b-instruct"],
-    "roles": ["fast", "summarizer"]                  // the default
-  }
-}
-```
-
-Helper models are only used for their roles – `summarizer` (file/module summaries, flow pages during the analysis) and `fast` (context compaction, turning a prose reply into a tool call). They never write code, plan, review or judge, except as a last resort when no other model is reachable. The same switch exists per model (`"rolesOnly": true` next to `"roles"`) and per endpoint (`"roles"`, `"rolesOnly"`). The helper is probed like every other model; compare its `tok/s` in `/models` with the main models.
-
-Several servers use the `endpoints` list instead (it can also be added next to `baseUrl`). Full example: [`examples/kurultay.config.full.json`](examples/kurultay.config.full.json)
+### Several servers and a helper model
 
 ```jsonc
 {
   "endpoints": [
     { "name": "gpu1", "baseUrl": "http://10.0.0.11:8000/v1", "apiKey": "${GPU1_API_KEY}" },
-    { "name": "ollama", "baseUrl": "http://127.0.0.1:11434/v1", "apiKey": "ollama", "models": ["qwen2.5-coder:14b"] }
+    { "name": "gpu2", "baseUrl": "http://10.0.0.12:8000/v1", "apiKey": "${GPU2_API_KEY}", "models": ["gpt-oss-120b"] }
   ],
-  "models": { "gpt-oss-120b@gpu1": { "roles": ["planner", "judge"] } },   // optional role pinning
-  "verify": { "build": "cmake --build build -j", "test": "ctest --test-dir build" },
-  "orchestrator": { "defaultMode": "auto", "raceWidth": 3, "councilSize": 3, "maxIterations": 4, "confirmMerge": true }
+  "helper": {                                          // a small model, e.g. llama.cpp on this PC
+    "baseUrl": "http://127.0.0.1:8080/v1",             // apiKey defaults to "none"
+    "models": ["qwen2.5-coder-1.5b-instruct"],
+    "roles": ["fast", "summarizer"]                    // the default
+  },
+  "models": { "qwen3-coder-30b@gpu1": { "primary": true } }
 }
 ```
 
-- When `models` is empty the list is discovered with `GET /models`. Embedding and reranker models are filtered out automatically.
-- With `maxConcurrency: 0` (or unset) the probe decides the endpoint's concurrency limit – Kurultay has no fixed cap of its own. Set a number only when the server or the provider plan needs one.
-- `requestsPerMinute` per endpoint: for providers that limit requests per minute (NVIDIA NIM free tier: 40). Requests wait for the limit instead of failing with 429; endpoints with the same `baseUrl` and `apiKey` share one limit. The waits show up in REPORT.md "Time".
-- `apiKey` accepts `${ENV_VAR:-default}`.
-- Timeouts live in the `llm` section; the same fields (`timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs`) can also be set per endpoint or model:
+A model is addressed as `name@endpoint` (or just `name` when it is unique). An endpoint without `models` lists its models with `GET /models`; embedding and reranker models are left out of the coding work automatically. Helper models only do their roles – `summarizer` (summaries during the analysis) and `fast` (context compaction, turning a prose reply into a tool call); they never write code unless no other model is reachable.
 
-```jsonc
-"llm": {
-  "firstTokenTimeoutMs": 180000,  // time allowed until the first token (0 = off)
-  "prefillMsPerToken": 2,         // extra time per prompt token for long prompts
-  "idleTimeoutMs": 90000,         // cut the stream after this much silence
-  "timeoutMs": 600000,            // upper limit for one request
-  "timeoutRetries": 0,            // how many more tries on a model that hung
-  "timeoutCooldownMs": 120000,    // quarantine of a model that hung (0 = off)
-  "stickyFailover": true          // a worker never goes back to a model that failed
-}
-```
+### Reference
 
-Other sections:
+Every field is optional unless marked *required*; the defaults are what Kurultay uses without the field.
 
-```jsonc
-"orchestrator": { "approvePlan": false, "maxTokens": 0, "maxMinutes": 0, "testFirst": true },
-"tools": {
-  "isolation": "sandbox",               // "inplace": commands run in the real tree, one at a time
-  "sandbox": { "size": 4 },
-  "syntaxCheck": "auto",                // "off" or {".py": "python -m py_compile {file}"}
-  "javaRelease": 8,                      // javac --release 8 for Java 8 projects
-  "commandPolicy": "deny",              // "allow": only allow-listed commands (extend with allowPatterns)
-  "scrubEnv": true,                      // *KEY*, *TOKEN*, *SECRET*, *PASSWORD* variables are not passed to model commands
-  "osSandbox": "off"                     // "auto"/"bwrap": bubblewrap on Linux — read-only system, no network
-},
-"embeddings": { "mode": "auto" },       // or { "endpoint": "gpu1", "model": "bge-m3" }
-"mcp": { "servers": { "jira": { "command": "node", "args": ["jira-mcp.js"], "readOnlyTools": ["search"] } } },
-"lsp": { "servers": { "clangd": { "command": "clangd", "extensions": [".c", ".cpp", ".h", ".hpp"] } } }
-```
+#### Endpoints (`endpoints[]`, or the top-level `baseUrl` / `apiKey` / `models`)
 
-- **MCP**: tools of stdio MCP servers are offered to the workers as `mcp__<server>__<tool>`; read-only ones (`readOnlyHint` or `readOnlyTools`) are also available to reviewers. `/mcp` in the console.
-- **LSP**: the configured language server starts once per project and its diagnostics are collected after every edit; if it cannot start, the compiler check takes over.
+| Field | Default | Meaning |
+|---|---|---|
+| `name` | `main` | Short unique name, the part after `@` in model keys |
+| `baseUrl` | *required* | OpenAI-compatible base URL, e.g. `http://10.0.0.11:8000/v1` (vLLM, llama.cpp, Ollama, LM Studio, TGI, LiteLLM, SGLang) |
+| `apiKey` | – | Sent as `Authorization: Bearer …`; local servers often accept any value |
+| `models` | discovered | Model ids to use; strings or `{ "id": …, "apiKey": … }` |
+| `maxConcurrency` | probe decides | Most requests at the same time for this server (shared by its models). Set it only when the server or the provider plan needs a cap |
+| `requestsPerMinute` | no limit | Requests are spaced to stay under a provider limit (NVIDIA NIM free tier: 40); servers with the same URL and key share it |
+| `timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs` | from `llm` | Watchdog times for this server |
+| `headers` | – | Extra HTTP headers |
+| `roles`, `rolesOnly` | – | Default roles for its models; `rolesOnly: true` limits them to those roles (what `helper` sets) |
+| `disabled` | `false` | Keep the entry but do not use it |
+
+#### Models (`models` – a map keyed by `name@endpoint` or `name`)
+
+| Field | Default | Meaning |
+|---|---|---|
+| `primary` | `false` | The agent's model (same as `orchestrator.primaryModel`) |
+| `apiKey` | the endpoint's | Key for this model only |
+| `contextWindow` | probe / server / model family | Context size in tokens (when the server reports none and the family is unknown) |
+| `maxOutputTokens` | model dependent | Upper limit for one answer |
+| `nativeTools` | probe | Force native tool calling on or off (off = `<tool_call>` text protocol) |
+| `roles` | probe scores | Pin roles: `planner`, `coder`, `summarizer`, `reviewer`, `judge` (plan merge, architecture drafts), `fast` |
+| `rolesOnly` | `false` | Use the model only for its `roles` |
+| `temperature` | publisher preset or 0.2 | Sampling temperature for agent steps |
+| `preset` | `true` | `false` = do not apply the publisher's recommended sampling |
+| `thinking` | model dependent | Hybrid reasoning models (Qwen3): `true` keeps hidden reasoning on; otherwise `/no_think` is added |
+| `extraBody` | – | Fields merged into every request body, e.g. `{"top_k": 20}` |
+| `timeoutMs`, `firstTokenTimeoutMs`, `idleTimeoutMs` | from the endpoint / `llm` | Watchdog times for this model |
+| `disabled` | `false` | Leave the model out |
+
+#### `llm` – requests, watchdogs, failover
+
+| Field | Default | Meaning |
+|---|---|---|
+| `firstTokenTimeoutMs` | `180000` | No first token (text, reasoning or tool call) within this time → the model counts as not answering (0 = off) |
+| `prefillMsPerToken` | `2` | Extra first-token time per prompt token (long prompts need prefill time) |
+| `idleTimeoutMs` | `90000` | The stream is cut after this much silence (0 = off) |
+| `timeoutMs` | `600000` | Upper limit for one request |
+| `timeoutRetries` | `0` | Further tries on the same model after a timeout before failing over |
+| `timeoutCooldownMs` | `120000` | Quarantine of a model that timed out (doubles on repeats, at most ×8; 0 = off) |
+| `stickyFailover` | `true` | The agent never goes back to a model that failed during the task |
+| `hedge` | `true` | A step that takes 2.5× the model's usual time is also sent to a similar-speed model; the first answer wins, two late answers move the agent to the other model |
+| `hedgeMinMs` | `30000` | Never hedge before this (2 min before the first measured step) |
+| `samplingPresets` | `true` | Publisher sampling settings for known model families |
+| `quickStructured` | `true` | Short structured answers (summaries, plans, localisation) are asked without hidden thinking |
+| `microcompactAt` | `0.6` | Share of the usable window at which old tool outputs are cleared |
+| `compactAt` | `0.85` | Share at which the middle of the conversation becomes a hand-off summary |
+
+#### `verify` – what decides that a task is done
+
+| Field | Default | Meaning |
+|---|---|---|
+| `build` | – | Build command, e.g. `cmake --build build -j`, `mvn -q -DskipTests package` |
+| `test` | – | Test command, e.g. `ctest --test-dir build --output-on-failure`, `mvn -q test` |
+| `lint` | – | Optional lint command |
+| `timeoutMs` | `900000` | Time limit of each command |
+
+The commands run in the project root of a sandbox copy. The agent is told to run them before it finishes; Kurultay runs them once more on the final result.
+
+#### `orchestrator`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `defaultMode` | `auto` | `auto` / `single`: one agent, one model at a time. `multi`, `race`, `council`, `split`: [several models at once](#several-models-at-once-opt-in) |
+| `primaryModel` | best coder | Model id or key of the agent's model |
+| `maxIterations` | `4` | Most rounds per task, the first included; a round after the first gets the build/test failures |
+| `maxStepsPerWorker` | `40` | Tool-call steps of one agent run |
+| `maxConsecutiveErrors` | `6` | Stop an agent after this many failing tool calls in a row |
+| `testFirst` | `true` | Reproduce bugs with a failing test first, leave tests behind |
+| `confirmMerge` | `false` | `kurultay run` asks before applying (the console always asks unless `/auto-apply on`) |
+| `approvePlan` | `false` | Show a plan and wait for approval or feedback before any code is written (`--approve-plan`, `/plan on`) |
+| `maxTokens`, `maxMinutes` | `0` (no limit) | Budget of a run; when it runs out the run stops and can be continued with `run --resume` / `/continue-run` |
+| `saveTrajectories` | `true` | Keep the conversation of verified tasks as fine-tuning data |
+| `localize` *(multi)* | `true` | Narrow the code down to files and functions before the coders start |
+| `parallelLocalize`, `fastPath`, `fastPathMaxFiles` *(multi)* | `true`, `true`, `6` | Short tasks skip planning; the localisation runs alongside the coders |
+| `planDrafts` *(multi)* | `1` | Plan drafts per plan (council mode: 3) |
+| `raceWidth`, `repeatModels` *(multi)* | `3`, `true` | Candidates in a race; sample the best models again when there are fewer |
+| `cascade` *(multi)* | `true` | With build/tests the main model tries alone first; the race starts only when it fails |
+| `crossTest` *(multi)* | `true` | Run every candidate against its rivals' reproducing tests |
+| `councilSize` *(multi)* | `3` | Reviewers in council mode |
+| `speedBand` *(multi)* | `3` | Models this many times slower than the best stay out of waiting steps (0 = off) |
+| `raceGrace`, `raceGraceMinSeconds`, `raceGraceVerified`, `raceGraceVerifiedMinSeconds` *(multi)* | `0.5`, `90`, `0.15`, `15` | How long slower candidates may go on after the first one is done |
+
+#### `tools` – what the agent may do
+
+| Field | Default | Meaning |
+|---|---|---|
+| `allowCommands` | `true` | `false` disables shell commands entirely |
+| `commandTimeoutMs` | `600000` | Time limit of one command |
+| `commandPolicy` | `deny` | `deny`: refuse `denyPatterns`; `allow`: every `&&`/`|`/`;` segment must match the allow-list (`allowPatterns` extends it) |
+| `denyPatterns` | `rm -rf /`, `mkfs`, `dd if=`, fork bomb, `shutdown`, `reboot`, `git push`, `curl … \| sh` | Regexes of refused commands |
+| `scrubEnv`, `envPassthrough` | `true`, – | Variables that look secret (`*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*` …) are not passed to commands; list exceptions |
+| `osSandbox`, `osSandboxNetwork`, `osSandboxWritable` | `off`, `false`, – | Linux: `auto`/`bwrap` runs commands in bubblewrap – read-only system, only the sandbox copy and `/tmp` writable, no network |
+| `isolation` | `sandbox` | `sandbox`: commands run in per-agent copies (`sandbox.size`, `sandbox.exclude`, `sandbox.link`); `inplace`: in the real tree, one at a time (reuses existing build folders) |
+| `syntaxCheck` | `auto` | Compiler check after every edit (C/C++, Java); `off`, or a map like `{".py": "python -m py_compile {file}"}` |
+| `javaRelease` | – | `javac --release N` in the check (e.g. `8` for Java 8 projects) |
+| `requireReadBeforeEdit` | `true` | An existing file must be read before it is edited, overwritten or deleted |
+| `editFormat` | measured per model | Force `tool`, `search_replace` or `whole` |
+| `readWindow`, `readAhead` | `100` (`800` for 64K+ windows), `true` | Lines per `read_file`; name the definitions the shown code uses |
+| `maxToolOutputChars`, `toolOutputPreviewChars` | `8000`, `4000` | Longer output goes to `.kurultay/tool-output/`; the model sees this much of it |
+| `readCache` | `true` | Re-reads of unchanged lines return a short note |
+| `mcpToolBudgetTokens` | `1500` | Above this, MCP tools are offered through `mcp_describe` / `mcp_call` |
+
+#### `index`, `embeddings`, `skills`, `mcp`, `lsp`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `index.include`, `index.exclude` | all tracked files, minus build folders | Glob patterns of files to index |
+| `index.maxFileBytes` | `524288` | Larger files are not indexed |
+| `index.repoMapTokens` | `2048` | Size of the repo map in the agent's context |
+| `index.summaryLanguage` | `en` | Language of the generated summaries and documents (`tr`/`en`) |
+| `embeddings.mode`, `endpoint`, `model` | `auto` | Use an embedding model when an endpoint lists one (`off`: BM25 only) |
+| `skills.paths`, `disabled`, `includeUser`, `maxPreload` | –, –, `true`, `3` | Extra skill folders, skills to ignore, read `~/.agents/skills` etc., most skills preloaded per agent |
+| `mcp.servers` | – | stdio MCP servers: `{"jira": {"command": "node", "args": ["jira-mcp.js"], "readOnlyTools": ["search"]}}`; their tools appear as `mcp__<server>__<tool>` |
+| `lsp.servers` | – | `{"clangd": {"command": "clangd", "extensions": [".c", ".cpp", ".h", ".hpp"]}}`; diagnostics after every edit, the compiler check takes over when it cannot start |
+| `language` | `en` | Console language |
+| `stateDir` | `.kurultay` | Per-project state folder (never committed: it is added to `.git/info/exclude`) |
+
+`jira` and `gitlab` are described in [Jira → merge request](#jira--merge-request).
 
 ## Jira → merge request
 
@@ -462,7 +513,7 @@ swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
 
 Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
 
-## Bench: Kurultay vs Qwen Code (GitHub, Z.AI GLM + free NVIDIA NIM models)
+## Bench: Kurultay vs Qwen Code
 
 The `bench` workflow (Actions → bench, and automatically after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with Kurultay and Qwen Code and scores them with the same hidden tests. Secrets: `ZAI_API_KEY` (Z.AI GLM, the main model) and `NVIDIA_API_KEY` (free key from build.nvidia.com, the second model family). The repository variable `ZAI_BASE_URL` selects the Z.AI endpoint (default `https://api.z.ai/api/paas/v4`; the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`). Without `ZAI_API_KEY` a NIM model is the main model.
 
@@ -478,7 +529,7 @@ Workflow inputs:
 | `quick` | One small C++ and one small Java task, 5 minutes per agent (about 20 minutes in all) – checks the setup before a full run |
 | `fault` = `hang` / `error`, `fault_after` | Fault test: a proxy makes the main model stop answering (or answer 503) after N requests in every run. Kurultay has its other models; Qwen Code gets `--fallback-model` with a second GLM model, so both sides have a backup |
 | `repeat` | Runs every task N times (rows `K3-iade #1`, `#2` …) to tell flaky results from real ones |
-| `agents` | `kurultay,qwen` by default; `solo` adds Kurultay with the main model alone (only useful with `mode: multi` in the config) |
+| `agents` | `kurultay,qwen` by default; `solo` adds Kurultay with the main model alone and no backup models |
 | `minutes`, `tasks`, `model`, `second` | Wall-clock budget per agent and task (default 20), task subset, model overrides |
 
 For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget, and the run order is rotated per task. The table reports time, requests, tokens and rate-limit waits; the log shows the models used, the project's own checks and the failing lines of the hidden tests. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen [--quick] [--fault hang --fault-after 6] [--repeat 2]`.
@@ -489,7 +540,7 @@ For a fair speed comparison every agent gets a fresh copy of the project, the sa
 |---|---|
 | `.kurultay/rules/*.md` | Rules given to every worker. With `applies_to: "*.java"` (or `globs: ["*.c", "*.h"]`) in the front matter they only apply to matching files |
 | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` | Other agents' rule files are read as they are. An `AGENTS.md`/`CLAUDE.md` in a subfolder only applies to files in that folder |
-| `review_rules.md` or `.kurultay/review_rules.md` | Mandatory rules in council reviews |
+| `review_rules.md` or `.kurultay/review_rules.md` | Mandatory rules for the reviewers of `--mode multi` |
 | `.kurultay/PROJECT_NOTES.md` | Generated by `analyze`, editable by hand: commands, code conventions, completion checklist, pitfalls. Added to the context of every task |
 
 ### Skills ([Agent Skills](https://agentskills.io) compatible)
@@ -516,7 +567,7 @@ paths: ["src/drivers/**"]         # suggested only while working on these files
 
 - **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, `~/.agents/skills` and `~/.claude/skills` in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
 - **Progressive loading**: models first get only a list of names + descriptions; when needed a model opens the body with the `skill` tool and extra files with `skill_file`. Context is not wasted on small local models.
-- **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills the planner assigned to the subtask. Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.
+- **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills a planner assigned to the subtask (`--mode multi`). Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.
 - **Report**: which worker used which skill and why is listed in `REPORT.md`. `kurultay skills` validates the name/description rules.
 
 Which idea came from which open-source agent, with notes from the code-level study, is in [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) (Turkish).
@@ -572,7 +623,7 @@ kurultay eval samples/evals/cpp-telemetri --validate
 - **No IDE plug-in** (VS Code/JetBrains). Kurultay works as a terminal console, CLI, web dashboard and library; IDE integration was deliberately left out of scope.
 - The MCP client supports only the stdio transport and tools (`tools/*`); no resources, prompts or HTTP transport.
 - OS-level command isolation (bubblewrap) is Linux-only; on Windows/macOS sandbox copies + the command policy are used.
-- With local models, quality is bounded by the models themselves. Kurultay's race + test + council approach filters out the mistakes of a single weak model, but if no model can solve the task the result is `incomplete` and the report lists what is missing. Measure which mode works best with your models with `kurultay eval`.
+- With local models, quality is bounded by the models themselves: Kurultay keeps the work going and checks it with your build and tests, but it cannot make a weak model solve a task it cannot solve. A red result is `incomplete` and the report shows the failing checks. `kurultay eval` measures your models (and `--mode multi` against the default) on your own task suites.
 
 ## Development and tests
 
