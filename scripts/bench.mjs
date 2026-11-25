@@ -198,7 +198,7 @@ async function main() {
           console.log(`\n== ${key === 'solo' ? 'Kurultay (main model only)' : 'Kurultay'} · ${name}/${t.id}`);
           const config = key === 'solo' ? String(f['solo-config']) : kurultayConfig;
           proxy?.reset?.();
-          const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, outDir: join(out, `${key}-${name}-${tag}`), onProgress: (l) => console.log(l) });
+          const k = await evalMod.runEval({ suiteDir, tasks: [t.id], modes: ['auto'], config, runTimeoutSec: minutes * 60, keepFailed: true, outDir: join(out, `${key}-${name}-${tag}`), onProgress: (l) => console.log(l) });
           row[key] = kurultayResult(k.summary.attempts.find((x) => x.task === t.id));
           if (row[key]?.timing) console.log(timingLine(row[key].timing));
           const att = k.summary.attempts.find((x) => x.task === t.id);
@@ -208,7 +208,7 @@ async function main() {
             console.log(`   project's own checks: ${att.ownChecks ?? '?'} · acceptance judge: ${j ? (j.ran.length ? `${j.ran.join(', ')} → ${j.complete ? 'complete' : `missing: ${j.missing.join(' | ').slice(0, 300)}`}` : 'skipped') : '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
           }
           // a failed run: which hidden tests failed and why (the end of the check output)
-          if (att && !att.passed) console.log(`   hidden tests (last lines):\n${att.checkOutput.split('\n').filter((l) => l.trim()).slice(-25).map((l) => `     | ${l}`).join('\n')}`);
+          if (att && !att.passed) console.log(`   hidden tests (failures first, then the last lines):\n${evalMod.failureLines(att.checkOutput).split('\n').map((l) => `     | ${l}`).join('\n')}`);
           continue;
         }
         const work = join(out, `qwen-${name}`, tag);
@@ -228,7 +228,7 @@ async function main() {
         const score = await evalMod.scoreFolder({ suiteDir, dir: work, tasks: [t.id] });
         row.qwen = { passed: score[0].passed, seconds, requests: s.requests, tokens: s.tokens, exit: r.status };
         console.log(`${row.qwen.passed ? '✓' : '✗'} ${t.id} · ${seconds.toFixed(0)} s · ${s.requests} requests · exit ${r.status}`);
-        if (!row.qwen.passed) console.log(`   hidden tests (last lines):\n${String(score[0].output ?? '').split('\n').filter((l) => l.trim()).slice(-25).map((l) => `     | ${l}`).join('\n')}`);
+        if (!row.qwen.passed) console.log(`   hidden tests (failures first, then the last lines):\n${evalMod.failureLines(String(score[0].output ?? '')).split('\n').map((l) => `     | ${l}`).join('\n')}`);
       }
       if (stopped && !Object.keys(row).some((k) => keys.includes(k))) bench.tasks.pop();
       // partial results survive a cancelled job

@@ -174,6 +174,8 @@ export interface EvalOptions {
   /** only check that every task fails on the base project and passes with its reference solution */
   validate?: boolean;
   keepWork?: boolean;
+  /** keep the work copy of failed attempts (without build output and sandboxes): the change, REPORT.md and events.jsonl of the session */
+  keepFailed?: boolean;
   onProgress?: (line: string) => void;
   signal?: AbortSignal;
   /** Kurultay version, recorded with the results */
@@ -301,7 +303,10 @@ export async function runEval(opts: EvalOptions): Promise<{ summary: EvalSummary
         attempts.push(await runAttempt(opts, suite, task, mode, rep, work));
         const a = attempts[attempts.length - 1];
         opts.onProgress?.(`${a.passed ? '✓' : '✗'} ${task.id} [${mode}${(opts.repeat ?? 1) > 1 ? ` #${rep}` : ''}] ${a.status} · ${a.seconds.toFixed(1)} s · ${a.requests} req · ${a.tokensIn + a.tokensOut} tokens${a.error ? ` · ${a.error}` : ''}`);
-        if (!opts.keepWork) rmSync(work, { recursive: true, force: true });
+        if (opts.keepWork) continue;
+        if (opts.keepFailed && !a.passed) {
+          for (const d of ['build', '.build', 'out', 'target', join('.kurultay', 'sandboxes'), join('.kurultay', 'index')]) rmSync(join(work, d), { recursive: true, force: true });
+        } else rmSync(work, { recursive: true, force: true });
       }
     }
   }
@@ -412,7 +417,19 @@ export function renderEval(s: EvalSummary): string {
   const failed = s.attempts.filter((a) => !a.passed);
   if (failed.length) {
     lines.push('## Check output of failed attempts (last lines)', '');
-    for (const a of failed) lines.push(`### ${a.task} [${a.mode}]`, '', '```', a.checkOutput.split('\n').slice(-15).join('\n'), '```', '');
+    for (const a of failed) lines.push(`### ${a.task} [${a.mode}]`, '', '```', failureLines(a.checkOutput, 15), '```', '');
   }
   return lines.join('\n');
+}
+
+/**
+ * The lines of a check output that say what failed – failed assertions and compiler errors
+ * first (they are often far above the end), then the end of the output.
+ */
+export function failureLines(output: string, tail = 25): string {
+  const lines = output.split('\n').filter((l) => l.trim());
+  const bad = /\[(?:HATA|FAIL(?:ED)?|ERROR)\]|^\s*(?:FAIL|FAILED)\b|\berror[:[]|Assertion|AssertionError|expected .* but|beklenen .* ama|Exception in thread|^\s*at .+\(.+:\d+\)$|runtime error:|AddressSanitizer/i;
+  const hits = lines.filter((l) => bad.test(l) && !/tests? failed out of|Errors while running CTest|The following tests FAILED/i.test(l)).slice(0, 20);
+  const end = lines.slice(-tail).filter((l) => !hits.includes(l));
+  return [...hits, ...(hits.length ? ['…'] : []), ...end].join('\n');
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { appendHistory, loadSuite, modeStats, readHistory, renderEval, renderHistory, runEval, scoreFolder, validateSuite, type EvalAttempt } from '../../src/eval/eval.js';
+import { appendHistory, failureLines, loadSuite, modeStats, readHistory, renderEval, renderHistory, runEval, scoreFolder, validateSuite, type EvalAttempt } from '../../src/eval/eval.js';
 import { DEFAULT_MOCK_MODELS, startMockServer, type MockServerHandle } from '../../src/mock/server.js';
 import { CLAMP_PROJECT, tmpProject } from '../helpers.js';
 
@@ -94,6 +94,9 @@ describe('evaluation harness', () => {
     assert.ok(existsSync(summary.attempts[0].workDir), '--keep keeps the work copy');
     assert.ok(!existsSync(join(summary.attempts[0].workDir, 'build')) && !existsSync(join(summary.attempts[0].workDir, '.build')), 'stale build outputs are not copied');
     assert.ok(existsSync(join(summary.attempts[0].workDir, 'src', 'build', 'keep.js')), 'only top-level build dirs are skipped');
+    const kept = await runEval({ suiteDir: dir, tasks: ['clamp'], config: dead, outDir: join(dir, 'o3'), keepFailed: true });
+    assert.ok(existsSync(join(kept.summary.attempts[0].workDir, 'src')), 'keepFailed keeps a failed work copy');
+    assert.ok(!existsSync(join(kept.summary.attempts[0].workDir, 'build')), '… without build output');
     await assert.rejects(runEval({ suiteDir: dir, tasks: ['nope'], config: dead }), /no task selected/);
     assert.throws(() => loadSuite(tmpProject({})), /suite.json not found/);
     assert.throws(() => loadSuite(tmpProject({ 'suite.json': '{"name":"x","project":"p","tasks":[]}' })), /at least one task/);
@@ -102,6 +105,15 @@ describe('evaluation harness', () => {
     assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a","prompt":"b"},{"id":"a","prompt":"c"}]}' })), /duplicate task id/);
     assert.throws(() => loadSuite(tmpProject({ 'p/a': '', 'suite.json': '{"name":"x","project":"p","check":"c","tasks":[{"id":"a"}]}' })), /needs an id and a prompt/);
     assert.match(renderEval({ suite: 's', startedAt: 'a', finishedAt: 'b', attempts: [], byMode: {} }), /# Kurultay evaluation: s/);
+  });
+
+  it('failure lines come first, then the end of the output', () => {
+    const out = ['Test project', '  [HATA] split_frames: t.cpp:34: CHECK_EQ(d.buffered(), 5u) beklenen 5 ama 4', ...Array.from({ length: 40 }, (_, i) => `  [OK]   test_${i}`), '0% tests passed, 1 tests failed out of 1', 'Errors while running CTest'].join('\n');
+    const lines = failureLines(out, 5).split('\n');
+    assert.match(lines[0], /\[HATA\] split_frames/);
+    assert.equal(lines[1], '…');
+    assert.equal(lines.length, 7);
+    assert.equal(failureLines('a\nb\nc', 2), 'b\nc');
   });
 
   it('pass@k and pass^k over trials, a history per version', () => {
