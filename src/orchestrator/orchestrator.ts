@@ -1095,7 +1095,13 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     // the judge that ran while the coder finished saw this very change: its verdict stands
     const ev = this.earlyVerdict;
     if (ev && ev.diff === diff && verify.ok && !verify.skipped && !reports.some((r) => r.openIssues?.length)) {
-      const r = await ev.result;
+      // a verdict that is still not there after the final checks is not waited for much longer
+      let timer: NodeJS.Timeout | undefined;
+      const none = { complete: false, missing: [] as string[], judges: [] as string[] };
+      const late = new Promise<typeof none>((res) => (timer = setTimeout(() => res(none), this.cfg.orchestrator.earlyJudgeWaitMs ?? 45_000)));
+      const r = await Promise.race([ev.result, late])
+        .catch(() => none)
+        .finally(() => clearTimeout(timer));
       if (r.judges.length) {
         this.bus.info('requirements', `acceptance judge ran while the coder finished (${r.judges.join(', ')}): ${r.complete ? 'complete' : 'gaps found'}`);
         return { ...r, alongside: true };
@@ -1113,11 +1119,11 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
   }
 
   private async judge(task: string, plan: Plan, diff: string, verifyText: string, writers: string[], reports: SubtaskReport[], signal: AbortSignal | undefined, verified: boolean, early = false): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
-    // a model that did not write the code comes first, even outside the speed band: the writer
-    // tends to confirm its own reading of the task. Running alongside the coder, one is enough.
+    // a model that did not write the code comes first – but only from the speed band: a slow
+    // outside judge stretched every bench run and, by finding gaps that were not there, sent
+    // the work into extra rounds until the time ran out. Running alongside the coder, one is enough.
     const want = early ? 1 : Math.min(2, this.router.size);
-    let judges = this.router.pick('judge', 1, writers);
-    if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, [...writers, ...judges.map((j) => j.caps.key)], { strictBand: verified })];
+    let judges = this.router.pick('judge', want, writers, { strictBand: verified });
     if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
     // every model is resting after a failure: nobody can judge now → rely on the verification
     if (!judges.length) {

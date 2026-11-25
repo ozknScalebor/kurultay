@@ -541,8 +541,13 @@ export class AgentWorker {
   private async waitEarlyGaps(): Promise<string[]> {
     if (!this.early && this.spec.earlyCheck) this.startEarlyCheck();
     if (!this.early || this.earlyGiven) return [];
-    const stop = new Promise<string[]>((r) => this.signal?.addEventListener('abort', () => r([]), { once: true }));
-    const gaps = await Promise.race([this.early, stop]);
+    // bounded: a slow judge must not hold a finished coder (the final check judges again)
+    let timer: NodeJS.Timeout | undefined;
+    const stop = new Promise<string[]>((r) => {
+      this.signal?.addEventListener('abort', () => r([]), { once: true });
+      timer = setTimeout(() => r([]), this.cfg.orchestrator.earlyJudgeWaitMs ?? 45_000);
+    });
+    const gaps = await Promise.race([this.early, stop]).finally(() => clearTimeout(timer));
     if (!gaps.length) return [];
     this.earlyGiven = true;
     this.interventions.push('early-check');

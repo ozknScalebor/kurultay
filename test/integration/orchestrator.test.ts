@@ -25,6 +25,8 @@ interface Brain {
   locate?: { files: string[]; locations: Array<{ file: string; symbol: string }> };
   /** the localisation answers this late */
   locateDelayMs?: number;
+  /** the acceptance judge answers this late */
+  judgeDelayMs?: number;
 }
 
 const call = (name: string, args: Record<string, unknown>): MockReply => ({ toolCall: { name, args } });
@@ -52,7 +54,7 @@ function brainHandler(b: Brain, model: string) {
     if (/final acceptance judge/.test(u)) {
       b.record?.('judge', u, model);
       const list = b.judge ?? [{ complete: true }];
-      return { content: JSON.stringify(list[Math.min(judgeCalls++, list.length - 1)]) };
+      return { content: JSON.stringify(list[Math.min(judgeCalls++, list.length - 1)]), delayMs: b.judgeDelayMs };
     }
     return undefined;
   };
@@ -593,6 +595,27 @@ describe('Orchestrator', () => {
     assert.equal(judges, 1);
     assert.ok(bus.ofType('log.info').some((e) => /ran while the coder finished/.test(e.message ?? '')));
     assert.equal(report.requirementCheck?.alongside, true);
+  });
+
+  it('a slow judge alongside the coder does not hold it: the wait is bounded', async () => {
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      judgeDelayMs: 1500,
+      agent: (_id, step) => {
+        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
+        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: 'completed' })) });
+        return undefined;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { earlyJudgeWaitMs: 100 } } });
+    const t0 = Date.now();
+    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
+    assert.equal(report.status, 'completed');
+    assert.notEqual(report.requirementCheck?.alongside, true, 'the late verdict was not waited for');
+    assert.ok(Date.now() - t0 < 4000);
   });
 
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {

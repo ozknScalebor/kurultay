@@ -171,7 +171,8 @@ async function main() {
     bench.fault = { mode: String(f.fault), after, faulty, fallback: second };
     console.log(`fault test: ${faulty} ${f.fault === 'error' ? 'answers 503' : 'stops answering'} after ${after} of its requests in every run; second model ${second ?? '(none)'}`);
   }
-  const keys = ['kurultay', ...(f['solo-config'] && !proxy ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])];
+  const only = f.agents ? String(f.agents).split(',').map((s) => s.trim()) : undefined;
+  const keys = ['kurultay', ...(f['solo-config'] && !proxy ? ['solo'] : []), ...(f.qwen ? ['qwen'] : [])].filter((k) => !only || only.includes(k));
   let i = 0;
   // the CI job has a hard limit: stop starting runs that could not finish before it, so the
   // results are still written, committed and added to the release notes

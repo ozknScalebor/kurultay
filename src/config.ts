@@ -154,6 +154,8 @@ export interface OrchestratorConfig {
   cascade?: boolean;
   /** requirement-heavy single-coder tasks: the acceptance judge runs while the coder finishes (default true) */
   earlyJudge?: boolean;
+  /** how long a finishing coder waits for that judge (ms, default 45000) */
+  earlyJudgeWaitMs?: number;
   /** plan drafts of the plan step (default 1: the main model plans; mode "council" asks 3) */
   planDrafts?: number;
   /** short tasks: the coders start at once and the localisation joins them as a hint (default true) */
