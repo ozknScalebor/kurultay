@@ -27,5 +27,13 @@ jobs:
           find out -maxdepth 2 -type d | sort
           for d in $(find out -maxdepth 1 -type d -name "*${MATCH}*"); do
             echo "::group::tree $d"; find "$d" -type f -not -path '*/node_modules/*' | head -300; echo "::endgroup::"
-            find "$d" -type f -path "*${FILES}" -not -path '*/node_modules/*' | while read -r f; do echo "===== $f"; head -c 60000 "$f"; echo; done
+            find "$d" -type f -path "*${FILES}" -not -path '*/node_modules/*' | while read -r f; do
+              echo "===== $f"
+              # event logs: only the lines that tell the story (log lines, run/worker milestones, LLM errors)
+              case "$f" in
+                *events.jsonl) grep -E '"type":"(log\.[a-z]+|run\.[a-z]+|worker\.(start|end|done|failover|early-check|hint|guard)|llm\.(error|retry|timeout|failover|truncated))"' "$f" | cut -c1-600 | head -400 ;;
+                *) head -c 60000 "$f" ;;
+              esac
+              echo
+            done
           done
