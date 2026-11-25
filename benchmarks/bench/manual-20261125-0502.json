@@ -1,0 +1,259 @@
+{
+ "name": "manual-20261125-0502",
+ "models": "Kurultay: main glm-5.3-flash + moonshotai/kimi-k3.1-pro (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-25T05:02:49.012Z",
+ "tasks": [
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu #1",
+   "kurultay": {
+    "passed": true,
+    "seconds": 527.832,
+    "requests": 16,
+    "tokens": 386461,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 96.5,
+    "multiModelShare": 0.18283440697233802,
+    "timing": {
+     "totalSeconds": 527.8,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 430.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.9,
+     "requirements": 96.5,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 96.5,
+     "multiModelShare": 0.18283440697233802
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 308.912,
+    "requests": 20,
+    "tokens": 420616,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 58.3,
+    "multiModelShare": 0.18873421819359015,
+    "timing": {
+     "totalSeconds": 308.9,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 249.8,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.8,
+     "requirements": 58.3,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 58.3,
+     "multiModelShare": 0.18873421819359015
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 271.906,
+    "requests": 13,
+    "tokens": 413982,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu #2",
+   "solo": {
+    "passed": true,
+    "seconds": 325.437,
+    "requests": 19,
+    "tokens": 450428,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 47.1,
+    "multiModelShare": 0.14474492931776275,
+    "timing": {
+     "totalSeconds": 325.4,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 277.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.8,
+     "requirements": 47.1,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 47.1,
+     "multiModelShare": 0.14474492931776275
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 340.787,
+    "requests": 16,
+    "tokens": 580581,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 331.263,
+    "requests": 29,
+    "tokens": 661286,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 44.2,
+    "multiModelShare": 0.13341382432840326,
+    "timing": {
+     "totalSeconds": 331.3,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 286.2,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.8,
+     "requirements": 44.2,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 44.2,
+     "multiModelShare": 0.13341382432840326
+    }
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu #3",
+   "qwen": {
+    "passed": true,
+    "seconds": 315.122,
+    "requests": 16,
+    "tokens": 623214,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 320.111,
+    "requests": 29,
+    "tokens": 797723,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 51.5,
+    "multiModelShare": 0.16088722274289283,
+    "timing": {
+     "totalSeconds": 320.1,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 267.8,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.8,
+     "requirements": 51.5,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 51.5,
+     "multiModelShare": 0.16088722274289283
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 279.939,
+    "requests": 16,
+    "tokens": 336966,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 45.8,
+    "multiModelShare": 0.16362986780993213,
+    "timing": {
+     "totalSeconds": 279.9,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 233.2,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.9,
+     "requirements": 45.8,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 45.8,
+     "multiModelShare": 0.16362986780993213
+    }
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu #4",
+   "kurultay": {
+    "passed": true,
+    "seconds": 296.026,
+    "requests": 15,
+    "tokens": 263870,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 50.6,
+    "multiModelShare": 0.17094594594594595,
+    "timing": {
+     "totalSeconds": 296,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 244.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 0.9,
+     "requirements": 50.6,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 50.6,
+     "multiModelShare": 0.17094594594594595
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 545.122,
+    "requests": 35,
+    "tokens": 1157131,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 75.6,
+    "multiModelShare": 0.13869014859658776,
+    "timing": {
+     "totalSeconds": 545.1,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 468.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1,
+     "requirements": 75.6,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 75.6,
+     "multiModelShare": 0.13869014859658776
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 291.085,
+    "requests": 15,
+    "tokens": 444194,
+    "exit": 0
+   }
+  }
+ ]
+}
