@@ -1,0 +1,87 @@
+{
+ "name": "manual-20261125-2015",
+ "models": "Kurultay: main glm-5.3-flash + glm-5-turbo (zai2), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-25T20:15:01.578Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "B3-son-stok",
+   "kurultay": {
+    "passed": true,
+    "seconds": 127.48,
+    "requests": 11,
+    "tokens": 114659,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 127.5,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 97.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.4,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": false,
+    "seconds": 301.261,
+    "requests": 0,
+    "tokens": 0,
+    "exit": 55
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "C2-crc",
+   "qwen": {
+    "passed": false,
+    "seconds": 300.898,
+    "requests": 0,
+    "tokens": 0,
+    "exit": 55
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 146.488,
+    "requests": 11,
+    "tokens": 139798,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 146.5,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 131.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1.1,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   }
+  }
+ ],
+ "fault": {
+  "mode": "hang",
+  "after": 3,
+  "faulty": "glm-5.3-flash",
+  "fallback": "glm-5-turbo"
+ }
+}
