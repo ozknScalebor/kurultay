@@ -545,7 +545,7 @@ paths: ["src/drivers/**"]         # suggested only while working on these files
 1. ...
 ```
 
-- **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.github/skills`, `skills/` and the skill folders other agents use in the project and in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
+- **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, `~/.agents/skills` and `~/.claude/skills` in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
 - **Progressive loading**: models first get only a list of names + descriptions; when needed a model opens the body with the `skill` tool and extra files with `skill_file`. Context is not wasted on small local models.
 - **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills a planner assigned to the subtask (`--mode multi`). Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.
 - **Report**: which worker used which skill and why is listed in `REPORT.md`. `kurultay skills` validates the name/description rules.
