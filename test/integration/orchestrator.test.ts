@@ -618,6 +618,25 @@ describe('Orchestrator', () => {
     assert.ok(Date.now() - t0 < 4000);
   });
 
+  it('verified work: the judges get one round, their gaps go to ONE coder, then the run ends', async () => {
+    const started: string[] = [];
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      judge: [{ complete: false, missing: ['gap one', 'gap two', 'gap three'] }],
+      agent: (id, step) => {
+        if (step === 0) started.push(id);
+        if (step === 0) return call('write_file', { path: `out-${id}.txt`, content: id });
+        return undefined;
+      },
+    };
+    const { run, bus } = await setup(brain, { 'a.txt': 'orig' }, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { maxIterations: 5, earlyJudge: false } } });
+    const report = await run('Write the output files. Every file must hold its own id. The ids must be unique across files. Old files keep their content as they are.');
+    assert.deepEqual(started, ['T1', 'F1'], 'one follow-up subtask for all three gaps, and no third round');
+    assert.equal(report.status, 'incomplete');
+    assert.ok(report.changedFiles.length >= 2, 'the work is kept');
+    assert.ok(bus.ofType('log.warn').some((e) => /the judges still miss: gap one/.test(e.message ?? '')));
+  });
+
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
     let judgePrompt = '';
     const brain: Brain = {

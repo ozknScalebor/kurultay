@@ -76,6 +76,8 @@ export interface RunUsage {
 /** What is written to session.json after every subtask – enough to resume. */
 export interface SessionState {
   version: 2;
+  /** rounds started only because a judge found gaps in work that passed the build and tests */
+  judgeRounds?: number;
   sessionId: string;
   task: string;
   fullTask: string;
@@ -616,6 +618,17 @@ export class Orchestrator {
           save();
           break;
         }
+        // the build and tests pass and the judges already had their round: what they still miss
+        // goes into the report instead of another round (bench: a strict second judge sent passing
+        // work into round after round, each split over parallel coders, until the time ran out)
+        const verifiedGaps = !finalVerify.skipped && finalVerify.ok;
+        if (verifiedGaps && (st.judgeRounds ?? 0) >= (this.cfg.orchestrator.judgeRounds ?? 1)) {
+          this.bus.warn('requirements', `the build and tests pass; the judges still miss: ${reqCheck.missing.join(' | ').slice(0, 400)} – left for you to check (orchestrator.judgeRounds)`);
+          st.queue = [];
+          save();
+          break;
+        }
+        if (verifiedGaps) st.judgeRounds = (st.judgeRounds ?? 0) + 1;
         // follow-up work for the next iteration
         const followups: SubTask[] = reqCheck.missing.map((m, i) => ({
           id: `F${st.iteration}.${i + 1}`,
@@ -635,8 +648,20 @@ export class Orchestrator {
             critical: true,
           });
         }
-        // merge follow-ups touching the same concern into a single task when there are many
-        st.queue = followups.length > 3 ? [{ ...followups[0], id: `F${st.iteration}`, title: 'Complete the missing parts', description: followups.map((f) => `- ${f.description}`).join('\n'), critical: true }] : followups;
+        // the gaps of one change go to ONE coder: parallel follow-ups edited the same files and
+        // ended in merge conflicts
+        st.queue =
+          followups.length > 1
+            ? [
+                {
+                  ...followups[0],
+                  id: `F${st.iteration}`,
+                  title: 'Complete the missing parts',
+                  description: `Previous work is already applied${verifiedGaps ? ' and passes the build and tests – keep it that way' : ''}. Complete every point below in this one change:\n${[...(finalVerify.skipped || finalVerify.ok ? [] : [`Fix the build/test errors:\n${verifyFailureText(finalVerify)}`]), ...reqCheck.missing].map((m) => `- ${m}`).join('\n')}`,
+                  critical: true,
+                },
+              ]
+            : followups;
         save();
       }
     } catch (e) {
