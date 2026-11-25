@@ -6,8 +6,8 @@ Give it your OpenAI-compatible endpoints and API keys. Kurultay:
 
 1. **Measures every model.** Context window, tool calling, JSON, speed, concurrency capacity, coding and editing accuracy are measured once, and each model gets a score per role.
 2. **Indexes the project.** Symbols, the dependency graph, PageRank and a BM25 search index are built without any model. A map-reduce summarisation spread over all models in parallel then writes `ARCHITECTURE.md`, module documents, end-to-end **flow documents** (with source line references and Mermaid diagrams) and `PROJECT_NOTES.md`, which the agent reads on every task.
-3. **Does the work like Qwen Code.** One agent with **one model at a time** works the whole task through: it explores the code, edits, runs the build and tests itself and keeps the task's requirements as a **todo list**. The build and tests decide when it is done; when they fail, the failures go to a coder in the next round. There is no separate judge or reviewer model.
-4. **Keeps going when a model stops answering.** A model that hangs, fails or becomes much slower than usual is quarantined, and the same conversation continues on another model from the step where it stopped. Qwen Code's `--fallback-model` only takes over on 429/503/529 answers, so a hanging model stops it.
+3. **Does the work.** One agent with **one model at a time** works the whole task through: it explores the code, edits, runs the build and tests itself and keeps the task's requirements as a **todo list**. The build and tests decide when it is done; when they fail, the failures go to a coder in the next round. There is no separate judge or reviewer model.
+4. **Keeps going when a model stops answering.** A model that hangs, fails or becomes much slower than usual is quarantined, and the same conversation continues on another model from the step where it stopped.
 
 There are **no npm runtime dependencies**. All it needs is Node.js ≥ 20: no native builds, Python, Docker, CDN or telemetry.
 
@@ -15,14 +15,14 @@ There are **no npm runtime dependencies**. All it needs is Node.js ≥ 20: no na
 
 The console UI, reports and messages are in English; tasks and questions can be written in any language the models understand (Turkish is recognised by the question/task detection).
 
-### Measured against Qwen Code
+### Measured
 
-Same task text, a fresh copy of the project per agent, the same hidden tests, GLM-5.3-flash as the main model for both ([bench](#bench-kurultay-vs-qwen-code)):
+On the bundled bench (Java 8 and C++17 feature tasks, hidden acceptance tests, GLM-5.3-flash as the main model):
 
-| Run (v0.16.0) | Kurultay | Qwen Code |
-|---|---|---|
-| 6 feature tasks (Java 8 + C++17), 20 min each | **6/6 in 24.1 min** | 5/6 in 27.8 min |
-| Main model stops answering after 3 requests (2 tasks) | **2/2** – continued on the backup model | 0/2 – waited until the time ran out |
+| Run (v0.16.0) | Result |
+|---|---|
+| 6 feature tasks, 20 min each | **6/6 in 24.1 min** |
+| The main model stops answering after 3 requests (2 tasks) | **2/2** – finished on the backup model |
 
 Earlier versions ran several models at once (races, council reviews, an acceptance judge from a second model). In the same bench that was slower and less reliable – a second model's judge sent passing work into extra rounds until the time ran out – so since v0.16.0 it is only available on request (`--mode multi`, see [Several models at once](#several-models-at-once-opt-in)).
 
@@ -30,24 +30,9 @@ Earlier versions ran several models at once (races, council reviews, an acceptan
 
 ## Why?
 
-Fifteen open-source agents were studied before this project (Aider, OpenHands, Cline, Kilo Code, Qwen Code, omp, oh-my-openagent, Serena, Crush, Goose, DeepWiki-Open and others). For an offline company network none of them covered everything at once: measuring an unknown set of local models, indexing a large C/C++/Java code base, and – above all – carrying on when one of the local servers hangs. Kurultay combines the ideas that held up:
+For an offline company network a coding agent has to do more than edit code: measure an unknown set of local models, index a large C/C++/Java code base so the model finds its way, and – above all – carry on when one of the local servers hangs. Kurultay is built around exactly that.
 
-| Idea | Source project | In Kurultay |
-|---|---|---|
-| One agent loop with a todo list, tool output to files, compaction at 85% | Qwen Code | `src/agent/worker.ts` – the default way of working |
-| Tree-sitter + PageRank repo map | Aider | `src/index/*` – dependency-free symbol extractor, reference graph, personalised PageRank |
-| Role-based model routing + fallback chain | omp, oh-my-openagent | `Router` – role score × load × reliability; quarantine and permanent failover |
-| Robust hash/anchor based editing | omp | `edits.ts` – exact → whitespace-tolerant → indentation-tolerant matching, "closest match" hint |
-| Minimal, extensible core | Pi (pi-mono) | Small modules; also usable as a library (`import { Orchestrator } from 'kurultay'`) |
-| Parallel agent isolation | Kilo Code, Cline | **Copy-on-write overlays**: lighter than worktrees, no repository copy, 3-way merge |
-| LSP / symbol-level navigation | Serena, Crush | `find_symbol`, `repo_map`, dependent-file tools; optional LSP diagnostics |
-| Hierarchical wiki / architecture document | DeepWiki-Open | File → module → architecture summaries, deterministic Mermaid module graph |
-| Prompt-based tool calling fallback | OpenHands, Goose (toolshim) | Models without native tools work with `<tool_call>`, Qwen3-Coder XML or SEARCH/REPLACE |
-| Context condenser, event sourcing | OpenHands | History is summarised in long sessions; every event goes to `events.jsonl` |
-| Reading other agents' rule files | omp | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.clinerules/`, `.github/copilot-instructions.md` |
-| LLM council (anonymous peer ranking + chair) | karpathy/llm-council | `ask` questions and the architecture document; code review only in `--mode multi` |
-
-For licensing reasons **no code was copied from any project**; the ideas were rewritten from scratch under the MIT licence. The FSL-licensed Crush was studied as a source of ideas only. Notes from the code-level study: [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) (Turkish).
+Kurultay is written from scratch under the MIT licence and contains no code from other projects.
 
 ---
 
@@ -172,7 +157,7 @@ LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capab
   Models
   name                        context  tools   tok/s  parallel  best roles         state
   gpt-oss-120b@main           128K     native  61     8         planner, judge     ready
-  qwen3-coder-30b@main        256K     native  95     4         coder, reviewer    ready
+  devstral-small-2@main        256K     native  95     4         coder, reviewer    ready
   ...
   timeouts: first token 3 min · silence 90 s · total 10 min · pause after a hang 2 min
 
@@ -192,8 +177,8 @@ Planning…
 Plan (single) – 1 subtask
   1. Add DMA support to the UART driver
 
-▸ T1  Add DMA support to the UART driver  [qwen3-coder-30b@main]
-    ✓ T1-1 done – 14 steps, 3 files (qwen3-coder-30b@main)
+▸ T1  Add DMA support to the UART driver  [devstral-small-2@main]
+    ✓ T1-1 done – 14 steps, 3 files (devstral-small-2@main)
 ...
 Verification: passed
 3 files, +120/-4 lines. Apply to the project? [y/N] y
@@ -215,7 +200,7 @@ Applied to the project: 3 files written
   ```
   ⠧ Task · 2m 13s · 1 LLM request running · 120K↑ 8K↓ tokens · Ctrl+C to cancel
     now: T1: the agent is coding in its sandbox
-    T1-1  qwen3-coder-30b     editing CsvProductLoader.java · step 7
+    T1-1  devstral-small-2     editing CsvProductLoader.java · step 7
   ```
 - **Old Windows consoles** (cmd.exe / PowerShell in conhost) cannot draw some symbols; Kurultay detects them and prints plain ASCII instead (`+` for ✓, `>` for →, …). Windows Terminal, VS Code and Git Bash get the Unicode version. Force it with `--ascii` or `KURULTAY_ASCII=1` (`=0` forces Unicode).
 - Main commands: `/models`, `/model add|remove`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
@@ -267,7 +252,7 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay stats [--runs N]` | Per-model requests/tokens/time of the last tasks and the learned success rates |
 | `kurultay trajectories [--out file]` | Collects the conversations of verified tasks into one JSONL file for fine-tuning |
 | `kurultay ask "<question>"` | A question about the project; the models answer separately, a chair model merges |
-| `kurultay map [--tokens N] [--focus a,b]` | Repo map (Aider style) |
+| `kurultay map [--tokens N] [--focus a,b]` | Repo map (most referenced files and symbols, ranked by PageRank) |
 | `kurultay search "<query>"` | Code search (BM25; BM25 + embeddings with RRF once vectors exist) |
 | `kurultay status` | Models, index and recent sessions |
 
@@ -294,11 +279,11 @@ One server, one key, a list of model names:
   "baseUrl": "http://10.0.0.11:8000/v1",
   "apiKey": "${KURULTAY_API_KEY}",
   "models": [
-    "qwen3-coder-30b-a3b",                              // the first is not special – see primaryModel
+    "devstral-small-2",                              // the first is not special – see primaryModel
     "gpt-oss-120b",
     { "id": "glm-4.5-air", "apiKey": "another-key" }    // a model with its own key
   ],
-  "orchestrator": { "primaryModel": "qwen3-coder-30b-a3b" },   // the agent's model; the others are its backup
+  "orchestrator": { "primaryModel": "devstral-small-2" },   // the agent's model; the others are its backup
   "verify": { "build": "cmake --build build -j", "test": "ctest --test-dir build" }
 }
 ```
@@ -317,10 +302,10 @@ One server, one key, a list of model names:
   ],
   "helper": {                                          // a small model, e.g. llama.cpp on this PC
     "baseUrl": "http://127.0.0.1:8080/v1",             // apiKey defaults to "none"
-    "models": ["qwen2.5-coder-1.5b-instruct"],
+    "models": ["gemma-3-1b-it"],
     "roles": ["fast", "summarizer"]                    // the default
   },
-  "models": { "qwen3-coder-30b@gpu1": { "primary": true } }
+  "models": { "devstral-small-2@gpu1": { "primary": true } }
 }
 ```
 
@@ -495,44 +480,39 @@ Patches are generated and graded in separate steps, so the agents can run on the
 # 1. machine with internet: dataset → JSONL, one checkout per instance at its base commit
 python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', split='test').to_json('verified.jsonl')"
 kurultay swebench prepare verified.jsonl --dir swe --sample 50 --seed 42      # or --instances a,b
-#    copy swe/ to the offline machine (once for every agent you compare: swe-kurultay, swe-qwen …)
+#    copy swe/ to the offline machine (once for every agent you compare: swe-kurultay, swe-other …)
 
 # 2. offline machine: Kurultay → predictions-kurultay-<version>.jsonl (resumable, runs-*.jsonl has time/requests)
 kurultay swebench run --dir swe-kurultay --timeout 30
 
 #    another agent on the same checkouts with the same prompts (prompts/<id>.txt), then:
-kurultay swebench collect --dir swe-qwen --name qwen-code
+kurultay swebench collect --dir swe-other --name other-agent
 
 # 3. machine with Docker: the official harness
 pip install swebench
 swebench eval verified -p predictions-kurultay-0.16.0.jsonl --run-id kurultay -j 6
-swebench eval verified -p predictions-qwen-code.jsonl --run-id qwen-code -j 6
+swebench eval verified -p predictions-other-agent.jsonl --run-id other-agent -j 6
 ```
 
 **Grading on GitHub instead:** put the predictions under `benchmarks/swebench/<run>/` (see its README) and push – the `swebench` workflow grades them with the official harness, commits `results-*.json` and `RESULTS.md`, and adds the table to the latest release's notes. Run the workflow by hand without a folder for a smoke test with the reference patches.
 
-Patches never contain agent state folders (`.kurultay`, `.qwen` …) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
+Patches never contain agent state folders (`.kurultay` and those of other agents) and, by default, no test files: the harness applies its own test patch afterwards and an edited test file would stop it from applying (`--keep-tests` keeps them). Any dataset with `instance_id`, `repo`, `base_commit` and `problem_statement` works – SWE-bench Lite, Verified or Multilingual (Java, C/C++ and others).
 
-## Bench: Kurultay vs Qwen Code
+## Bench
 
-The `bench` workflow (Actions → bench, and automatically after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` with Kurultay and Qwen Code and scores them with the same hidden tests. Secrets: `ZAI_API_KEY` (Z.AI GLM, the main model) and `NVIDIA_API_KEY` (free key from build.nvidia.com, the second model family). The repository variable `ZAI_BASE_URL` selects the Z.AI endpoint (default `https://api.z.ai/api/paas/v4`; the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`). Without `ZAI_API_KEY` a NIM model is the main model.
-
-| Agent | Models |
-|---|---|
-| Kurultay | main model GLM (`orchestrator.primaryModel`); a NIM model of another family and a small helper are the fallback |
-| Qwen Code | GLM |
+The `bench` workflow (Actions → bench, and automatically after every release) runs the K tasks of `samples/evals/java-envanter` and `cpp-telemetri` and scores them with the same hidden tests; it can run a second, reference agent on the same tasks for comparison. Secrets: `ZAI_API_KEY` (Z.AI GLM, the main model) and `NVIDIA_API_KEY` (free key from build.nvidia.com, the second model family). The repository variable `ZAI_BASE_URL` selects the Z.AI endpoint (default `https://api.z.ai/api/paas/v4`; the GLM Coding Plan uses `https://api.z.ai/api/coding/paas/v4`). Without `ZAI_API_KEY` a NIM model is the main model. Kurultay works with GLM; a NIM model of another family and a small helper are its backup.
 
 Workflow inputs:
 
 | Input | What it does |
 |---|---|
-| `quick` | One small C++ and one small Java task, 5 minutes per agent (about 20 minutes in all) – checks the setup before a full run |
-| `fault` = `hang` / `error`, `fault_after` | Fault test: a proxy makes the main model stop answering (or answer 503) after N requests in every run. Kurultay has its other models; Qwen Code gets `--fallback-model` with a second GLM model, so both sides have a backup |
+| `quick` | One small C++ and one small Java task, 5 minutes per agent – checks the setup before a full run |
+| `fault` = `hang` / `error`, `fault_after` | Fault test: a proxy makes the main model stop answering (or answer 503) after N requests in every run; Kurultay has to finish on its backup models |
 | `repeat` | Runs every task N times (rows `K3-iade #1`, `#2` …) to tell flaky results from real ones |
-| `agents` | `kurultay,qwen` by default; `solo` adds Kurultay with the main model alone and no backup models |
+| `agents` | Which agents run (comma separated); `solo` is Kurultay with the main model alone and no backup models |
 | `minutes`, `tasks`, `model`, `second` | Wall-clock budget per agent and task (default 20), task subset, model overrides |
 
-For a fair speed comparison every agent gets a fresh copy of the project, the same task text and the same wall-clock budget, and the run order is rotated per task. The table reports time, requests, tokens and rate-limit waits; the log shows the models used, the project's own checks and the failing lines of the hidden tests. Results go to `benchmarks/bench/` and into the latest release's notes. Locally: `node scripts/bench.mjs --config k.json --solo-config k-solo.json --qwen qwen [--quick] [--fault hang --fault-after 6] [--repeat 2]`.
+Every run gets a fresh copy of the project, the same task text and the same wall-clock budget, and the run order is rotated per task. The table reports time, requests, tokens and rate-limit waits; the log shows the models used, the project's own checks and the failing lines of the hidden tests. Results go to `benchmarks/bench/` and into the latest release's notes.
 
 ## Rules and skills
 
@@ -565,12 +545,11 @@ paths: ["src/drivers/**"]         # suggested only while working on these files
 1. ...
 ```
 
-- **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, `~/.agents/skills` and `~/.claude/skills` in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
+- **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.github/skills`, `skills/` and the skill folders other agents use in the project and in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
 - **Progressive loading**: models first get only a list of names + descriptions; when needed a model opens the body with the `skill` tool and extra files with `skill_file`. Context is not wasted on small local models.
 - **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills a planner assigned to the subtask (`--mode multi`). Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.
 - **Report**: which worker used which skill and why is listed in `REPORT.md`. `kurultay skills` validates the name/description rules.
 
-Which idea came from which open-source agent, with notes from the code-level study, is in [`docs/ARASTIRMA.md`](docs/ARASTIRMA.md) (Turkish).
 
 ## Generated files (`.kurultay/`)
 
@@ -641,7 +620,7 @@ npm run test:coverage     # coverage thresholds: lines ≥ 96%, branches ≥ 88%
 | Layer | What is tested |
 |---|---|
 | `test/unit` | Sandbox pool (parallelism proven with a barrier), compiler check (gcc/clang/javac, compile_commands, Windows paths), command policy and environment scrubbing, learned model statistics and the json_schema fallback, console usage meter; checkpoints, conversation storage, Markdown renderer, status line and activity indicator, git helpers; console plumbing (key parsing, bracketed paste, line editor, history, suggestion menu, line wrapping, screen), router (selection, retry, circuit breaker, first-token / silence timeouts and quarantine, auth/context errors, recovery wait, timeouts, cancellation, concurrency limit), OpenAI client (SSE, reasoning, tool-call deltas, error classification, headers), tools and security (path escapes, denied commands, read-only), overlay / 3-way merge / crash recovery, edit parsers, symbol extraction for 9 languages, import resolution, scanner, index, council (anonymity, independent reviewer, no self-votes, test evidence first, P0–P3 priority, text ranking fallback), planner, verification, configuration, skill discovery/validation/selection, front matter, loop guard, syntax check, read-before-write guard, CRLF/Unicode editing, Retry-After, folder-scoped rules |
-| `test/integration` | Evaluation harness, plan approval / budget / resume, MCP and LSP (with fake servers), semantic search (fake embeddings), context budget and truncation recovery; interactive console (session storage, resume, branching, rewind, git worktree; LLM panel, mandatory workspace, automatic index/probe/analysis, question vs. task, confirmation, settings and endpoint editing, completion, Ctrl+C, token/context display), agent loop (native/text/Qwen-XML tools, rejected tools, toolshim, permanent failover from a hung model with history conversion, idling, step limit, loop/error stop, skill preloading and tool loading, condenser and its fallback, model dropouts), orchestrator (split + dependencies, iterations, build fixing, independent re-review of fixes, conflicts, confirmation, rules, crash recovery, cancellation), probe (ladder, embedding filter, unreachable endpoints), analysis (batches, fault tolerance, incrementality), dashboard and terminal |
+| `test/integration` | Evaluation harness, plan approval / budget / resume, MCP and LSP (with fake servers), semantic search (fake embeddings), context budget and truncation recovery; interactive console (session storage, resume, branching, rewind, git worktree; LLM panel, mandatory workspace, automatic index/probe/analysis, question vs. task, confirmation, settings and endpoint editing, completion, Ctrl+C, token/context display), agent loop (native/text/XML tool calls, rejected tools, toolshim, permanent failover from a hung model with history conversion, idling, step limit, loop/error stop, skill preloading and tool loading, condenser and its fallback, model dropouts), orchestrator (split + dependencies, iterations, build fixing, independent re-review of fixes, conflicts, confirmation, rules, crash recovery, cancellation), probe (ladder, embedding filter, unreachable endpoints), analysis (batches, fault tolerance, incrementality), dashboard and terminal |
 | `test/cli` | console (over a pipe), `init`, `probe`, `index`, `analyze` (flow documents, project notes), `skills`, `run` (`--skill`, `--req`, `--approve-plan`, `--max-tokens`, `--resume`), `ask`, `map`, `search`, `status`, `stats`; exit codes and error messages |
 | `test/package` | `npm pack` contents, installation without a registry, portable bundle with an embedded Node |
 
