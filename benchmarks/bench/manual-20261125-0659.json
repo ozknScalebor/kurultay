@@ -1,0 +1,259 @@
+{
+ "name": "manual-20261125-0659",
+ "models": "Kurultay: main glm-5.3-flash + moonshotai/kimi-k3.1-pro (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-25T06:59:31.238Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "K1-depo-transfer #1",
+   "kurultay": {
+    "passed": true,
+    "seconds": 256.228,
+    "requests": 10,
+    "tokens": 118488,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 256.2,
+     "planning": 0.1,
+     "planCouncil": false,
+     "coding": 250.7,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 214.992,
+    "requests": 13,
+    "tokens": 218028,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 215,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 209.3,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.6,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 166.817,
+    "requests": 10,
+    "tokens": 233865,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K1-depo-transfer #2",
+   "solo": {
+    "passed": true,
+    "seconds": 187.001,
+    "requests": 11,
+    "tokens": 154424,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 187,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 181.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.4,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 160.356,
+    "requests": 11,
+    "tokens": 261730,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 338.459,
+    "requests": 13,
+    "tokens": 203272,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 338.5,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 332.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K2-siparis-guncelleme #1",
+   "qwen": {
+    "passed": true,
+    "seconds": 335.497,
+    "requests": 22,
+    "tokens": 701054,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 689.462,
+    "requests": 19,
+    "tokens": 451042,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 689.5,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 683.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 643.306,
+    "requests": 22,
+    "tokens": 537755,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 97.7,
+    "multiModelShare": 0.15187315404943263,
+    "timing": {
+     "totalSeconds": 643.3,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 539.9,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.6,
+     "requirements": 97.7,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 97.7,
+     "multiModelShare": 0.15187315404943263
+    }
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K2-siparis-guncelleme #2",
+   "kurultay": {
+    "passed": true,
+    "seconds": 790.847,
+    "requests": 19,
+    "tokens": 460908,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 790.8,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 785.2,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.7,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 2,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "solo": {
+    "passed": true,
+    "seconds": 494.843,
+    "requests": 16,
+    "tokens": 348768,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 494.8,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 489.3,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 5.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 650.655,
+    "requests": 21,
+    "tokens": 723451,
+    "exit": 0
+   }
+  }
+ ]
+}
