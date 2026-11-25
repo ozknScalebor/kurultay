@@ -19,12 +19,12 @@ The console UI, reports and messages are in English; tasks and questions can be 
 
 On the bundled bench (Java 8 and C++17 feature tasks, hidden acceptance tests, GLM-5.3-flash as the main model):
 
-| Run (v0.16.0) | Result |
+| Run (v0.1.0) | Result |
 |---|---|
 | 6 feature tasks, 20 min each | **6/6 in 24.1 min** |
 | The main model stops answering after 3 requests (2 tasks) | **2/2** – finished on the backup model |
 
-Earlier versions ran several models at once (races, council reviews, an acceptance judge from a second model). In the same bench that was slower and less reliable – a second model's judge sent passing work into extra rounds until the time ran out – so since v0.16.0 it is only available on request (`--mode multi`, see [Several models at once](#several-models-at-once-opt-in)).
+Running several models at once (races, council reviews, an acceptance judge from a second model) was tried during development. In the same bench it was slower and less reliable – a second model's judge sent passing work into extra rounds until the time ran out – so it is only available on request (`--mode multi`, see [Several models at once](#several-models-at-once-opt-in)).
 
 ---
 
@@ -149,7 +149,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.16.0 · one agent, every local LLM as its backup · offline
+ v0.1.0 · one agent, every local LLM as its backup · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -490,7 +490,7 @@ kurultay swebench collect --dir swe-other --name other-agent
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.16.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.1.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-other-agent.jsonl --run-id other-agent -j 6
 ```
 
