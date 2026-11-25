@@ -538,6 +538,62 @@ describe('Orchestrator', () => {
     assert.ok(report.plan.acceptance.length >= 4);
   });
 
+  it('the acceptance judge runs while the coder finishes; its gaps are fixed in the same conversation', async () => {
+    let judges = 0;
+    let gapSeen = false;
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      judge: [{ complete: false, missing: ['negative inputs must return -1'] }, { complete: true }],
+      agent: (_id, step, q) => {
+        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
+        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: 'completed' })) });
+        if (step === 2) return undefined; // finish → waits for the judge
+        if (step === 3) {
+          gapSeen = /acceptance check[\s\S]*negative inputs must return -1/.test(q.messages.map((m) => m.content ?? '').join('\n'));
+          return call('edit_file', { path: 'src/f1.c', old_text: 'return 10;', new_text: 'return x < 0 ? -1 : 10;' });
+        }
+        return undefined;
+      },
+      record: (kind) => {
+        if (kind === 'judge') judges++;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(int x) { return ${i}; }\n`;
+    const { run, bus, root } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
+    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
+    assert.equal(report.status, 'completed');
+    assert.ok(gapSeen, 'the gap went into the coder\'s conversation');
+    assert.match(read(root, 'src/f1.c'), /x < 0 \? -1 : 10/);
+    assert.equal(report.iterations, 1, 'no extra round');
+    assert.equal(judges, 2, 'judged alongside, then once more on the changed diff');
+    assert.ok(bus.ofType('log.info').some((e) => /starts while the coder finishes/.test(e.message ?? '')));
+  });
+
+  it('a verdict from alongside the coder is reused when the change did not move', async () => {
+    let judges = 0;
+    const brain: Brain = {
+      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
+      locate: { files: ['src/f1.c'], locations: [] },
+      agent: (_id, step) => {
+        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
+        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: i === 5 ? 'dropped' : 'completed', note: 'n/a' })) });
+        return undefined;
+      },
+      record: (kind) => {
+        if (kind === 'judge') judges++;
+      },
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
+    const { run, bus } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
+    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
+    assert.equal(report.status, 'completed');
+    assert.equal(judges, 1);
+    assert.ok(bus.ofType('log.info').some((e) => /ran while the coder finished/.test(e.message ?? '')));
+  });
+
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
     let judgePrompt = '';
     const brain: Brain = {
