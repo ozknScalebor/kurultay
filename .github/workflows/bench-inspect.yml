@@ -1,0 +1,31 @@
+name: bench-inspect
+# Prints files of a bench run's artifact to the log (for looking at a failed run without downloading it)
+on:
+  workflow_dispatch:
+    inputs:
+      run_id: { description: 'bench run id', required: true }
+      match: { description: 'path substring (e.g. solo-K1)', required: true }
+      files: { description: 'glob of files to print inside the matching folders', default: '*.md' }
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bench-out
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: out
+      - name: Print
+        env:
+          MATCH: ${{ inputs.match }}
+          FILES: ${{ inputs.files }}
+        run: |
+          find out -maxdepth 2 -type d | sort
+          for d in $(find out -maxdepth 1 -type d -name "*${MATCH}*"); do
+            echo "::group::tree $d"; find "$d" -type f -not -path '*/node_modules/*' | head -300; echo "::endgroup::"
+            find "$d" -type f -path "*${FILES}" -not -path '*/node_modules/*' | while read -r f; do echo "===== $f"; head -c 60000 "$f"; echo; done
+          done
