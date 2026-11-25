@@ -16,7 +16,7 @@ export interface EndpointHealth {
 const LOGO = [' ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦', ' ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝', ' ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩ '];
 
 export function banner(version: string, width: number): string {
-  const tag = `v${version} · all your local LLMs in one council · offline`;
+  const tag = `v${version} · one agent, every local LLM as its backup · offline`;
   if (width < 40 || !unicodeEnabled()) return `${color.bold(color.cyan('KURULTAY'))}  ${color.dim(tag)}`;
   return [...LOGO.map((l) => color.cyan(l)), color.dim(` ${tag}`)].join('\n');
 }
