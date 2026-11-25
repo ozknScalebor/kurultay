@@ -43,7 +43,7 @@ export function qwenStats(stdout) {
 }
 
 export const AGENTS = [
-  { key: 'kurultay', label: 'Kurultay (all models)' },
+  { key: 'kurultay', label: 'Kurultay' },
   { key: 'solo', label: 'Kurultay (main model only)' },
   { key: 'qwen', label: 'Qwen Code' },
 ];
@@ -205,8 +205,7 @@ async function main() {
           const att = k.summary.attempts.find((x) => x.task === t.id);
           if (att?.models?.length) console.log(`   models: ${att.models.join(', ')}${att.llmErrors ? ` · ${att.llmErrors} failed requests` : ''}`);
           if (att) {
-            const j = att.judges;
-            console.log(`   project's own checks: ${att.ownChecks ?? '?'} · acceptance judge: ${j ? (j.ran.length ? `${j.ran.join(', ')}${j.alongside ? ' (alongside the coder)' : ''} → ${j.complete ? 'complete' : `missing: ${j.missing.join(' | ').slice(0, 300)}`}` : 'skipped') : '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
+            console.log(`   project's own checks: ${att.ownChecks ?? '?'} · files: ${(att.files ?? []).join(', ') || '-'}`);
           }
           // a failed run: which hidden tests failed and why (the end of the check output)
           if (att && !att.passed) console.log(`   hidden tests (failures first, then the last lines):\n${evalMod.failureLines(att.checkOutput).split('\n').map((l) => `     | ${l}`).join('\n')}`);

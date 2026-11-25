@@ -245,7 +245,6 @@ describe('UI', () => {
       bus.emitEvent('llm.request', { source: 'a@e', data: { purpose: 'p', attempt: 2 } });
       bus.emitEvent('llm.error', { source: 'a@e', message: 'boom', data: { kind: 'server' } });
       bus.emitEvent('run.verify', { data: { ok: false, skipped: false } });
-      bus.emitEvent('run.requirements', { data: { complete: false, missing: ['m1'] } });
       bus.emitEvent('run.merge', { data: { written: ['a'], conflicts: [] } });
       bus.emitEvent('unknown.event', {});
       detach();
@@ -254,7 +253,7 @@ describe('UI', () => {
       (process.stderr as unknown as { write: typeof orig }).write = orig;
     }
     const out = lines.join('');
-    for (const want of ['3 models · session', '1. one', 'read_file', 'done', 'attempt 2', 'LLM error [server]', 'failed', 'missing:', '- m1', 'Applied to the project']) assert.ok(out.includes(want), want);
+    for (const want of ['3 models · session', '1. one', 'read_file', 'done', 'attempt 2', 'LLM error [server]', 'failed', 'Applied to the project']) assert.ok(out.includes(want), want);
     assert.ok(!out.includes('after-detach'));
   });
 });

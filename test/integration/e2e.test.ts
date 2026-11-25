@@ -102,8 +102,8 @@ describe('end-to-end with mock LLM servers', () => {
     const app = await createApp({ root });
     const { index } = loadOrBuildIndex(app);
     const orch = new Orchestrator(app.root, app.config, app.router, app.materializer, index, app.bus);
-    const report = await orch.run('Implement clamp in src/mathutil.js correctly');
-    assert.equal(report.status, 'completed', JSON.stringify(report.requirementCheck));
+    const report = await orch.run('Implement clamp in src/mathutil.js correctly', { mode: 'multi' });
+    assert.equal(report.status, 'completed');
     assert.equal(report.mode, 'race');
     const st = report.subtasks[0];
     assert.equal(st.candidates.length, 3, 'all three models raced');

@@ -62,7 +62,7 @@ Commands:
   probe                Measure the models and save the capability profile (runs once; use this to re-measure)
                          --deep (thorough, slower), --quick (no benchmark), --minimal (4 requests per model), --model <name> (only this model)
   run "<task>"         Plan the task, distribute it to the models, verify, review and apply
-                         --mode auto|single|split|race|council   --req <file>   --dry-run   --yes
+                         --mode auto|single|multi|split|race|council   --req <file>   --dry-run   --yes
                          --skill a,b (preload skills; $skill-name in the task text works too)
                          --approve-plan (show the plan before code is written: approve / reject / feedback)
                          --max-tokens N --max-minutes N (stop when the budget runs out; resumable)

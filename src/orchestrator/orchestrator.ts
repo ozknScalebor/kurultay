@@ -8,13 +8,12 @@ import { CheckpointRecorder } from '../agent/checkpoint.js';
 import { Overlay, type Materializer, type MergeReport } from '../agent/workspace.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
-import { JUDGE_SCHEMA } from '../llm/schemas.js';
 import type { ExternalTools } from '../mcp/manager.js';
 import { SkillRegistry, selectSkillsFor, type SkillDiagnostic } from '../skills/skills.js';
-import { errorMessage, settle, settleQuorum } from '../util/async.js';
+import { errorMessage, settle } from '../util/async.js';
 import type { EventBus, KEvent } from '../util/events.js';
 import { TimingTracker, renderTiming, type RunTiming } from './timing.js';
-import { estimateTokens, truncateTokens, tryExtractJson, plural } from '../util/text.js';
+import { truncateTokens, plural } from '../util/text.js';
 import { crossTest } from './cross-test.js';
 import { localize, type Localization } from './localize.js';
 import { splitRequirements } from '../agent/tools.js';
@@ -76,8 +75,6 @@ export interface RunUsage {
 /** What is written to session.json after every subtask – enough to resume. */
 export interface SessionState {
   version: 2;
-  /** rounds started only because a judge found gaps in work that passed the build and tests */
-  judgeRounds?: number;
   sessionId: string;
   task: string;
   fullTask: string;
@@ -91,7 +88,6 @@ export interface SessionState {
   queue: SubTask[];
   doneIds: string[];
   finalVerify?: VerifyResult;
-  requirementCheck?: RunReport['requirementCheck'];
   phase: 'running' | 'stopped' | 'finished';
   stopReason?: string;
   usage: RunUsage;
@@ -145,7 +141,6 @@ export interface RunReport {
   plan: Plan;
   subtasks: SubtaskReport[];
   finalVerify?: VerifyResult;
-  requirementCheck?: { complete: boolean; missing: string[]; judges: string[]; /** the judge ran while the coder finished */ alongside?: boolean };
   merge?: MergeReport;
   /** pre-apply snapshot for rewinding (absent when nothing was applied) */
   checkpointPath?: string;
@@ -238,11 +233,14 @@ export class Orchestrator {
   }
 
   private resolveMode(requested: RunMode, plan: Plan): RunMode {
-    if (requested !== 'auto') return requested;
+    // auto = one agent loop with one model at a time (Qwen Code); the other models only take
+    // over when it stops answering. Several models at once (race, council, split) worked worse
+    // in the bench and are only used when asked for explicitly.
+    if (requested === 'auto') return 'single';
+    if (requested !== 'multi') return requested;
+    // multi (opt-in): several candidates only pay off when build/tests can tell them apart
     if (this.router.size <= 1) return 'single';
     if (plan.subtasks.length > 1) return 'split';
-    // several candidates only pay off when build/tests can tell them apart; without them one
-    // coder plus an independent reviewer gives the same quality for a fraction of the time
     return this.hasChecks() ? 'race' : 'single';
   }
 
@@ -280,7 +278,6 @@ export class Orchestrator {
 
   /** Shared start-up of run() and resume(). */
   private begin(sessionId: string, opts: RunOptions, task: string): void {
-    this.earlyVerdict = undefined;
     this.requestedMode = opts.mode ?? this.cfg.orchestrator.defaultMode;
     this.router.speedBand = this.cfg.orchestrator.speedBand ?? 3;
     const slow = this.router.list().filter((h) => this.router.allows(h, 'coder') && !this.router.inSpeedBand(h, 'coder'));
@@ -492,8 +489,6 @@ export class Orchestrator {
   }
 
   /** localisation done while triaging the task, reused by the first subtask */
-  /** verdict of the acceptance judge that ran while the coder finished, with the diff it judged */
-  private earlyVerdict?: { diff: string; result: Promise<{ complete: boolean; missing: string[]; judges: string[] }> };
   private preLocalized: { id: string; loc: Localization | undefined; pending?: Promise<Localization | undefined> } | undefined;
 
   /**
@@ -503,7 +498,7 @@ export class Orchestrator {
    */
   private async fastPlan(fullTask: string, opts: RunOptions, signal: AbortSignal | undefined): Promise<Plan | undefined> {
     const o = this.cfg.orchestrator;
-    if (o.fastPath === false || opts.requirements || (opts.mode && opts.mode !== 'auto') || (!opts.mode && o.defaultMode !== 'auto')) return undefined;
+    if (o.fastPath === false || opts.requirements || (opts.mode ?? o.defaultMode) !== 'multi') return undefined;
     if (fullTask.length > 1500 || !this.index) return undefined;
     const title = cleanTitle(fullTask.split('\n').find((l) => l.trim()) ?? '').slice(0, 90) || 'Task';
     let files: string[] = [];
@@ -537,6 +532,15 @@ export class Orchestrator {
 
   /** Plan with the council of planners; with approvePlan the user may revise it before any code is written. */
   private async planWithApproval(fullTask: string, opts: RunOptions, signal: AbortSignal | undefined): Promise<{ plan: Plan; mode: RunMode } | undefined> {
+    const requested = opts.mode ?? this.cfg.orchestrator.defaultMode;
+    if (!opts.approvePlan && (requested === 'auto' || requested === 'single')) {
+      // one agent works the whole task through, keeping its own todo list (Qwen Code): no
+      // planner, no localisation request – it explores the code itself
+      const title = cleanTitle(fullTask.split('\n').find((l) => l.trim()) ?? '').slice(0, 90) || 'Task';
+      const plan: Plan = { understanding: '', acceptance: this.requirementsOf(fullTask), subtasks: [{ id: 'T1', title, description: fullTask, files: [], dependsOn: [], critical: false }], authors: [] };
+      this.bus.emitEvent('run.plan', { data: { mode: 'single', subtasks: [title], acceptance: plan.acceptance, round: 1, fast: true } });
+      return { plan, mode: 'single' };
+    }
     const fast = opts.approvePlan ? undefined : await this.fastPlan(fullTask, opts, signal);
     if (fast) {
       const mode = this.resolveMode(opts.mode ?? this.cfg.orchestrator.defaultMode, fast);
@@ -607,61 +611,25 @@ export class Orchestrator {
         const finalVerify = await verifyOverlay(integration, this.materializer, this.cfg, signal);
         st.finalVerify = finalVerify;
         this.bus.emitEvent('run.verify', { data: { ok: finalVerify.ok, skipped: finalVerify.skipped } });
-        const reqCheck = await this.requirementCheck(st.fullTask, st.plan, integration, finalVerify, st.reports, signal);
-        if (signal?.aborted) throw signal.reason ?? new Error('cancelled');
-        st.requirementCheck = reqCheck;
-        this.bus.emitEvent('run.requirements', { data: reqCheck });
         st.inProgress = false;
-        if (!finalVerify.skipped && !finalVerify.ok) this.escalate('the build or tests failed');
-        if (reqCheck.complete && (finalVerify.skipped || finalVerify.ok)) {
+        // the build and tests decide (Qwen Code has no separate judge either): green → done,
+        // red → one coder gets the failures in the next round
+        if (finalVerify.skipped || finalVerify.ok) {
           st.queue = [];
           save();
           break;
         }
-        // the build and tests pass and the judges already had their round: what they still miss
-        // goes into the report instead of another round (bench: a strict second judge sent passing
-        // work into round after round, each split over parallel coders, until the time ran out)
-        const verifiedGaps = !finalVerify.skipped && finalVerify.ok;
-        if (verifiedGaps && (st.judgeRounds ?? 0) >= (this.cfg.orchestrator.judgeRounds ?? 1)) {
-          this.bus.warn('requirements', `the build and tests pass; the judges still miss: ${reqCheck.missing.join(' | ').slice(0, 400)} – left for you to check (orchestrator.judgeRounds)`);
-          st.queue = [];
-          save();
-          break;
-        }
-        if (verifiedGaps) st.judgeRounds = (st.judgeRounds ?? 0) + 1;
-        // follow-up work for the next iteration
-        const followups: SubTask[] = reqCheck.missing.map((m, i) => ({
-          id: `F${st.iteration}.${i + 1}`,
-          title: m.slice(0, 80),
-          description: `Previous work is already applied. Complete this missing requirement:\n${m}`,
-          files: [],
-          dependsOn: [],
-          critical: false,
-        }));
-        if (!finalVerify.skipped && !finalVerify.ok) {
-          followups.unshift({
+        this.escalate('the build or tests failed');
+        st.queue = [
+          {
             id: `V${st.iteration}`,
             title: 'Fix the build/test errors',
-            description: `The combined changes fail verification. Fix the failures without reverting the intended functionality:\n${verifyFailureText(finalVerify)}`,
+            description: `The changes fail verification. Fix the failures without reverting the intended functionality:\n${verifyFailureText(finalVerify)}`,
             files: [],
             dependsOn: [],
             critical: true,
-          });
-        }
-        // the gaps of one change go to ONE coder: parallel follow-ups edited the same files and
-        // ended in merge conflicts
-        st.queue =
-          followups.length > 1
-            ? [
-                {
-                  ...followups[0],
-                  id: `F${st.iteration}`,
-                  title: 'Complete the missing parts',
-                  description: `Previous work is already applied${verifiedGaps ? ' and passes the build and tests – keep it that way' : ''}. Complete every point below in this one change:\n${[...(finalVerify.skipped || finalVerify.ok ? [] : [`Fix the build/test errors:\n${verifyFailureText(finalVerify)}`]), ...reqCheck.missing].map((m) => `- ${m}`).join('\n')}`,
-                  critical: true,
-                },
-              ]
-            : followups;
+          },
+        ];
         save();
       }
     } catch (e) {
@@ -681,11 +649,10 @@ export class Orchestrator {
     const diff = integration.diff();
     const diffPath = join(this.sessionDir, 'changes.diff');
     writeFileSync(diffPath, diff);
-    const reqCheck = st.requirementCheck;
     const finalVerify = st.finalVerify;
     let merge: MergeReport | undefined;
     let checkpointPath: string | undefined;
-    let status: RunReport['status'] = forced ?? (reqCheck?.complete && (!finalVerify || finalVerify.skipped || finalVerify.ok) ? 'completed' : changedFiles.length ? 'incomplete' : 'failed');
+    let status: RunReport['status'] = forced ?? (changedFiles.length && (!finalVerify || finalVerify.skipped || finalVerify.ok) ? 'completed' : changedFiles.length ? 'incomplete' : 'failed');
     if (forced) {
       /* stopped or cancelled: nothing is written to the project */
     } else if (opts.dryRun) status = 'dry-run';
@@ -717,7 +684,6 @@ export class Orchestrator {
       plan: st.plan,
       subtasks: st.reports,
       finalVerify,
-      requirementCheck: reqCheck,
       merge,
       checkpointPath,
       changedFiles,
@@ -864,8 +830,6 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
       const t0 = Date.now();
       let timer: NodeJS.Timeout | undefined;
       const workerSignal = modelKeys.length > 1 && grace > 0 ? anySignal(signal, race.signal) : signal;
-      // one coder on a requirement-heavy one-subtask task: the acceptance judge runs while it finishes
-      const judgeAlong = modelKeys.length === 1 && iteration === 1 && plan.subtasks.length === 1 && (plan.acceptance?.length ?? 0) >= REQUIREMENT_HEAVY && this.cfg.orchestrator.earlyJudge !== false && !this.earlyVerdict;
       const firstDone = async (overlay: Overlay) => {
         if (timer || modelKeys.length < 2 || grace <= 0) return;
         // with build/tests the grace period starts only for a candidate that passes them – and
@@ -894,7 +858,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
           // a repeated model samples more freely so its candidates differ
           const sample = modelKeys.slice(0, i).filter((k) => k === mk).length;
           const w = new AgentWorker(
-            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined, lateHint, earlyCheck: judgeAlong ? (d) => this.startEarlyJudge(fullTask, plan, d, mk, signal) : undefined },
+            { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined, lateHint },
             this.router,
             this.cfg,
             { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal: workerSignal, external: this.external },
@@ -922,7 +886,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     // Cascade (FrugalGPT / AutoMix): with build/tests the main model tries alone first; a
     // candidate that passes them is the result, the race only starts when it does not.
     // A successful task then costs what one agent costs; a hard one still gets every model.
-    const cascade = mode === 'race' && this.requestedMode === 'auto' && models.length > 1 && this.hasChecks() && this.cfg.orchestrator.cascade !== false;
+    const cascade = mode === 'race' && this.requestedMode === 'multi' && models.length > 1 && this.hasChecks() && this.cfg.orchestrator.cascade !== false;
     if (cascade) {
       const first = ok(await launch([models[0].caps.key], ''));
       const done = changed(first)[0];
@@ -989,7 +953,8 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     let winner: Winner = usable[0];
     let verdict: CouncilVerdict | undefined;
     // a cascade whose first candidate passed the build and tests needs no reviewer (as one model alone)
-    const reviewers = report.cascade === 'first' && !reviewRules ? 0 : usable.length > 1 || mode === 'council' ? this.cfg.orchestrator.councilSize : this.router.size > 1 || reviewRules ? 1 : 0;
+    // one agent (auto/single): no second model reviews its work – the build and tests do (Qwen Code)
+    const reviewers = mode === 'single' || (report.cascade === 'first' && !reviewRules) ? 0 : usable.length > 1 || mode === 'council' ? this.cfg.orchestrator.councilSize : this.router.size > 1 || reviewRules ? 1 : 0;
     if (reviewers > 0) {
       try {
         verdict = await councilReview(this.router, {
@@ -1104,94 +1069,6 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
     return report;
   }
 
-  private async requirementCheck(task: string, plan: Plan, integration: Overlay, verify: VerifyResult, reports: SubtaskReport[], signal?: AbortSignal): Promise<NonNullable<RunReport['requirementCheck']>> {
-    const diff = integration.diff();
-    if (!diff.trim()) return { complete: false, missing: ['No changes were produced'], judges: [] };
-    // one model judging its own verified work adds a request and little else
-    const firstTry = reports.length > 0 && reports.every((r) => r.cascade === 'first');
-    // a task with many requirements is judged even when the build and tests passed: the
-    // project's tests rarely cover every new rule (the bench lost such a task 2 times in 6)
-    const manyRequirements = (plan.acceptance?.length ?? 0) >= REQUIREMENT_HEAVY;
-    if (!manyRequirements && (this.codingModels() <= 1 || firstTry) && !verify.skipped && verify.ok && !reports.some((r) => r.openIssues?.length)) {
-      this.bus.info('requirements', firstTry ? 'the main model passed the build and tests on the first try: no separate acceptance judge' : 'one model, build and tests passed: no separate acceptance judge');
-      return { complete: true, missing: [], judges: [] };
-    }
-    const writers = [...new Set(reports.flatMap((r) => r.winner?.models ?? []))];
-    // the judge that ran while the coder finished saw this very change: its verdict stands
-    const ev = this.earlyVerdict;
-    if (ev && ev.diff === diff && verify.ok && !verify.skipped && !reports.some((r) => r.openIssues?.length)) {
-      // a verdict that is still not there after the final checks is not waited for much longer
-      let timer: NodeJS.Timeout | undefined;
-      const none = { complete: false, missing: [] as string[], judges: [] as string[] };
-      const late = new Promise<typeof none>((res) => (timer = setTimeout(() => res(none), this.cfg.orchestrator.earlyJudgeWaitMs ?? 45_000)));
-      const r = await Promise.race([ev.result, late])
-        .catch(() => none)
-        .finally(() => clearTimeout(timer));
-      if (r.judges.length) {
-        this.bus.info('requirements', `acceptance judge ran while the coder finished (${r.judges.join(', ')}): ${r.complete ? 'complete' : 'gaps found'}`);
-        return { ...r, alongside: true };
-      }
-    }
-    return this.judge(task, plan, diff, renderVerify(verify) + (!verify.skipped && !verify.ok ? `\n${truncateTokens(verifyFailureText(verify), 1200)}` : ''), writers, reports, signal, !verify.skipped && verify.ok);
-  }
-
-  /** The judge on the coder's change before it finished (requirement-heavy single-coder tasks). */
-  private startEarlyJudge(task: string, plan: Plan, diff: string, writer: string, signal?: AbortSignal): Promise<string[]> {
-    this.bus.info('requirements', 'todo list complete: the acceptance judge starts while the coder finishes');
-    const result = this.judge(task, plan, diff, 'Not run yet – the coder reports that it ran the build and tests; the final run follows.', [writer], [], signal, true, true);
-    this.earlyVerdict = { diff, result };
-    return result.then((r) => (r.complete ? [] : r.missing));
-  }
-
-  private async judge(task: string, plan: Plan, diff: string, verifyText: string, writers: string[], reports: SubtaskReport[], signal: AbortSignal | undefined, verified: boolean, early = false): Promise<{ complete: boolean; missing: string[]; judges: string[] }> {
-    // a model that did not write the code comes first – but only from the speed band: a slow
-    // outside judge stretched every bench run and, by finding gaps that were not there, sent
-    // the work into extra rounds until the time ran out. Running alongside the coder, one is enough.
-    const want = early ? 1 : Math.min(2, this.router.size);
-    let judges = this.router.pick('judge', want, writers, { strictBand: verified });
-    if (judges.length < want) judges = [...judges, ...this.router.pick('judge', want - judges.length, judges.map((j) => j.caps.key))];
-    // every model is resting after a failure: nobody can judge now → rely on the verification
-    if (!judges.length) {
-      this.bus.warn('requirements', 'no model is available for the acceptance judge right now: the verification decides');
-      return { complete: true, missing: [], judges: [] };
-    }
-    const budget = this.contextBudget(0.55, judges.map((j) => j.caps.key));
-    const prompt = `You are the final acceptance judge. Decide whether the combined change fully satisfies the task and its acceptance criteria. Be strict but do not invent requirements.
-
-# TASK
-${task}
-${plan.acceptance.length ? `\n# ACCEPTANCE CRITERIA\n${plan.acceptance.map((a) => `- ${a}`).join('\n')}` : ''}
-
-# VERIFICATION
-${verifyText}
-
-# WORK LOG
-${reports.map((r) => `- ${r.subtask.id} ${r.subtask.title}: ${r.status}`).join('\n')}
-${reports.some((r) => r.openIssues?.length) ? `\n# OPEN REVIEW FINDINGS (blocking, not fixed – check whether the diff still has them)\n${reports.flatMap((r) => (r.openIssues ?? []).map((t) => `- ${r.subtask.id}: ${truncateTokens(t, 120)}`)).join('\n')}\n` : ''}
-# COMBINED DIFF
-\`\`\`diff
-${truncateTokens(diff, Math.max(800, budget - estimateTokens(task) - 800))}
-\`\`\`
-
-Check definitions given only in words (counters, sizes, offsets, what a getter returns): the change must follow their most natural reading; a different reading, or one no test pins with concrete values, is missing.
-
-Return ONLY JSON: {"complete": true|false, "missing": ["each unmet requirement as an actionable instruction"]}`;
-    const res = await settleQuorum(
-      judges.map((j) => (s: AbortSignal) => this.router.chat({ messages: [{ role: 'user', content: prompt }], temperature: 0, jsonMode: true, jsonSchema: JUDGE_SCHEMA, maxTokens: 1500, purpose: 'requirements', signal: s }, { prefer: [j.caps.key], role: 'judge' })),
-      { signal, onLate: (i, ms) => this.bus.warn('requirements', `${judges[i].caps.key} stopped: no verdict after ${Math.round(ms / 1000)} s while another judge was done`) },
-    );
-    const verdicts = res.filter((r): r is { ok: true; value: Awaited<ReturnType<Router['chat']>> } => r.ok).map((r) => ({ model: r.value.model, j: tryExtractJson<{ complete?: boolean; missing?: string[] }>(r.value.content) }));
-    verdicts.forEach((v) => {
-      this.used.add(v.model);
-      this.router.recordOutcome(v.model, 'judge', !!v.j && typeof v.j.complete === 'boolean');
-    });
-    const valid = verdicts.filter((v) => v.j);
-    if (!valid.length) return { complete: true, missing: [], judges: [] }; // cannot judge → rely on verification
-    const complete = valid.every((v) => v.j!.complete === true);
-    const missing = [...new Set(valid.flatMap((v) => (v.j!.missing ?? []).filter((m) => typeof m === 'string' && m.trim())))].slice(0, 8);
-    return { complete: complete || missing.length === 0, missing: complete ? [] : missing, judges: valid.map((v) => v.model) };
-  }
-
   private persist(st: SessionState, integration: Overlay): void {
     st.overlay = integration.toJSON();
     st.savedAt = new Date().toISOString();
@@ -1203,8 +1080,6 @@ function emptyUsage(): RunUsage {
   return { requests: 0, tokensIn: 0, tokensOut: 0, seconds: 0, byModel: {} };
 }
 
-/** acceptance criteria from which a task counts as requirement-heavy (always judged) */
-const REQUIREMENT_HEAVY = 4;
 
 function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
   const list = signals.filter((x): x is AbortSignal => !!x);
@@ -1283,11 +1158,6 @@ export function renderReport(r: RunReport, diff: string): string {
     lines.push('');
   }
   if (r.finalVerify) lines.push('## Final verification', '', renderVerify(r.finalVerify), '');
-  if (r.requirementCheck) {
-    lines.push('## Requirement check', '', `Complete: ${r.requirementCheck.complete ? 'yes' : 'no'} (judges: ${r.requirementCheck.judges.join(', ') || '-'})`);
-    if (r.requirementCheck.missing.length) lines.push('', ...r.requirementCheck.missing.map((m) => `- ${m}`));
-    lines.push('');
-  }
   if (r.merge) {
     lines.push('## Applied to the project', '', `Written: ${r.merge.written.length}, deleted: ${r.merge.deleted.length}, 3-way merged: ${r.merge.merged3way.length}, conflicts: ${r.merge.conflicts.length}`);
     if (r.merge.conflicts.length) lines.push('', 'Conflicting files (resolve the markers by hand):', ...r.merge.conflicts.map((c) => `- ${c}`));

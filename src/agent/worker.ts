@@ -45,12 +45,6 @@ export interface WorkerSpec {
   skills?: WorkerSkills;
   /** sampling temperature for models without a publisher preset (default 0.2) */
   temperature?: number;
-  /**
-   * Acceptance check run alongside the coder: called once with the current diff when every
-   * todo item is done; it resolves to the gaps found (empty: complete). Gaps that arrive in
-   * time go into this conversation, so the coder fixes them before it finishes.
-   */
-  earlyCheck?: (diff: string) => Promise<string[]>;
 }
 
 export interface WorkerResult {
@@ -126,9 +120,6 @@ export class AgentWorker {
   /** localisation that arrived while the worker was already running */
   private lateHint: string | undefined;
   private lateHintGiven = false;
-  private early?: Promise<string[]>;
-  private earlyGaps?: string[];
-  private earlyGiven = false;
   /** how long this worker's model took per step (for the hedge delay) */
   private readonly stepMs: number[] = [];
   /** hedged steps in a row the backup answered first */
@@ -514,46 +505,6 @@ export class AgentWorker {
       .find((h) => this.router.allows(h, 'coder') && h.caps.nativeTools === native && this.router.inSpeedBand(h, 'coder'))?.caps.key;
   }
 
-  /** Every todo item is done and there is a change: the acceptance check starts on it (once). */
-  private startEarlyCheck(): void {
-    const todos = this.toolCtx.todos;
-    if (!this.spec.earlyCheck || this.early || !todos?.length) return;
-    if (!todos.every((t) => t.status === 'completed' || t.status === 'dropped') || !this.spec.overlay.ownChanges().length) return;
-    this.bus?.emitEvent('worker.early-check', { source: this.spec.id, data: { step: this.step } });
-    this.early = this.spec.earlyCheck(this.spec.overlay.diff()).catch(() => []);
-    void this.early.then((g) => {
-      this.earlyGaps = g;
-    });
-  }
-
-  /** Gaps the acceptance check found since the last step go into the conversation (once). */
-  private addEarlyGaps(): void {
-    if (!this.earlyGaps?.length || this.earlyGiven) return;
-    this.earlyGiven = true;
-    const text = gapText(this.earlyGaps, '[Kurultay] Note');
-    const last = this.messages[this.messages.length - 1];
-    if (last?.role === 'user') last.content = `${last.content ?? ''}\n\n${text}`;
-    else this.messages.push({ role: 'user', content: text });
-    this.interventions.push('early-check');
-  }
-
-  /** On finish: the verdict of a running acceptance check (once; empty when there is none). */
-  private async waitEarlyGaps(): Promise<string[]> {
-    if (!this.early && this.spec.earlyCheck) this.startEarlyCheck();
-    if (!this.early || this.earlyGiven) return [];
-    // bounded: a slow judge must not hold a finished coder (the final check judges again)
-    let timer: NodeJS.Timeout | undefined;
-    const stop = new Promise<string[]>((r) => {
-      this.signal?.addEventListener('abort', () => r([]), { once: true });
-      timer = setTimeout(() => r([]), this.cfg.orchestrator.earlyJudgeWaitMs ?? 45_000);
-    });
-    const gaps = await Promise.race([this.early, stop]).finally(() => clearTimeout(timer));
-    if (!gaps.length) return [];
-    this.earlyGiven = true;
-    this.interventions.push('early-check');
-    return gaps;
-  }
-
   /** A late hint that arrived since the last step goes into the conversation (once). */
   private addLateHint(): void {
     if (!this.lateHint || this.lateHintGiven) return;
@@ -668,9 +619,7 @@ export class AgentWorker {
       this.step = step;
       this.toolCtx.step = step;
       if (this.signal?.aborted) return this.result('failed', 'cancelled', step, finalText, 'aborted');
-      this.startEarlyCheck();
       this.addLateHint();
-      this.addEarlyGaps();
       await this.condense();
       let r: ChatResult;
       try {
@@ -728,15 +677,6 @@ export class AgentWorker {
         if (c.name === 'skill' && !out.isError && typeof c.args.name === 'string' && !this.skillLog.some((x) => x.name === c.args.name)) {
           const s = this.spec.skills?.registry.get(c.args.name);
           if (s) this.skillLog.push({ name: s.name, how: 'tool' });
-        }
-        if (out.finished && out.finished.status === 'done') {
-          // the acceptance check is still running: its verdict is worth waiting for here, a gap
-          // fixed in this conversation costs far less than a new round with a fresh coder
-          const gaps = await this.waitEarlyGaps();
-          if (gaps.length) {
-            out.finished = undefined;
-            out.output = gapText(gaps, 'Not finished');
-          }
         }
         if (out.finished) {
           if (useNative) this.messages.push({ role: 'tool', tool_call_id: c.id, content: 'ok' });
@@ -836,8 +776,4 @@ export function toTextProtocol(messages: ChatMessage[]): ChatMessage[] {
   }
   flush();
   return out;
-}
-
-function gapText(gaps: string[], lead: string): string {
-  return `${lead}: an independent acceptance check of your change found requirements that are not met yet:\n${gaps.map((g) => `- ${g}`).join('\n')}\nFix them (with a test for each), update your todo list, run the checks, then call finish again. If a point is wrong, say why in the finish summary.`;
 }

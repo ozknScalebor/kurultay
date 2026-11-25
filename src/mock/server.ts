@@ -100,7 +100,7 @@ function agentStep(model: MockModel, messages: Msg[]): { text?: string; call?: {
   const sys = messages[0]?.content ?? '';
   const first = messages.find((m) => m.role === 'user')?.content ?? '';
   const toolResults = messages.filter((m) => m.role === 'tool' || (m.role === 'user' && (m.content ?? '').startsWith('<tool_result'))).length;
-  const pathMatch = first.match(/Files likely involved: ([^\s,]+)/) ?? first.match(/\b([\w/.-]+\.(?:js|c|py|java|ts))\b/);
+  const pathMatch = first.match(/Files likely involved: ([^\s,]+)/) ?? first.match(/Overall goal:[^\n]*?\b([\w/.-]+\.(?:js|c|py|java|ts))\b/) ?? first.match(/\b([\w/.-]+\.(?:js|c|py|java|ts))\b/);
   const target = pathMatch?.[1] ?? 'src/mathutil.js';
   const fixing = /has problems that must be fixed|fail verification/.test(first);
   const verifyCmd = sys.match(/run_command before finishing\):\n- (.+)/)?.[1];

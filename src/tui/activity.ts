@@ -155,9 +155,6 @@ export class ActivityTracker {
       case 'run.verify':
         this.phase = 'verification done';
         break;
-      case 'run.requirements':
-        this.phase = 'requirement check done';
-        break;
       case 'llm.request': {
         const purpose = String(d.purpose ?? '');
         const id = purpose.startsWith('worker:') ? purpose.slice(7) : '';
@@ -172,7 +169,6 @@ export class ActivityTracker {
         m.set(purpose, (m.get(purpose) ?? 0) + 1);
         this.other.set(src, m);
         if (/^council\.review$/.test(purpose)) this.phase = 'review: other models judge the candidates (authors do not review themselves)';
-        else if (purpose === 'requirements') this.phase = 'requirement check: judges compare the result with the task';
         else if (purpose.startsWith('localize')) this.phase = 'localisation: finding the files and functions to change';
         else if (purpose === 'plan.judge') this.phase = 'planning: choosing the best plan';
         break;

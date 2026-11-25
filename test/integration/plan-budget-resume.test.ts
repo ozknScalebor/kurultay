@@ -119,7 +119,7 @@ describe('budgets and resume', () => {
     const t1Calls = agentCalls.filter((c) => c.startsWith('T1')).length;
 
     const second = await resume(undefined, { budget: { tokens: 0 } });
-    assert.equal(second.status, 'completed', JSON.stringify(second.requirementCheck));
+    assert.equal(second.status, 'completed');
     assert.equal(second.sessionId, first.sessionId);
     assert.equal(second.resumed, true);
     assert.equal(agentCalls.filter((c) => c.startsWith('T1')).length, t1Calls, 'T1 was not run again');

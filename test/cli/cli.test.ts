@@ -162,7 +162,7 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.equal(real.code, 0, real.stdout + real.stderr);
     assert.match(real.stdout, /Result: completed/);
     assert.match(real.stdout, /Report: .*REPORT\.md/);
-    assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/);
+    assert.match(readFileSync(join(root, 'src/mathutil.js'), 'utf8'), /Math\.min\(Math\.max/, real.stdout + real.stderr);
     assert.match(real.stderr, /\d+ models · session/, 'live log on stderr');
   });
 

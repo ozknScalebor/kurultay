@@ -48,7 +48,7 @@ describe('bench scripts', () => {
         { suite: 'cpp', id: 'K2', kurultay: { passed: false, seconds: 60, requests: 10, tokens: 1000 } },
       ],
     });
-    assert.match(md, /\| Kurultay \(all models\) \| 1 \/ 2 \| 50% \| 3\.5 min \| 30 \| 6 K \| 0\.1 min \| 0\.5 min \|/);
+    assert.match(md, /\| Kurultay \| 1 \/ 2 \| 50% \| 3\.5 min \| 30 \| 6 K \| 0\.1 min \| 0\.5 min \|/);
     assert.match(md, /\| Kurultay \(main model only\) \| 1 \/ 1 \| 100% \| 1\.5 min \| 12 \| 3 K \| 0\.0 min \| - \|/);
     assert.match(md, /\| Qwen Code \| 0 \/ 1 \| 0% \| 1\.0 min \| 9 \| 2 K \| - \| - \|/);
     assert.match(md, /Multi-model slowdown:\*\* with all models Kurultay took 1\.0 min \(67%\) longer/);

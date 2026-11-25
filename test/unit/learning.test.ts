@@ -60,7 +60,7 @@ describe('learned model quality', () => {
     assert.equal(bus.ofType('model.outcome').length, 6, 'unknown models are ignored');
   });
 
-  it('records planner, coder, reviewer and judge outcomes during a run', async () => {
+  it('records planner, coder and reviewer outcomes during a run', async () => {
     const s = await startMockServer([
       { id: 'one', quality: 'good', tools: true, ctx: 65536 },
       { id: 'two', quality: 'good', tools: true, ctx: 65536 },
@@ -76,7 +76,7 @@ describe('learned model quality', () => {
     await new Orchestrator(root, cfg, router, new Materializer(root, join(root, '.kurultay')), index, recordingBus()).run('Implement clamp in src/mathutil.js', { mode: 'race' });
     const saved = JSON.parse(readFileSync(file, 'utf8')) as { models: Record<string, { roles: Record<string, { n: number; ok: number }> }> };
     const roles = new Set(Object.values(saved.models).flatMap((m) => Object.keys(m.roles)));
-    for (const role of ['planner', 'coder', 'reviewer', 'judge']) assert.ok(roles.has(role), `${role} outcome recorded: ${JSON.stringify(saved)}`);
+    for (const role of ['planner', 'coder', 'reviewer']) assert.ok(roles.has(role), `${role} outcome recorded: ${JSON.stringify(saved)}`);
     const coder = Object.values(saved.models).map((m) => m.roles.coder).filter(Boolean);
     assert.ok(coder.some((c) => c.ok > 0), 'the verified winner counts as a success');
     const prompts = s.log.map((l) => JSON.stringify(l.body));

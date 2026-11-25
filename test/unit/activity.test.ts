@@ -65,12 +65,8 @@ describe('live activity: what each model is doing', () => {
     assert.match(t.now, /chosen/);
     bus.emitEvent('llm.request', { source: 'judge@main', data: { purpose: 'plan.judge' } });
     assert.match(t.now, /choosing the best plan/);
-    bus.emitEvent('llm.request', { source: 'judge@main', data: { purpose: 'requirements' } });
-    assert.match(t.now, /requirement check/);
     bus.emitEvent('run.verify', { data: {} });
     assert.match(t.now, /verification/);
-    bus.emitEvent('run.requirements', { data: {} });
-    assert.match(t.now, /requirement check done/);
     bus.emitEvent('run.end', { data: {} });
     assert.deepEqual(t.lines(), []);
     t.dispose();
@@ -101,7 +97,6 @@ describe('terminal renderer: sections and plain-language lines', () => {
     bus.emitEvent('run.iteration', { data: { iteration: 2, subtasks: 1 } });
     bus.emitEvent('run.verify', { data: { skipped: true } });
     bus.emitEvent('run.verify', { data: { ok: true } });
-    bus.emitEvent('run.requirements', { data: { complete: true } });
     bus.emitEvent('run.merge', { data: { written: ['a'], conflicts: [], root: '/p/x' } });
     stop();
     const text = out.join('\n');
@@ -124,7 +119,6 @@ describe('terminal renderer: sections and plain-language lines', () => {
       '── Iteration 2',
       'the code was not compiled or tested',
       '✓ verification: build and tests passed',
-      '✓ requirement check: complete',
       'Applied to the project (/p/x): 1 file written',
     ])
       assert.ok(text.includes(want), `${want}\n---\n${text}`);

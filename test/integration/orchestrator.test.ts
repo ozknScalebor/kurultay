@@ -102,7 +102,7 @@ describe('Orchestrator', () => {
     };
     const { run, root, bus } = await setup(brain, { 'package.json': '{"type":"module"}', 'README.md': '# x' }, { cfg: { verify: { test: 'node -e "import(\'./src/b.js\').then(m=>process.exit(m.B===2?0:1))"' } } });
     const report = await run('Create modules a and b', { mode: 'split' });
-    assert.equal(report.status, 'completed', JSON.stringify(report.requirementCheck));
+    assert.equal(report.status, 'completed');
     assert.equal(report.mode, 'split');
     assert.ok(t2SawA, 'T2 worker read T1 output through the integration overlay');
     assert.equal(read(root, 'src/b.js'), "import { A } from './a.js';\nexport const B = A + 1;\n");
@@ -114,24 +114,6 @@ describe('Orchestrator', () => {
     const session = JSON.parse(read(report.sessionDir, 'session.json'));
     assert.equal(session.plan.subtasks.length, 2);
     assert.ok(!existsSync(join(root, '.kurultay', 'journal.json')));
-  });
-
-  it('runs follow-up iterations for requirements the judges find missing', async () => {
-    const brain: Brain = {
-      plan: { subtasks: [{ id: 'T1', title: 'main', description: 'write src/a.js' }] },
-      agent: (id, step) => {
-        if (id === 'T1' && step === 0) return call('write_file', { path: 'src/a.js', content: 'a' });
-        if (id.startsWith('F') && step === 0) return call('write_file', { path: 'src/extra.js', content: 'extra' });
-        return undefined;
-      },
-      judge: [{ complete: false, missing: ['also create src/extra.js'] }, { complete: true }], // one model → one judge per iteration
-    };
-    const { run, root } = await setup(brain, { 'README.md': '#' }, { models: ['solo'] });
-    const report = await run('Do the thing', { mode: 'single' });
-    assert.equal(report.status, 'completed');
-    assert.equal(report.iterations, 2);
-    assert.ok(report.subtasks.some((s) => s.subtask.id === 'F1.1' && s.iteration === 2));
-    assert.equal(read(root, 'src/extra.js'), 'extra');
   });
 
   it('adds a fix-the-build subtask when the combined change fails verification', async () => {
@@ -162,13 +144,12 @@ describe('Orchestrator', () => {
     const brain: Brain = {
       plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
       agent: (id, step) => (step === 0 ? call('write_file', { path: `out-${id}.txt`, content: id }) : undefined),
-      judge: [{ complete: false, missing: ['never satisfied'] }],
     };
-    const { run } = await setup(brain, { 'README.md': '#' }, { models: ['solo'], cfg: { orchestrator: { maxIterations: 2 } } });
+    const { run } = await setup(brain, { 'README.md': '#' }, { models: ['solo'], cfg: { verify: { test: 'false' }, orchestrator: { maxIterations: 2 } } });
     const report = await run('impossible', { mode: 'single' });
     assert.equal(report.status, 'incomplete');
     assert.equal(report.iterations, 2);
-    assert.deepEqual(report.requirementCheck!.missing, ['never satisfied']);
+    assert.equal(report.finalVerify?.ok, false);
   });
 
   it('reports failure when no worker produces any change', async () => {
@@ -220,7 +201,7 @@ describe('Orchestrator', () => {
       },
     };
     const { run, root } = await setup(brain, { 'README.md': '#' }, { models: ['m1', 'm2', 'm3'] });
-    const report = await run('write a.txt', { mode: 'single' });
+    const report = await run('write a.txt', { mode: 'split' });
     assert.equal(read(root, 'a.txt'), 'fixed');
     const st = report.subtasks[0];
     assert.equal(st.fixes, 2);
@@ -273,7 +254,7 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = { 'src/uart.c': 'int uart_init(void) {\n  return 0;\n}\n\nint uart_send(int n) {\n  return n + 1;\n}\n' };
     for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run } = await setup(brain, files, { models: ['m1'] });
-    const report = await run('fix uart_send', { mode: 'single' });
+    const report = await run('fix uart_send', { mode: 'split' });
     assert.deepEqual(report.subtasks[0].localized, ['src/uart.c:uart_send']);
     assert.ok(prompts.some((p) => /LIKELY EDIT LOCATIONS[\s\S]*5│ int uart_send\(int n\)/.test(p)));
     assert.match(read(report.reportPath, ''), /Localised: `src\/uart\.c:uart_send`/);
@@ -374,7 +355,7 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = { 'src/uart.c': 'int uart_send(int n) {\n  return n + 1;\n}\n' };
     for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run, s, bus, root } = await setup(brain, files, { cfg: { orchestrator: { parallelLocalize: false } } });
-    const report = await run('uart_send writes one byte too many');
+    const report = await run('uart_send writes one byte too many', { mode: 'multi' });
     assert.equal(plans, 0, 'no plan drafts');
     assert.equal(report.mode, 'single', 'no build/test commands: one coder and a reviewer, no race');
     assert.equal(report.subtasks.length, 1);
@@ -387,10 +368,10 @@ describe('Orchestrator', () => {
     assert.match(read(report.reportPath, ''), /## Prompt makeup \(\d+ coding requests?\)[\s\S]*\| Tool declarations \| \d+ \|/);
     // localisation names at most four files: a short task stays one agent loop, with several models too
     brain.locate = { files: ['src/f1.c', 'src/f2.c', 'src/f3.c', 'src/f4.c'], locations: [] };
-    await run('change f1 to f4');
+    await run('change f1 to f4', { mode: 'multi' });
     assert.equal(plans, 0);
     // a long task, a forced mode or plan approval go through the planners
-    await run(`change f1 to f4\n${'more detail. '.repeat(130)}`);
+    await run(`change f1 to f4\n${'more detail. '.repeat(130)}`, { mode: 'multi' });
     assert.ok(plans > 0);
     const after = plans;
     await run('x', { mode: 'race' });
@@ -412,7 +393,7 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run, s } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
-    const report = await run('change f1 to f4');
+    const report = await run('change f1 to f4', { mode: 'multi' });
     assert.equal(plans, 0, 'no plan council for one model and four files');
     assert.equal(report.subtasks.length, 1);
     assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1, 'localised once');
@@ -429,7 +410,7 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run, s } = await setup(brain, files);
-    await run('change f0 to f6');
+    await run('change f0 to f6', { mode: 'multi' });
     assert.equal(s.log.filter((l) => JSON.stringify(l.body).includes('Which files must be EDITED')).length, 1);
   });
 
@@ -447,7 +428,7 @@ describe('Orchestrator', () => {
     for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const speeds = { fast: { tokensPerSec: 190, ttftMs: 1000 }, slow: { tokensPerSec: 19, ttftMs: 7000 } };
     const ok = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { raceWidth: 3, maxIterations: 1 } } });
-    const report = await ok.run('change f1');
+    const report = await ok.run('change f1', { mode: 'multi' });
     assert.equal(report.mode, 'race');
     assert.ok(workers.length >= 1 && workers.every((m) => m === 'fast'), `only the fast model works (${workers.join(', ')})`);
     assert.ok(ok.bus.ofType('log.info').some((e) => /much slower than fast@e: slow@e/.test(e.message ?? '')));
@@ -455,7 +436,7 @@ describe('Orchestrator', () => {
     // the fast model's change fails the tests: the slower model joins the next iteration
     workers.length = 0;
     const bad = await setup(brain, files, { models: ['fast', 'slow'], caps: speeds, cfg: { verify: { build: 'true', test: 'false' }, orchestrator: { raceWidth: 2, maxIterations: 2 } } });
-    await bad.run('change f1');
+    await bad.run('change f1', { mode: 'multi' });
     assert.ok(bad.bus.ofType('log.info').some((e) => /(first candidate|build or tests) failed: the slower models join from now on \(slow@e\)/.test(e.message ?? '')));
     assert.ok((workers as string[]).includes('slow'));
   });
@@ -477,14 +458,14 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const good = await setup(brain, files, { models: ['m1', 'm2'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { raceWidth: 3 } } });
-    const r1 = await good.run('change f1');
+    const r1 = await good.run('change f1', { mode: 'multi' });
     assert.equal(workers.length, 1, 'one agent when it passes');
     assert.equal(r1.subtasks[0].cascade, 'first');
     assert.equal(judges, 0);
     assert.ok(!r1.subtasks[0].verdict, 'no review either');
     workers.length = 0;
     const bad = await setup(brain, files, { models: ['m1', 'm2'], cfg: { verify: { build: 'true', test: 'false' }, orchestrator: { raceWidth: 3, maxIterations: 1 } } });
-    const r2 = await bad.run('change f1');
+    const r2 = await bad.run('change f1', { mode: 'multi' });
     assert.equal(r2.subtasks[0].cascade, 'raced');
     assert.ok(workers.length >= 3, 'the first one, then two more (and a fix round)');
     const r3 = await good.run('change f1', { mode: 'race' });
@@ -506,14 +487,14 @@ describe('Orchestrator', () => {
     const files: Record<string, string> = { 'src/uart.c': 'int uart_send(int n) {\n  return n + 1;\n}\n' };
     for (let i = 0; i < 8; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
     const { run, root } = await setup(brain, files);
-    const report = await run('uart_send writes one byte too many');
+    const report = await run('uart_send writes one byte too many', { mode: 'multi' });
     assert.equal(report.status, 'completed');
     assert.ok(!/A parallel localisation finished/.test(seen[0] ?? ''), 'first step without the hint');
     assert.ok(seen.slice(1).some((t) => /A parallel localisation finished[\s\S]*uart_send/.test(t)), 'a later step has it');
     assert.match(read(root, 'src/uart.c'), /return n;/);
   });
 
-  it('a task with many requirements: the coder gets them as a todo list and the acceptance judge runs although the tests passed', async () => {
+  it('a task with many requirements: the coder gets them as a todo list', async () => {
     let judges = 0;
     let firstPrompt = '';
     const brain: Brain = {
@@ -536,109 +517,11 @@ describe('Orchestrator', () => {
     const report = await run(task);
     assert.equal(report.status, 'completed');
     assert.match(firstPrompt, /your todo list[\s\S]*\[ \] 1\. Add the f1 rules\./);
-    assert.equal(judges, 1, 'judged although one model passed the tests');
+    assert.equal(judges, 0, 'no separate acceptance judge');
     assert.ok(report.plan.acceptance.length >= 4);
   });
 
-  it('the acceptance judge runs while the coder finishes; its gaps are fixed in the same conversation', async () => {
-    let judges = 0;
-    let gapSeen = false;
-    const brain: Brain = {
-      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
-      locate: { files: ['src/f1.c'], locations: [] },
-      judge: [{ complete: false, missing: ['negative inputs must return -1'] }, { complete: true }],
-      agent: (_id, step, q) => {
-        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
-        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: 'completed' })) });
-        if (step === 2) return undefined; // finish → waits for the judge
-        if (step === 3) {
-          gapSeen = /acceptance check[\s\S]*negative inputs must return -1/.test(q.messages.map((m) => m.content ?? '').join('\n'));
-          return call('edit_file', { path: 'src/f1.c', old_text: 'return 10;', new_text: 'return x < 0 ? -1 : 10;' });
-        }
-        return undefined;
-      },
-      record: (kind) => {
-        if (kind === 'judge') judges++;
-      },
-    };
-    const files: Record<string, string> = {};
-    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(int x) { return ${i}; }\n`;
-    const { run, bus, root } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
-    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
-    assert.equal(report.status, 'completed');
-    assert.ok(gapSeen, 'the gap went into the coder\'s conversation');
-    assert.match(read(root, 'src/f1.c'), /x < 0 \? -1 : 10/);
-    assert.equal(report.iterations, 1, 'no extra round');
-    assert.equal(judges, 2, 'judged alongside, then once more on the changed diff');
-    assert.ok(bus.ofType('log.info').some((e) => /starts while the coder finishes/.test(e.message ?? '')));
-  });
-
-  it('a verdict from alongside the coder is reused when the change did not move', async () => {
-    let judges = 0;
-    const brain: Brain = {
-      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
-      locate: { files: ['src/f1.c'], locations: [] },
-      agent: (_id, step) => {
-        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
-        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: i === 5 ? 'dropped' : 'completed', note: 'n/a' })) });
-        return undefined;
-      },
-      record: (kind) => {
-        if (kind === 'judge') judges++;
-      },
-    };
-    const files: Record<string, string> = {};
-    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
-    const { run, bus } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' } } });
-    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
-    assert.equal(report.status, 'completed');
-    assert.equal(judges, 1);
-    assert.ok(bus.ofType('log.info').some((e) => /ran while the coder finished/.test(e.message ?? '')));
-    assert.equal(report.requirementCheck?.alongside, true);
-  });
-
-  it('a slow judge alongside the coder does not hold it: the wait is bounded', async () => {
-    const brain: Brain = {
-      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
-      locate: { files: ['src/f1.c'], locations: [] },
-      judgeDelayMs: 1500,
-      agent: (_id, step) => {
-        if (step === 0) return call('edit_file', { path: 'src/f1.c', old_text: 'return 1;', new_text: 'return 10;' });
-        if (step === 1) return call('todo_write', { todos: [1, 2, 3, 4, 5].map((i) => ({ id: String(i), content: `r${i}`, status: 'completed' })) });
-        return undefined;
-      },
-    };
-    const files: Record<string, string> = {};
-    for (let i = 0; i < 9; i++) files[`src/f${i}.c`] = `int f${i}(void) { return ${i}; }\n`;
-    const { run } = await setup(brain, files, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { earlyJudgeWaitMs: 100 } } });
-    const t0 = Date.now();
-    const report = await run('Add the f1 rules. f1 must return ten for every input. Negative inputs must raise an error code. The value must be logged on every call. Existing tests keep passing with the new behaviour.');
-    assert.equal(report.status, 'completed');
-    assert.notEqual(report.requirementCheck?.alongside, true, 'the late verdict was not waited for');
-    assert.ok(Date.now() - t0 < 4000);
-  });
-
-  it('verified work: the judges get one round, their gaps go to ONE coder, then the run ends', async () => {
-    const started: string[] = [];
-    const brain: Brain = {
-      plan: { subtasks: [{ id: 'T1', title: 'x', description: 'x' }] },
-      judge: [{ complete: false, missing: ['gap one', 'gap two', 'gap three'] }],
-      agent: (id, step) => {
-        if (step === 0) started.push(id);
-        if (step === 0) return call('write_file', { path: `out-${id}.txt`, content: id });
-        return undefined;
-      },
-    };
-    const { run, bus } = await setup(brain, { 'a.txt': 'orig' }, { models: ['solo'], cfg: { verify: { build: 'true', test: 'true' }, orchestrator: { maxIterations: 5, earlyJudge: false } } });
-    const report = await run('Write the output files. Every file must hold its own id. The ids must be unique across files. Old files keep their content as they are.');
-    assert.deepEqual(started, ['T1', 'F1'], 'one follow-up subtask for all three gaps, and no third round');
-    assert.equal(report.status, 'incomplete');
-    assert.ok(report.changedFiles.length >= 2, 'the work is kept');
-    assert.ok(bus.ofType('log.warn').some((e) => /the judges still miss: gap one/.test(e.message ?? '')));
-  });
-
   it('fix rounds stop when the reviewer keeps finding the same problem', async () => {
-    let judgePrompt = '';
     const brain: Brain = {
       plan: { subtasks: [{ id: 'T1', title: 'x', description: 'write a.txt' }] },
       agent: (_id, step, q) => {
@@ -647,14 +530,12 @@ describe('Orchestrator', () => {
         return /Blocking review findings/.test(first) ? call('edit_file', { path: 'out.txt', old_text: 'v', new_text: 'v2' }) : call('write_file', { path: 'out.txt', content: 'v' });
       },
       review: () => ({ content: JSON.stringify({ ranking: ['A'], scores: { A: 3 }, issues: { A: [{ text: 'the parser still drops quoted commas in field two', priority: 0, confidence: 0.9 }] } }) }),
-      record: (kind, prompt) => kind === 'judge' && (judgePrompt = prompt),
     };
     const { run, bus } = await setup(brain, { 'a.txt': 'orig' }, { cfg: { orchestrator: { maxIterations: 1, fastPath: false } } });
-    const report = await run('write a.txt', { mode: 'single' });
+    const report = await run('write a.txt', { mode: 'split' });
     assert.equal(report.subtasks[0].fixes, 1, 'one round, not two');
     assert.ok(bus.ofType('log.warn').some((e) => /made no progress/.test(e.message ?? '')));
     assert.deepEqual(report.subtasks[0].openIssues, ['[P0] the parser still drops quoted commas in field two']);
-    assert.match(judgePrompt, /OPEN REVIEW FINDINGS[\s\S]*quoted commas/);
   });
 
   it('race: slower candidates are stopped a while after the first one is done', async () => {

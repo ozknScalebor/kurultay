@@ -53,7 +53,7 @@ export function section(title: string, note: string | undefined, width: number):
 }
 
 const MODE_NOTE: Record<string, string> = {
-  single: 'one model codes the task, another reviews it',
+  single: 'one model works the whole task through; another model takes over only if it stops answering',
   split: 'the task is split into subtasks; independent subtasks run in parallel',
   race: 'several models solve the same task in separate sandboxes; tests and reviewers pick the best',
   council: 'several candidates per subtask, ranked by a council of reviewers',
@@ -127,7 +127,7 @@ function format(e: KEvent, verbose: boolean, state: FormatState): string | undef
 
     // ---- task run
     case 'run.start':
-      return `${color.dim(`  ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}`)}${section('Planning', 'small tasks go straight to a coder; larger ones get plan drafts from the planner models and the best one is used', state.width())}`;
+      return `${color.dim(`  ${d.models} models · session ${d.sessionId}${d.resumed ? ' (resumed)' : ''}`)}${section('Planning', 'the task goes to one coder, who keeps its own todo list (mode multi: plan drafts from the planner models)', state.width())}`;
     case 'run.plan': {
       const subtasks = list(d.subtasks);
       const mode = String(d.mode ?? '');
@@ -163,11 +163,7 @@ function format(e: KEvent, verbose: boolean, state: FormatState): string | undef
     case 'subtask.winner':
       return `    ${color.green('→')} chosen: ${d.worker} ${color.dim(`(${list(d.models).join(', ')})`)}`;
     case 'run.verify':
-      return `${section('Checks', 'build and tests on the combined result, then judges compare it with the task', state.width())}\n  ${d.skipped ? color.yellow('⚠ verification: no build/test commands configured – the code was not compiled or tested (kurultay init)') : d.ok ? `${color.green('✓')} verification: build and tests passed` : `${color.red('✗')} verification: failed`}`;
-    case 'run.requirements': {
-      const r = d as { complete?: boolean; missing?: string[] };
-      return `  ${r.complete ? `${color.green('✓')} requirement check: complete` : color.yellow(`⚠ requirement check – missing:\n${(r.missing ?? []).map((m) => `    - ${m}`).join('\n')}`)}`;
-    }
+      return `${section('Checks', 'build and tests on the result', state.width())}\n  ${d.skipped ? color.yellow('⚠ verification: no build/test commands configured – the code was not compiled or tested (kurultay init)') : d.ok ? `${color.green('✓')} verification: build and tests passed` : `${color.red('✗')} verification: failed`}`;
     case 'run.merge': {
       const written = list(d.written);
       return `\n${color.bold('Applied to the project')}${d.root ? color.dim(` (${d.root})`) : ''}: ${written.length} file${written.length === 1 ? '' : 's'} written${list(d.conflicts).length ? color.yellow(`, ${list(d.conflicts).length} conflicts`) : ''}`;

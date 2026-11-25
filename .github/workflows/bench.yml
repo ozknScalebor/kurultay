@@ -27,9 +27,9 @@ on:
         required: false
         default: '1'
       agents:
-        description: 'agents to run (comma separated: kurultay,solo,qwen; empty = all)'
+        description: 'agents to run (comma separated: kurultay,qwen; solo = the main model alone, only useful with mode multi)'
         required: false
-        default: ''
+        default: 'kurultay,qwen'
       tasks:
         description: 'task ids (comma separated, empty = all K tasks)'
         required: false

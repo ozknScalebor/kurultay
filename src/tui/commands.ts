@@ -162,7 +162,7 @@ export function buildCommands(con: KurultayConsole): Command[] {
       { name: 'run', aliases: ['r', 'do'], ws: true, args: '<task>', description: 'plan the task, spread it over the models, verify, review, apply', run: (a) => con.runTask(a) },
       {
         name: 'mode',
-        args: '[auto|single|split|race|council]',
+        args: '[auto|single|multi|split|race|council]',
         description: 'task run mode',
         complete: (a) => MODES.filter((m) => m.startsWith(a)).map((m) => ({ value: m, label: m, description: MODE_HELP[m] })),
         run: (a) => {

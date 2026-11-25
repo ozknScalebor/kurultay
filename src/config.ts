@@ -122,7 +122,8 @@ export interface VerifyConfig {
   timeoutMs?: number;
 }
 
-export type RunMode = 'auto' | 'single' | 'split' | 'race' | 'council';
+/** auto = single: one model at a time; multi = several models (race/split chosen per task), opt-in */
+export type RunMode = 'auto' | 'single' | 'multi' | 'split' | 'race' | 'council';
 
 export interface OrchestratorConfig {
   defaultMode: RunMode;
@@ -152,12 +153,6 @@ export interface OrchestratorConfig {
   speedBand?: number;
   /** race mode with build/tests: the main model tries alone first, the race starts only if it fails (default true) */
   cascade?: boolean;
-  /** requirement-heavy single-coder tasks: the acceptance judge runs while the coder finishes (default true) */
-  earlyJudge?: boolean;
-  /** rounds started only because judges found gaps in work that passes the build and tests (default 1) */
-  judgeRounds?: number;
-  /** how long a finishing coder waits for that judge (ms, default 45000) */
-  earlyJudgeWaitMs?: number;
   /** plan drafts of the plan step (default 1: the main model plans; mode "council" asks 3) */
   planDrafts?: number;
   /** short tasks: the coders start at once and the localisation joins them as a hint (default true) */
@@ -456,7 +451,7 @@ export function validateConfig(cfg: KurultayConfig): void {
       throw new ConfigError(`Invalid baseUrl for endpoint "${ep.name}": ${ep.baseUrl}`);
     }
   }
-  const modes: RunMode[] = ['auto', 'single', 'split', 'race', 'council'];
+  const modes: RunMode[] = ['auto', 'single', 'multi', 'split', 'race', 'council'];
   if (!modes.includes(cfg.orchestrator.defaultMode)) throw new ConfigError(`Invalid defaultMode: ${cfg.orchestrator.defaultMode}`);
   for (const k of ['timeoutMs', 'firstTokenTimeoutMs', 'prefillMsPerToken', 'idleTimeoutMs', 'timeoutRetries', 'timeoutCooldownMs'] as const) {
     const v = cfg.llm[k];
