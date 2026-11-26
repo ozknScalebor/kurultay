@@ -39,10 +39,14 @@ for (const p of ['bin', 'README.md', 'LICENSE', 'package.json', 'examples']) {
   if (existsSync(join(root, p))) cpSync(join(root, p), join(dir, p), { recursive: true });
 }
 cpSync(join(root, 'dist', 'src'), join(dir, 'dist', 'src'), { recursive: true });
+// company networks: trust the certificates of the operating system's store as well (Node 22.15+,
+// 23.8+); Jira, GitLab and model servers with a company CA then work without NODE_EXTRA_CA_CERTS
+const [maj, min] = process.versions.node.split('.').map(Number);
+const sysCa = maj >= 24 || (maj === 23 && min >= 8) || (maj === 22 && min >= 15) ? ' --use-system-ca' : '';
 if (isWin) {
-  writeFileSync(join(dir, 'kurultay.cmd'), '@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0bin\\kurultay.js" %*\r\n');
+  writeFileSync(join(dir, 'kurultay.cmd'), `@echo off\r\n"%~dp0runtime\\node.exe"${sysCa} "%~dp0bin\\kurultay.js" %*\r\n`);
 } else {
-  writeFileSync(join(dir, 'kurultay'), '#!/bin/sh\nHERE="$(cd "$(dirname "$0")" && pwd)"\nexec "$HERE/runtime/node" "$HERE/bin/kurultay.js" "$@"\n');
+  writeFileSync(join(dir, 'kurultay'), `#!/bin/sh\nHERE="$(cd "$(dirname "$0")" && pwd)"\nexec "$HERE/runtime/node"${sysCa} "$HERE/bin/kurultay.js" "$@"\n`);
   chmodSync(join(dir, 'kurultay'), 0o755);
 }
 console.log(`✓ ${dir}  (Node ${process.version})`);

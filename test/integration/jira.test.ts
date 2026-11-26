@@ -197,13 +197,13 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
 
   it('writes and removes the start-up entry', () => {
     const appData = tmpProject({});
-    const w = installStartup({ platform: 'win32', appData, node: 'C:\\node\\node.exe', script: 'C:\\k\\bin\\kurultay.js' });
+    const w = installStartup({ platform: 'win32', appData, node: 'C:\\node\\node.exe', nodeArgs: ['--use-system-ca', '--inspect=9229'], script: 'C:\\k\\bin\\kurultay.js' });
     assert.match(w.file, /Startup[\\/]kurultay-jira\.cmd$/);
-    assert.match(readFileSync(w.file, 'utf8'), /start "Kurultay Jira" \/min "C:\\node\\node\.exe" "C:\\k\\bin\\kurultay\.js" jira --watch/);
+    assert.match(readFileSync(w.file, 'utf8'), /start "Kurultay Jira" \/min "C:\\node\\node\.exe" --use-system-ca "C:\\k\\bin\\kurultay\.js" jira --watch/);
     installStartup({ platform: 'win32', appData, remove: true });
     assert.equal(existsSync(w.file), false);
     const home = tmpProject({});
-    const l = installStartup({ platform: 'linux', home, node: '/usr/bin/node', script: '/k/kurultay.js' });
+    const l = installStartup({ platform: 'linux', home, node: '/usr/bin/node', nodeArgs: [], script: '/k/kurultay.js' });
     assert.match(readFileSync(l.file, 'utf8'), /Exec="\/usr\/bin\/node" "\/k\/kurultay\.js" jira --watch/);
   });
 });

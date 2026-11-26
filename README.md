@@ -512,7 +512,7 @@ An issue is done once. Editing its summary or description hands it over again: t
 - **Mention as plain text:** typing `@` in a Jira description opens the user picker. When a user named "kurultay" exists and is picked, Jira stores `[~kurultay]` instead of `@kurultay` and the issue is not taken – close the picker with Esc so the text stays plain (or set another `mention`).
 - **Without build/test commands** the work is applied unchecked and the comment says `build/tests: not run`; set `verify` in the project's `kurultay.config.json` so every merge request is built first.
 - **Passwords and tokens:** use `${ENV_VAR}` as above (`setx JIRA_TOKEN "…"` on Windows). Git gets them from an inline credential helper – never written to disk or into the remote URL – and they are masked in messages and comments.
-- **Company certificates:** set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem` for the Jira/GitLab API calls; git uses its own setting (`git config --global http.sslCAInfo …`).
+- **Company certificates:** the portable package starts Node with `--use-system-ca`, so certificates in the Windows (or system) store are trusted for Jira, GitLab and the model servers. With your own Node.js start it the same way (`node --use-system-ca bin\kurultay.js …`, Node 22.15 or later); `kurultay jira startup` keeps the flag in the start-up entry. Otherwise set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem`. Git uses its own setting (`git config --global http.sslCAInfo …`).
 - **First try:** `kurultay jira --dry-run`, then `kurultay jira --issue ABC-12`, then `kurultay jira startup`.
 
 ## SWE-bench
