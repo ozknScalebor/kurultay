@@ -149,7 +149,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.1.1 · one agent, every local LLM as its backup · offline
+ v0.1.0 · one agent, every local LLM as its backup · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -533,7 +533,7 @@ kurultay swebench collect --dir swe-other --name other-agent
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.1.1.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.1.0.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-other-agent.jsonl --run-id other-agent -j 6
 ```
 
