@@ -56,8 +56,10 @@ describe('bench scripts', () => {
     assert.match(md, /\| cpp\/K2 \| ❌ 1\.0 min \| - \| - \|/);
     const both = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: false, seconds: 1200.1, status: 'timeout' }, solo: { passed: false, seconds: 1200, status: 'timeout' } }] });
     assert.doesNotMatch(both, /slowdown|faster|as fast/, 'two runs stopped by the budget say nothing about speed');
-    const same = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: true, seconds: 610 }, solo: { passed: true, seconds: 600 } }] });
+    const same = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: true, seconds: 610, multiModelSeconds: 5 }, solo: { passed: true, seconds: 600 } }] });
     assert.match(same, /about as fast/);
+    const single = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: true, seconds: 700 }, solo: { passed: true, seconds: 600 } }] });
+    assert.doesNotMatch(single, /slowdown|faster|as fast/, 'one agent with or without backups: no multi-model note');
     assert.deepEqual(b2.orderFor(0, ['k', 's', 'q']), ['k', 's', 'q']);
     assert.deepEqual(b2.orderFor(1, ['k', 's', 'q']), ['s', 'q', 'k']);
     assert.deepEqual(b2.orderFor(5, ['k', 'q']), ['q', 'k']);

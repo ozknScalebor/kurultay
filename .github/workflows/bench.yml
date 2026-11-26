@@ -129,7 +129,7 @@ jobs:
           name="${{ inputs.name }}"; [ -n "$name" ] || name="manual-$(date -u +%Y%m%d-%H%M)"
           echo "BENCH_NAME=$name" >> "$GITHUB_ENV"
           node scripts/bench.mjs --out bench-out --config "$KURULTAY_HOME/config.json" --solo-config "${{ steps.models.outputs.solo_config }}" \
-            --qwen qwen --minutes ${{ inputs.quick && 5 || inputs.minutes || 20 }} --stop-after 300 --repeat ${{ inputs.repeat || 1 }} ${{ inputs.agents && format('--agents {0}', inputs.agents) || '' }} \
+            --qwen qwen --minutes ${{ inputs.quick && 5 || inputs.minutes || 20 }} --stop-after 300 --repeat ${{ inputs.repeat || 1 }} --agents ${{ inputs.agents || 'kurultay,qwen' }} \
             ${{ inputs.fault && inputs.fault != 'none' && format('--fault {0} --fault-after {1}', inputs.fault, inputs.fault_after || '3') || '' }} \
             --name "$name" --models "${{ steps.models.outputs.label }}" ${{ inputs.quick && '--tasks C2-crc,B3-son-stok' || inputs.tasks && format('--tasks {0}', inputs.tasks) || '' }}
           cat bench-out/BENCH.md >> "$GITHUB_STEP_SUMMARY"

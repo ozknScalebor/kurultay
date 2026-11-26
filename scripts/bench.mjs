@@ -72,7 +72,9 @@ export function renderBench(b) {
   const both = b.tasks.filter((t) => t.kurultay && t.solo && t.kurultay.status !== 'timeout' && t.solo.status !== 'timeout');
   const k = both.reduce((s, t) => s + t.kurultay.seconds, 0);
   const so = both.reduce((s, t) => s + t.solo.seconds, 0);
-  if (k && so) {
+  // one agent with or without backup models: the difference is noise, not multi-model work
+  const mm = both.reduce((s, t) => s + (t.kurultay.multiModelSeconds ?? 0), 0);
+  if (k && so && mm > 0) {
     const d = k - so;
     notes.push(
       d > Math.max(30, so * 0.05)
