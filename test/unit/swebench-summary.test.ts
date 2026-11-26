@@ -58,6 +58,19 @@ describe('bench scripts', () => {
     assert.doesNotMatch(both, /slowdown|faster|as fast/, 'two runs stopped by the budget say nothing about speed');
     const same = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: true, seconds: 610, multiModelSeconds: 5 }, solo: { passed: true, seconds: 600 } }] });
     assert.match(same, /about as fast/);
+    const ev = (bench as unknown as { renderEvaluation: (b: unknown) => string }).renderEvaluation({
+      name: 'v0.1.0',
+      models: 'Kurultay: main glm-5.3-flash + other (nvidia) · Qwen Code: glm-5.3-flash',
+      tasks: [
+        { suite: 'java-envanter', id: 'K1 #1', kurultay: { passed: true, seconds: 120 }, qwen: { passed: true, seconds: 100 } },
+        { suite: 'java-envanter', id: 'K1 #2', kurultay: { passed: true, seconds: 120 } },
+        { suite: 'cpp-telemetri', id: 'K2 #1', kurultay: { passed: false, seconds: 300 } },
+        { suite: 'cpp-telemetri', id: 'K2 #2', kurultay: { passed: true, seconds: 60 } },
+      ],
+    });
+    assert.equal(ev, '### Kurultay evaluation\n\nOn the bundled feature tasks (2 tasks – Java 8 and C++17, hidden acceptance tests, 2 trials each), Kurultay v0.1.0 solved **3/4 (75%)** with glm-5.3-flash, in 10.0 min.');
+    assert.doesNotMatch(ev, /Qwen/);
+    assert.equal((bench as unknown as { renderEvaluation: (b: unknown) => string }).renderEvaluation({ name: 'x', models: 'm', tasks: [] }), '');
     const single = b2.renderBench({ name: 'v', models: 'm', tasks: [{ suite: 's', id: 'K1', kurultay: { passed: true, seconds: 700 }, solo: { passed: true, seconds: 600 } }] });
     assert.doesNotMatch(single, /slowdown|faster|as fast/, 'one agent with or without backups: no multi-model note');
     assert.deepEqual(b2.orderFor(0, ['k', 's', 'q']), ['k', 's', 'q']);

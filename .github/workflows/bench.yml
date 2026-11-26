@@ -142,7 +142,7 @@ jobs:
           if-no-files-found: ignore
           # failed work copies keep their .kurultay session (events.jsonl, REPORT.md)
           include-hidden-files: true
-      - name: Commit the results and add them to the latest release
+      - name: Commit the results and add Kurultay's score to the latest release
         if: steps.keys.outputs.skip != '1'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,6 +156,9 @@ jobs:
           git commit -m "chore(bench): results for $BENCH_NAME" && git pull --rebase --quiet && git push || true
           tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
           [ -n "$tag" ] || exit 0
+          # only a run of the released code (named after its tag) scores that release
+          [ "$BENCH_NAME" = "$tag" ] || exit 0
+          [ -s bench-out/EVALUATION.md ] || exit 0
           gh release view "$tag" --json body --jq .body > notes.md
-          node -e "import('./scripts/swebench-summary.mjs').then(m=>{const fs=require('fs');fs.writeFileSync('notes.md',m.mergeNotes(fs.readFileSync('notes.md','utf8'),'bench',fs.readFileSync('bench-out/BENCH.md','utf8')))})"
+          node -e "import('./scripts/swebench-summary.mjs').then(m=>{const fs=require('fs');fs.writeFileSync('notes.md',m.mergeNotes(fs.readFileSync('notes.md','utf8'),'bench',fs.readFileSync('bench-out/EVALUATION.md','utf8')))})"
           gh release edit "$tag" --notes-file notes.md || echo "::warning::could not update the release notes"

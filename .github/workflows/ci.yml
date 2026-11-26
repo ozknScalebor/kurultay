@@ -232,12 +232,15 @@ jobs:
             exit 0
           fi
           # --target creates the tag on this commit when it does not exist yet
-          gh release create "$tag" $files --target "${GITHUB_SHA}" --title "Kurultay $tag" --generate-notes
+          # the notes are this version's section of CHANGELOG.md (the bench adds Kurultay's score later)
+          awk -v v="## $tag" '$0==v{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Kurultay $tag" > notes.md
+          gh release create "$tag" $files --target "${GITHUB_SHA}" --title "Kurultay $tag" --notes-file notes.md
 
-  # 8) after a release: Kurultay vs Qwen Code on the comparison tasks with free online models
+  # 8) after a release: the comparison tasks with online models
   #    (skipped when the GROQ_API_KEY secret is not set); results go into the release notes
   bench:
-    name: Bench (Kurultay vs Qwen Code)
+    name: Bench
     needs: [release]
     permissions:
       contents: write

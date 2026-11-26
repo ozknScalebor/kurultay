@@ -54,6 +54,30 @@ export function orderFor(i, keys) {
   return keys.map((_, j) => keys[(i + j) % n]);
 }
 
+/**
+ * The evaluation section of the release notes: Kurultay's own score only (tasks solved, model,
+ * tasks and trials, time) – the comparison table stays in benchmarks/bench/.
+ */
+export function renderEvaluation(b) {
+  const runs = b.tasks.map((t) => t.kurultay).filter(Boolean);
+  if (!runs.length) return '';
+  const passed = runs.filter((r) => r.passed).length;
+  const minutes = runs.reduce((s, r) => s + (r.seconds ?? 0), 0) / 60;
+  const ids = [...new Set(b.tasks.filter((t) => t.kurultay).map((t) => `${t.suite}/${String(t.id).replace(/ #\d+$/, '')}`))];
+  const trials = Math.round(runs.length / Math.max(1, ids.length));
+  const suites = [...new Set(b.tasks.map((t) => t.suite))];
+  const lang = suites.map((s) => (/java/i.test(s) ? 'Java 8' : /cpp|c\+\+/i.test(s) ? 'C++17' : s)).join(' and ');
+  const model = /Kurultay: main ([^\s,·+]+)/.exec(b.models)?.[1] ?? b.models;
+  const what = b.fault
+    ? `with \`${b.fault.faulty}\` ${b.fault.mode === 'error' ? 'answering HTTP 503' : 'no longer answering'} after ${b.fault.after} of its requests in every run`
+    : `with ${model}`;
+  return [
+    '### Kurultay evaluation',
+    '',
+    `On the bundled feature tasks (${ids.length} tasks${lang ? ` – ${lang}` : ''}, hidden acceptance tests${trials > 1 ? `, ${trials} trials each` : ''}), Kurultay ${b.name} solved **${passed}/${runs.length} (${Math.round((passed / runs.length) * 100)}%)** ${what}, in ${minutes.toFixed(1)} min.`,
+  ].join('\n');
+}
+
 export function renderBench(b) {
   const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : '-');
   const sum = (sel) => b.tasks.reduce((s, t) => s + (sel(t) ?? 0), 0);
@@ -242,10 +266,11 @@ async function main() {
   writeFileSync(join(out, 'bench.json'), JSON.stringify(bench, null, 1));
   const md = renderBench(bench);
   writeFileSync(join(out, 'BENCH.md'), md);
+  writeFileSync(join(out, 'EVALUATION.md'), renderEvaluation(bench));
   if (f['merge-notes']) {
     const { mergeNotes } = await import(pathToFileURL(join(root, 'scripts', 'swebench-summary.mjs')).href);
     const notes = String(f['merge-notes']);
-    writeFileSync(notes, mergeNotes(existsSync(notes) ? readFileSync(notes, 'utf8') : '', 'bench', md));
+    writeFileSync(notes, mergeNotes(existsSync(notes) ? readFileSync(notes, 'utf8') : '', 'bench', renderEvaluation(bench)));
   }
   process.stdout.write(`\n${md}`);
 }
