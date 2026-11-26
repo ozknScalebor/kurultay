@@ -48,8 +48,18 @@ export class GitRepo {
     });
   }
 
-  /** Clone once, then fetch; afterwards the work tree is the target branch exactly as on the server. */
+  /** Clone once, then fetch; afterwards the work tree is the issue's branch as on the server, or the target branch for a new one. */
   async prepare(url: string, branch: string): Promise<string> {
+    await this.sync(url);
+    const { target, start } = await this.startOf(branch);
+    await this.git(['reset', '--quiet', '--hard']);
+    await this.git(['clean', '-fdq', '-e', '.kurultay']);
+    await this.git(['checkout', '--quiet', '-B', branch, start]);
+    return target;
+  }
+
+  /** The shared clone of the repository: cloned once, fetched on every later call. */
+  async sync(url: string): Promise<void> {
     if (!existsSync(join(this.dir, '.git'))) {
       mkdirSync(this.dir, { recursive: true });
       await this.git(['clone', '--quiet', url, '.'], { timeoutMs: 30 * 60_000 });
@@ -57,17 +67,42 @@ export class GitRepo {
       await this.git(['remote', 'set-url', 'origin', url]);
       await this.git(['fetch', '--quiet', '--prune', 'origin'], { timeoutMs: 30 * 60_000 });
     }
-    // Kurultay's state folder never goes into a commit
+    // Kurultay's state folder never goes into a commit (info/exclude holds for every work tree)
     const exclude = join(this.dir, '.git', 'info', 'exclude');
     if (!existsSync(exclude) || !readFileSync(exclude, 'utf8').includes('.kurultay')) {
       mkdirSync(join(this.dir, '.git', 'info'), { recursive: true });
       appendFileSync(exclude, '\n.kurultay/\n');
     }
+  }
+
+  /** Target branch and the commit an issue's branch starts from: its own branch on the server when it exists (earlier work goes on), else the target. */
+  async startOf(branch: string): Promise<{ target: string; start: string; continued: boolean }> {
     const target = this.cfg.targetBranch ?? (await this.defaultBranch());
-    await this.git(['reset', '--quiet', '--hard']);
-    await this.git(['clean', '-fdq', '-e', '.kurultay']);
-    await this.git(['checkout', '--quiet', '-B', branch, `origin/${target}`]);
-    return target;
+    const continued = (await this.git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { allowFail: true })).code === 0;
+    return { target, start: continued ? `origin/${branch}` : `origin/${target}`, continued };
+  }
+
+  /**
+   * The work tree of one issue (a git worktree of the shared clone, so objects are shared):
+   * created on the issue's branch; `keep` leaves an existing one as it is (interrupted work goes
+   * on), otherwise it is reset to where the branch is on the server.
+   */
+  async issueTree(dir: string, branch: string, keep: boolean): Promise<{ tree: GitRepo; target: string; continued: boolean; kept: boolean }> {
+    const { target, start, continued } = await this.startOf(branch);
+    const tree = new GitRepo(dir, this.cfg);
+    if (existsSync(join(dir, '.git'))) {
+      if (keep) return { tree, target, continued, kept: true };
+      await tree.git(['reset', '--quiet', '--hard']);
+      await tree.git(['clean', '-fdq', '-e', '.kurultay']);
+      await tree.git(['checkout', '--quiet', '-B', branch, start]);
+      return { tree, target, continued, kept: false };
+    }
+    // the shared clone stays detached so every branch can live in a work tree of its own
+    await this.git(['checkout', '--quiet', '--detach'], { allowFail: true });
+    await this.git(['worktree', 'prune']);
+    mkdirSync(join(dir, '..'), { recursive: true });
+    await this.git(['worktree', 'add', '--quiet', '--force', '-B', branch, dir, start]);
+    return { tree, target, continued, kept: false };
   }
 
   async defaultBranch(): Promise<string> {
@@ -89,7 +124,9 @@ export class GitRepo {
   }
 
   async commit(message: string): Promise<boolean> {
-    await this.git(['add', '-A', '--', '.', ':(exclude).kurultay']);
+    // .kurultay is in info/exclude, so `add -A` skips it; naming it in a pathspec would make git refuse
+    await this.git(['add', '-A']);
+    await this.git(['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', '.kurultay'], { allowFail: true });
     if ((await this.git(['diff', '--cached', '--quiet'], { allowFail: true })).code === 0) return false;
     const name = (await this.git(['config', 'user.name'], { allowFail: true })).stdout.trim() || 'Kurultay';
     const email = (await this.git(['config', 'user.email'], { allowFail: true })).stdout.trim() || 'kurultay@localhost';

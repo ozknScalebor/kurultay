@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { LspConfig } from './lsp/client.js';
 import type { McpConfig } from './mcp/manager.js';
 
@@ -293,12 +294,24 @@ export interface JiraConfig {
   password?: string;
   /** personal access token (Server/DC, sent as Bearer) or Cloud API token (sent with the e-mail as username) */
   token?: string;
-  /** the word that hands an issue to Kurultay (default "@kurultay"), looked for in the description */
+  /** the word that hands an issue to Kurultay (default "@kurultay"), looked for in the description; a comment with it asks for more */
   mention?: string;
   /** replaces the built-in query (assigned to you, mention in the description, not done) */
   jql?: string;
   /** minutes between two looks at Jira in watch mode (default 5) */
   intervalMinutes?: number;
+  /**
+   * seconds between two looks at the issue Kurultay is working on (default 30): a changed
+   * description or a new comment with the mention reaches the running work at once
+   */
+  pollSeconds?: number;
+  /**
+   * when no model answers, keep trying this many minutes (default 120); then a comment on the
+   * issue, the next issue, and this one again on a later look – from where it stopped
+   */
+  maxWaitMinutes?: number;
+  /** longest pause between two tries while no model answers (default 5 minutes) */
+  retryMinutes?: number;
   /**
    * optional: Jira project key → repository URL when issues of several projects live in
    * different repositories ("*" = any other project). Without it gitlab.repo is used. A line
@@ -488,10 +501,15 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
   const path = findConfigFile(projectRoot, explicit);
   if (!path || !existsSync(path)) {
     throw new ConfigError(
-      'No configuration found. Run "kurultay" for the setup, "kurultay init" in the project root, or create kurultay.config.json.',
+      `No configuration found. "kurultay init --user" writes a commented one to ${join(kurultayHome(), 'config.json')} (fill in the <...> values); or run "kurultay" for the guided setup, or "kurultay init" in the project root.`,
     );
   }
-  let raw = normalizeRawConfig(readJson(path));
+  const json = readJson(path);
+  const unfilled = placeholdersIn(json);
+  if (unfilled.length) {
+    throw new ConfigError(`${path} still has values to fill in: ${unfilled.join(', ')} – replace each <...> with your value, or delete a section you do not use (jira, gitlab, helper).`);
+  }
+  let raw = normalizeRawConfig(json);
   // a project config without endpoints (build/test commands, rules) extends the user's config
   const home = join(kurultayHome(), 'config.json');
   const eps = (raw as { endpoints?: unknown[] } | null)?.endpoints;
@@ -514,6 +532,28 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
   }
   const config = parseConfig(raw);
   return { config, path };
+}
+
+/** Values of the template still written as <...> (the user has not filled them in), as paths like jira.url or models[1]. */
+export function placeholdersIn(value: unknown, at = ''): string[] {
+  if (typeof value === 'string') return /^<[^<>]*>$/.test(value.trim()) ? [at || '(value)'] : [];
+  if (Array.isArray(value)) return value.flatMap((v, i) => placeholdersIn(v, `${at}[${i}]`));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([k, v]) => (k.startsWith('$') ? [] : placeholdersIn(v, at ? `${at}.${k}` : k)));
+  }
+  return [];
+}
+
+/** The commented user configuration template (examples/kurultay.config.user.json, shipped with every package). */
+export function userConfigTemplate(): string {
+  for (const p of [join(here(), '..', '..', 'examples', 'kurultay.config.user.json'), join(here(), '..', 'examples', 'kurultay.config.user.json')]) {
+    if (existsSync(p)) return readFileSync(p, 'utf8');
+  }
+  return JSON.stringify(SAMPLE_CONFIG, null, 2) + '\n';
+}
+
+function here(): string {
+  return dirname(fileURLToPath(import.meta.url));
 }
 
 function readJson(path: string): unknown {

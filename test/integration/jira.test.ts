@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after, describe, it } from 'node:test';
 import { branchName, GitRepo, projectOf, repoSlug } from '../../src/integrations/gitlab.js';
-import { JiraClient, repoFor, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
+import { descriptionChange, JiraClient, repoFor, requestOf, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
+import { Inbox } from '../../src/agent/inbox.js';
 import { installStartup, JiraWorker } from '../../src/integrations/jira-worker.js';
 import { jiraStatus } from '../../src/integrations/jira-status.js';
 import { jiraPanel } from '../../src/tui/panels.js';
@@ -41,27 +42,49 @@ interface Call {
   body?: unknown;
 }
 
-/** Fake Jira (search, comment, transitions) and GitLab merge request API on one port. */
-async function fakeServers(issues: Array<Partial<JiraIssue> & { key: string }>) {
+type FakeIssue = Partial<JiraIssue> & { key: string; broken?: boolean };
+
+/** Fake Jira (search, issue, comment, transitions) and GitLab merge request API on one port. The issues can be changed while it runs. */
+async function fakeServers(issues: FakeIssue[]) {
   const calls: Call[] = [];
+  let nextComment = 100;
   const body = async (req: IncomingMessage) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const t = Buffer.concat(chunks).toString('utf8');
     return t ? (JSON.parse(t) as unknown) : undefined;
   };
+  const raw = (i: FakeIssue) => ({
+    key: i.key,
+    fields: {
+      summary: i.summary ?? 'x',
+      description: i.description ?? '',
+      status: { name: 'To Do' },
+      updated: '2026-11-24',
+      project: { key: i.key.split('-')[0] },
+      comment: { comments: (i.comments ?? []).map((c) => ({ id: c.id, body: c.body, created: c.created, author: { displayName: c.author ?? 'Oz' } })) },
+    },
+  });
   const server = createServer(async (req, res) => {
     const b = await body(req);
     calls.push({ method: req.method ?? '', url: req.url ?? '', auth: (req.headers.authorization as string) ?? (req.headers['private-token'] as string), body: b });
     const json = (code: number, v: unknown) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(v));
-    if (req.url?.startsWith('/rest/api/2/search')) {
-      return json(200, {
-        issues: issues.map((i) => ({ key: i.key, fields: { summary: i.summary ?? 'x', description: i.description ?? '', status: { name: 'To Do' }, updated: '2026-11-24', project: { key: i.key.split('-')[0] } } })),
-      });
-    }
+    if (req.url?.startsWith('/rest/api/2/search')) return json(200, { issues: issues.map(raw) });
     if (req.url?.includes('/transitions') && req.method === 'GET') return json(200, { transitions: [{ id: '31', name: 'Start review', to: { name: 'In Review' } }] });
     if (req.url?.includes('/transitions')) return json(204, {});
-    if (req.url?.includes('/comment')) return json(201, { id: '1' });
+    const m = /^\/rest\/api\/2\/issue\/([^/?]+)(\/comment)?/.exec(req.url ?? '');
+    if (m) {
+      const issue = issues.find((i) => i.key === decodeURIComponent(m[1]));
+      if (!issue) return json(404, {});
+      if (issue.broken && req.method === 'GET') return json(500, { errorMessages: ['down for maintenance'] });
+      if (m[2] && req.method === 'POST') {
+        const id = String(nextComment++);
+        // Kurultay writes with the user's token: its comments look like the user's
+        (issue.comments ??= []).push({ id, body: (b as { body: string }).body, created: '', author: 'Oz' });
+        return json(201, { id });
+      }
+      return json(200, raw(issue));
+    }
     if (req.url === '/rest/api/2/serverInfo') return json(200, { version: '8.20.4', deploymentType: 'Server' });
     if (req.url === '/rest/api/2/myself') return req.headers.authorization === 'Bearer bad' ? json(401, { errorMessages: ['no'] }) : json(200, { name: 'oz', displayName: 'Ozkan E' });
     if (req.url === '/api/v4/version') return json(200, { version: '19.2.7-ee' });
@@ -71,8 +94,24 @@ async function fakeServers(issues: Array<Partial<JiraIssue> & { key: string }>) 
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   closers.push(() => server.close());
   const addr = server.address() as { port: number };
-  return { url: `http://127.0.0.1:${addr.port}`, calls };
+  return { url: `http://127.0.0.1:${addr.port}`, calls, comments: (key: string) => (issues.find((i) => i.key === key)?.comments ?? []).map((c) => c.body) };
 }
+
+/** A config file for the fake servers and a local bare repository. */
+function configFile(home: string, url: string, bare: string, jira: Record<string, unknown> = {}): string {
+  const file = join(home, 'config.json');
+  writeFileSync(file, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url, token: 'jira-pat', pollSeconds: 0.05, ...jira }, gitlab: { repo: pathToFileURL(bare).href, url, token: 'gl-token', workDir: join(home, 'work') } }));
+  return file;
+}
+
+const ok = (files: string[]) => ({ status: 'completed' as const, changedFiles: files, finalVerify: { ok: true, skipped: false, score: 1, steps: [] } as never, reportPath: '' });
+const until = async (cond: () => boolean, ms = 5000) => {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
 
 describe('Jira: issues that mention @kurultay become merge requests', () => {
   it('builds the right Authorization header for Server/DC and Cloud', () => {
@@ -102,6 +141,18 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.equal(branchName('ABC-12', 'bugfix-'), 'bugfix-ABC-12');
     assert.equal(branchName('ABC-12', 'feature/{key}-ai'), 'feature/ABC-12-ai');
     for (const bad of ['feature //', 'a..b/', 'x~', '/lead', 'f/{key}.lock', 'with space/']) assert.throws(() => branchName('ABC-12', bad), /does not accept/, bad);
+    // a changed description: what is new and what is gone, line by line
+    assert.deepEqual(descriptionChange('a\nb\nb\n{code}x{code}', 'a\nb\nc\n{code}x{code}'), { added: ['c'], removed: ['b'] });
+    assert.equal(requestOf({ id: '1', body: '@Kurultay also {code}mul(){code}', created: '' }, '@kurultay'), 'also ```mul()```');
+    assert.equal(requestOf({ id: '2', body: 'just a note', created: '' }, '@kurultay'), undefined);
+    const inbox = new Inbox();
+    inbox.post('one');
+    inbox.post('  ');
+    assert.deepEqual(inbox.take(0), { texts: ['one'], cursor: 1 });
+    inbox.post('two');
+    assert.deepEqual(inbox.unread(), ['two']);
+    inbox.clear();
+    assert.deepEqual([inbox.unread(), inbox.size], [[], 2]);
   });
 
   it('clones, works on a branch, pushes, opens the merge request and comments the link on the issue – once', async () => {
@@ -232,5 +283,269 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.match(bad.error ?? '', /401/);
     assert.match(jiraPanel(bad), /GitLab {2}no repository/);
     assert.equal(await jiraStatus(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }] })), undefined);
+  });
+
+  it('a changed description or a new @kurultay comment reaches the running work; after the merge request the work goes on on the same branch', async () => {
+    const bare = remote();
+    const issue: FakeIssue = { key: 'ABC-5', summary: 'fix add', description: '@kurultay add() must add' };
+    const fake = await fakeServers([issue]);
+    const home = tmpProject({});
+    const tasks: string[] = [];
+    const heard: string[] = [];
+    const worker = new JiraWorker({
+      config: configFile(home, fake.url, bare),
+      home,
+      run: async (root, task, ctx) => {
+        tasks.push(task);
+        if (tasks.length === 1) {
+          // the user edits the description while Kurultay works: it arrives within a poll
+          issue.description = '@kurultay add() must add\nand add a test';
+          await until(() => ctx.inbox.size > 0);
+          heard.push(...ctx.inbox.take(0).texts);
+          writeFileSync(join(root, 'calc.c'), 'int add(int a, int b) { return a + b; }\n');
+          writeFileSync(join(root, 'test.c'), '/* add(2,3) == 5 */\n');
+          return ok(['calc.c', 'test.c']);
+        }
+        writeFileSync(join(root, 'mul.c'), 'int mul(int a, int b) { return a * b; }\n');
+        return ok(['mul.c']);
+      },
+    });
+    const r1 = await worker.pass();
+    assert.equal(r1.done[0].status, 'merge-request');
+    assert.match(heard.join('\n'), /description of the issue was changed[\s\S]*\+ and add a test/);
+    assert.equal(tasks.length, 1, 'the change was read by the running agent – no extra run');
+    assert.match(git(bare, 'show', 'kurultay/ABC-5:test.c'), /add\(2,3\)/);
+    // nothing new: nothing to do (Kurultay's own comments are never requests)
+    assert.equal((await worker.pass()).done.length, 0);
+    // a comment asks for more: the work goes on on the branch, on top of the first commit
+    (issue.comments ??= []).push({ id: '500', body: '@kurultay also add mul()', created: '' });
+    const r2 = await worker.pass();
+    assert.equal(r2.done[0].status, 'merge-request');
+    assert.match(tasks[1], /# Follow-up\nKurultay already worked on this issue[\s\S]*also add mul\(\)/);
+    assert.equal(git(bare, 'rev-list', '--count', 'kurultay/ABC-5').trim(), '3', 'init + first work + follow-up: no force push');
+    assert.match(git(bare, 'show', 'kurultay/ABC-5:calc.c'), /a \+ b/);
+    assert.match(git(bare, 'show', 'kurultay/ABC-5:mul.c'), /a \* b/);
+    assert.match(fake.comments('ABC-5').at(-1) ?? '', /Done on request: also add mul\(\)/);
+    // the description is edited again: only what changed goes to the run
+    issue.description = '@kurultay add() must add\nand add a test\nreturn int64';
+    await worker.pass();
+    assert.match(tasks[2], /Lines added or changed:\n\+ return int64/);
+    assert.doesNotMatch(tasks[2].split('# Follow-up')[1], /\+ and add a test/);
+    // every issue has its own work tree next to the shared clone
+    assert.ok(existsSync(join(home, 'work', `${repoSlug(pathToFileURL(bare).href)}.issues`, 'ABC-5', 'mul.c')));
+  });
+
+  it('a change that comes after the agent finished gets one more run before the commit', async () => {
+    const bare = remote();
+    const issue: FakeIssue = { key: 'LT-1', summary: 'late', description: '@kurultay make a.txt' };
+    const fake = await fakeServers([issue]);
+    const home = tmpProject({});
+    const tasks: string[] = [];
+    const r = await new JiraWorker({
+      config: configFile(home, fake.url, bare),
+      home,
+      run: async (root, task) => {
+        tasks.push(task);
+        writeFileSync(join(root, `${tasks.length}.txt`), 'x\n');
+        if (tasks.length === 1) issue.comments = [{ id: '9', body: '@kurultay and b.txt too', created: '' }];
+        return ok([`${tasks.length}.txt`]);
+      },
+    }).pass();
+    assert.equal(r.done[0].status, 'merge-request');
+    assert.equal(tasks.length, 2);
+    assert.match(tasks[1], /# New request\nThe work done so far is already in the work tree[\s\S]*and b\.txt too/);
+    assert.match(git(bare, 'ls-tree', '--name-only', 'kurultay/LT-1'), /1\.txt\n2\.txt/);
+  });
+
+  it('no model answers: keeps trying, comments after maxWaitMinutes, goes on with the next issue and later continues from where it stopped', async () => {
+    const bare = remote();
+    const fake = await fakeServers([
+      { key: 'DN-1', summary: 'first', description: '@kurultay write a.c' },
+      { key: 'DN-2', summary: 'second', description: '@kurultay write b.c' },
+    ]);
+    const home = tmpProject({});
+    // 0.003 min = 180 ms instead of two hours
+    const cfg = configFile(home, fake.url, bare, { maxWaitMinutes: 0.003, retryMinutes: 0.001 });
+    const tasks: string[] = [];
+    const down = new JiraWorker({
+      config: cfg,
+      home,
+      run: async (root, task, ctx) => {
+        tasks.push(task);
+        if (task.startsWith('DN-1')) {
+          // half done, then every model stops answering
+          writeFileSync(join(root, 'a.c'), 'int a;\n');
+          ctx.onCheckpoint({ worker: 'T1-1', step: 4, model: 'm', files: { 'a.c': 'int a; /* half */\n', 'calc.c': null }, todos: [{ content: 'write a.c', status: 'in_progress' }], note: 'a.c is half written' });
+          const since = Date.now();
+          ctx.watchOutage(() => since);
+          await new Promise((_, reject) => ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason), { once: true }));
+        }
+        writeFileSync(join(root, 'b.c'), 'int b;\n');
+        return ok(['b.c']);
+      },
+    });
+    const t0 = Date.now();
+    const r = await down.pass();
+    assert.ok(Date.now() - t0 >= 150, 'it waited');
+    assert.deepEqual(r.done.map((d) => [d.key, d.status]), [['DN-1', 'waiting'], ['DN-2', 'merge-request']], 'the next issue was done anyway');
+    assert.match(fake.comments('DN-1')[0], /Kurultay paused this issue: no model has answered for 0 seconds/);
+    // the paused issue is taken again on the next look – from where it stopped, without a second pause comment
+    let restored = '';
+    const later = await new JiraWorker({
+      config: cfg,
+      home,
+      run: async (root, task) => {
+        tasks.push(task);
+        restored = readFileSync(join(root, 'a.c'), 'utf8');
+        assert.equal(existsSync(join(root, 'calc.c')), false, 'the deletion was put back too');
+        writeFileSync(join(root, 'a.c'), 'int a = 1;\n');
+        return ok(['a.c']);
+      },
+    }).pass();
+    assert.deepEqual(later.done.map((d) => [d.key, d.status]), [['DN-1', 'merge-request']]);
+    assert.equal(restored, 'int a; /* half */\n');
+    assert.match(tasks.at(-1)!, /# Continue the interrupted work\nAn earlier attempt at this stopped \(no model answered for 0 seconds\) after 4 step\(s\)[\s\S]*\[~\] write a\.c[\s\S]*a\.c is half written/);
+    assert.equal(fake.comments('DN-1').filter((c) => /paused/.test(c)).length, 1);
+    assert.match(git(bare, 'show', 'kurultay/DN-1:a.c'), /int a = 1/);
+    assert.equal(existsSync(join(home, 'jira-progress', 'DN-1.json')), false, 'the saved progress is gone once the work is pushed');
+  });
+
+  it('a model server that cannot be reached at all: the issue waits instead of failing', async () => {
+    const bare = remote();
+    const fake = await fakeServers([{ key: 'NM-1', summary: 'x', description: '@kurultay do' }]);
+    const home = tmpProject({});
+    const lines: string[] = [];
+    const r = await new JiraWorker({ config: configFile(home, fake.url, bare, { maxWaitMinutes: 0.005, retryMinutes: 0.001 }), home, onProgress: (l) => lines.push(l) }).pass();
+    assert.deepEqual(r.done.map((d) => d.status), ['waiting']);
+    assert.ok(lines.some((l) => /no model could be reached; trying again in 0 seconds/.test(l)));
+    assert.match(fake.comments('NM-1')[0], /paused this issue/);
+  });
+
+  it('stopped from outside: the issue stays unfinished and goes on at the next start; a Jira that does not answer the look only skips one look', async () => {
+    const bare = remote();
+    const issue: FakeIssue = { key: 'ST-1', summary: 'stop', description: '@kurultay do it', broken: true };
+    const fake = await fakeServers([issue]);
+    const home = tmpProject({});
+    const cfg = configFile(home, fake.url, bare);
+    const ctl = new AbortController();
+    const lines: string[] = [];
+    const r = await new JiraWorker({
+      config: cfg,
+      home,
+      signal: ctl.signal,
+      onProgress: (l) => lines.push(l),
+      run: async (_root, _task, ctx) => {
+        ctx.onCheckpoint({ worker: 'T1-1', step: 2, model: 'm', files: {}, note: '' });
+        await until(() => lines.some((l) => /could not read the issue \(jira GET .*HTTP 500/.test(l)));
+        ctl.abort();
+        assert.ok(ctx.signal.aborted, 'the stop reaches the run at once');
+        throw ctx.signal.reason;
+        return ok([]);
+      },
+    }).pass();
+    assert.deepEqual(r.done.map((d) => d.status), ['working']);
+    assert.equal(fake.comments('ST-1').length, 0, 'no comment for a stop');
+    // the saved progress is damaged: the work tree is used as it is
+    writeFileSync(join(home, 'jira-progress', 'ST-1.json'), '{not json');
+    issue.broken = false;
+    const tasks: string[] = [];
+    const again = await new JiraWorker({
+      config: cfg,
+      home,
+      onProgress: (l) => lines.push(l),
+      run: async (root, task) => {
+        tasks.push(task);
+        writeFileSync(join(root, 'x.txt'), 'x\n');
+        return ok(['x.txt']);
+      },
+    }).pass();
+    assert.deepEqual(again.done.map((d) => d.status), ['merge-request']);
+    assert.ok(lines.some((l) => /ST-1 \(unfinished – goes on from where it stopped\)/.test(l)));
+    assert.ok(lines.some((l) => /could not read the saved progress/.test(l)));
+    assert.doesNotMatch(tasks[0], /Continue the interrupted work/);
+  });
+
+  it('works through the real run: the description edited mid-run reaches the model, the result is pushed', async () => {
+    const { startMockServer } = await import('../../src/mock/server.js');
+    const mock = await startMockServer([{ id: 'mock-coder-strong', quality: 'good', tools: true, ctx: 65536, latencyMs: 150 }]);
+    closers.push(() => void mock.close());
+    const base = tmpProject({});
+    const bare = join(base, 'm.git');
+    mkdirSync(bare);
+    git(bare, 'init', '-q', '--bare', '-b', 'main');
+    const seed = join(base, 'seed');
+    mkdirSync(join(seed, 'src'), { recursive: true });
+    git(seed, 'init', '-q', '-b', 'main');
+    writeFileSync(join(seed, 'src', 'mathutil.js'), 'export function clamp(value, min, max) {\n  return value;\n}\n');
+    git(seed, 'add', '.');
+    git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+    git(seed, 'push', '-q', bare, 'main');
+    const issue: FakeIssue = { key: 'RR-1', summary: 'clamp is broken', description: '@kurultay fix clamp in src/mathutil.js' };
+    const fake = await fakeServers([issue]);
+    const home = tmpProject({});
+    const cfg = join(home, 'config.json');
+    writeFileSync(cfg, JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], jira: { url: fake.url, token: 't', pollSeconds: 0.05 }, gitlab: { repo: pathToFileURL(bare).href, url: fake.url, token: 'gl', workDir: join(home, 'work') } }));
+    const t = setInterval(() => {
+      if (mock.log.length >= 1 && !/min <= max/.test(issue.description ?? '')) issue.description += '\nalso keep min <= max';
+    }, 20);
+    try {
+      const r = await new JiraWorker({ config: cfg, home }).pass();
+      assert.deepEqual(r.done.map((d) => d.status), ['merge-request']);
+    } finally {
+      clearInterval(t);
+    }
+    assert.ok(mock.log.some((e) => JSON.stringify(e.body.messages).includes('also keep min <= max')), 'the change went to the model');
+    assert.match(git(bare, 'show', 'kurultay/RR-1:src/mathutil.js'), /Math\.min\(Math\.max/);
+    assert.doesNotMatch(git(bare, 'ls-tree', '-r', '--name-only', 'kurultay/RR-1'), /\.kurultay/, 'the state folder is never committed');
+  });
+
+  it('Server/Cloud search fallback, error hints, an existing merge request, a status check that gets no answer', async () => {
+    const res = (code: number, v: unknown) => new Response(JSON.stringify(v), { status: code, headers: { 'content-type': 'application/json' } });
+    const urls: string[] = [];
+    // a server without /search (404) is asked through /search/jql
+    const client = new JiraClient({ url: 'https://jira.local', token: 'p' }, (async (u: string) => {
+      urls.push(u);
+      return u.includes('/search?') ? res(404, {}) : res(200, { issues: [{ key: 'A-1', fields: { description: '@kurultay x' } }] });
+    }) as unknown as typeof fetch);
+    assert.equal((await client.pending())[0].key, 'A-1');
+    assert.ok(urls[1].includes('/search/jql?'));
+    const denied = new JiraClient({ url: 'https://jira.local', username: 'u', password: 'p' }, (async () => res(403, {})) as unknown as typeof fetch);
+    await assert.rejects(denied.comment('A-1', 'x'), /CAPTCHA blocks password logins/);
+    // GitLab says the merge request exists (409): the open one is returned
+    const bare = remote();
+    const work = join(tmpProject({}), 'w');
+    const repo = new GitRepo(work, { token: 't' });
+    await repo.prepare(pathToFileURL(bare).href, 'kurultay/E-1');
+    const { openMergeRequest } = await import('../../src/integrations/gitlab.js');
+    const gl = (async (u: string) => (u.includes('source_branch=') ? res(200, [{ web_url: 'https://g/mr/3', iid: 3 }]) : res(409, { message: 'exists' }))) as unknown as typeof fetch;
+    assert.deepEqual(await openMergeRequest(repo, 'https://g/team/app.git', { token: 't' }, { branch: 'kurultay/E-1', target: 'main', title: 't', description: 'd' }, gl), { url: 'https://g/mr/3', iid: 3, existed: true });
+    await assert.rejects(openMergeRequest(repo, 'https://g/team/app.git', { token: 't' }, { branch: 'kurultay/E-1', target: 'main', title: 't', description: 'd' }, (async () => res(500, {})) as unknown as typeof fetch), /could not open the merge request: HTTP 500/);
+    // the start screen: Jira does not answer in time, GitLab refuses the token
+    const slow = (async (u: string) => {
+      if (u.includes('/api/v4/version')) return res(401, {});
+      throw new Error('The operation was aborted due to timeout');
+    }) as unknown as typeof fetch;
+    const st = (await jiraStatus(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: 'https://jira.local', token: 'p' }, gitlab: { repo: 'https://g/team/app.git', token: 'bad' } }), { fetch: slow, timeoutMs: 50, home: tmpProject({}), platform: 'linux' }))!;
+    assert.equal(st.error, 'no answer within 0.05 s');
+    assert.equal(st.gitlab?.error, 'HTTP 401 (check gitlab.token)');
+    const badPrefix = (await jiraStatus(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: 'https://jira.local', token: 'p' }, gitlab: { repo: 'https://g/a.git', branchPrefix: 'a b/' } }), { fetch: slow, timeoutMs: 50, home: tmpProject({}), platform: 'linux' }))!;
+    assert.match(badPrefix.gitlab?.error ?? '', /does not accept/);
+  });
+
+  it('the user configuration template names every value to fill in', async () => {
+    const { placeholdersIn, userConfigTemplate, loadConfig } = await import('../../src/config.js');
+    const text = userConfigTemplate();
+    const left = placeholdersIn(JSON.parse(text));
+    assert.deepEqual(left, ['baseUrl', 'apiKey', 'models[0]', 'models[1]', 'helper.baseUrl', 'helper.models[0]', 'jira.url', 'jira.token', 'gitlab.repo', 'gitlab.token']);
+    const dir = tmpProject({ 'kurultay.config.json': text });
+    assert.throws(() => loadConfig(dir), /still has values to fill in: baseUrl, apiKey, .*jira\.url.* – replace each <\.\.\.>/);
+    // filled in (and the unused sections deleted): it loads
+    const cfg = JSON.parse(text) as Record<string, unknown>;
+    Object.assign(cfg, { baseUrl: 'http://10.0.0.5:8000/v1', apiKey: 'none', models: ['qwen3-coder'] });
+    delete cfg.helper;
+    delete cfg.jira;
+    delete cfg.gitlab;
+    writeFileSync(join(dir, 'kurultay.config.json'), JSON.stringify(cfg));
+    assert.equal(loadConfig(dir).config.endpoints[0].baseUrl, 'http://10.0.0.5:8000/v1');
   });
 });

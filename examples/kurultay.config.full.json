@@ -179,15 +179,19 @@
     "password": "",
     "mention": "@kurultay",
     "intervalMinutes": 5,
+    "pollSeconds": 30,
+    "maxWaitMinutes": 120,
+    "retryMinutes": 5,
     "comment": true,
     "transition": ""
   },
   "gitlab": {
     "repo": "https://gitlab.company.local/team/app.git",
-    "username": "ozkan.eren",
+    "username": "your.name",
     "password": "${GITLAB_PASSWORD}",
     "token": "${GITLAB_TOKEN}",
-    "targetBranch": ""
+    "targetBranch": "",
+    "branchPrefix": "kurultay/"
   },
   "language": "en"
 }

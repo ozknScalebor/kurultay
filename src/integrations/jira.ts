@@ -15,7 +15,28 @@ export interface JiraIssue {
   status: string;
   updated: string;
   url: string;
+  /** comments, oldest first (Jira returns them with the issue) */
+  comments?: JiraComment[];
 }
+
+export interface JiraComment {
+  id: string;
+  body: string;
+  created: string;
+  author?: string;
+}
+
+type RawIssue = {
+  key: string;
+  fields: {
+    summary?: string;
+    description?: string | null;
+    status?: { name?: string };
+    updated?: string;
+    project?: { key?: string };
+    comment?: { comments?: Array<{ id: string; body?: string; created?: string; author?: { displayName?: string; name?: string } }> };
+  };
+};
 
 export class JiraError extends Error {
   constructor(
@@ -27,6 +48,8 @@ export class JiraError extends Error {
 }
 
 type Fetch = typeof fetch;
+
+const FIELDS = 'summary,description,status,updated,project,comment';
 
 export class JiraClient {
   private readonly base: string;
@@ -80,9 +103,8 @@ export class JiraClient {
 
   /** Issues to work on: every issue the query returns whose description really contains the mention. */
   async pending(max = 50): Promise<JiraIssue[]> {
-    const fields = 'summary,description,status,updated,project';
-    const q = `jql=${encodeURIComponent(this.jql())}&fields=${fields}&maxResults=${max}`;
-    type Raw = { issues?: Array<{ key: string; fields: { summary?: string; description?: string | null; status?: { name?: string }; updated?: string; project?: { key?: string } } }> };
+    const q = `jql=${encodeURIComponent(this.jql())}&fields=${FIELDS}&maxResults=${max}`;
+    type Raw = { issues?: RawIssue[] };
     let raw: Raw;
     try {
       // Cloud replaced /search with /search/jql; Server / Data Center only has /search
@@ -92,17 +114,25 @@ export class JiraClient {
       raw = await this.call<Raw>('GET', `/rest/api/2/${this.isCloud ? 'search' : 'search/jql'}?${q}`);
     }
     const mention = this.mention.toLowerCase();
-    return (raw.issues ?? [])
-      .map((i) => ({
-        key: i.key,
-        project: i.fields.project?.key ?? i.key.split('-')[0],
-        summary: i.fields.summary ?? '',
-        description: typeof i.fields.description === 'string' ? i.fields.description : '',
-        status: i.fields.status?.name ?? '',
-        updated: i.fields.updated ?? '',
-        url: `${this.base}/browse/${i.key}`,
-      }))
-      .filter((i) => i.description.toLowerCase().includes(mention));
+    return (raw.issues ?? []).map((i) => this.toIssue(i)).filter((i) => i.description.toLowerCase().includes(mention));
+  }
+
+  /** One issue as it is now (summary, description, status, comments). */
+  async issue(key: string): Promise<JiraIssue> {
+    return this.toIssue(await this.call<RawIssue>('GET', `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${FIELDS}`));
+  }
+
+  private toIssue(i: RawIssue): JiraIssue {
+    return {
+      key: i.key,
+      project: i.fields.project?.key ?? i.key.split('-')[0],
+      summary: i.fields.summary ?? '',
+      description: typeof i.fields.description === 'string' ? i.fields.description : '',
+      status: i.fields.status?.name ?? '',
+      updated: i.fields.updated ?? '',
+      url: `${this.base}/browse/${i.key}`,
+      comments: (i.fields.comment?.comments ?? []).map((c) => ({ id: String(c.id), body: c.body ?? '', created: c.created ?? '', author: c.author?.displayName ?? c.author?.name })),
+    };
   }
 
   /** Version and kind of the server (works without a login on most servers). */
@@ -115,8 +145,10 @@ export class JiraClient {
     return this.call('GET', '/rest/api/2/myself');
   }
 
-  async comment(key: string, text: string): Promise<void> {
-    await this.call('POST', `/rest/api/2/issue/${encodeURIComponent(key)}/comment`, { body: text });
+  /** Write a comment; returns its id. */
+  async comment(key: string, text: string): Promise<string | undefined> {
+    const r = await this.call<{ id?: string | number }>('POST', `/rest/api/2/issue/${encodeURIComponent(key)}/comment`, { body: text });
+    return r.id === undefined ? undefined : String(r.id);
   }
 
   /** Move the issue to the status (or transition) with this name; false when the workflow has none. */
@@ -144,12 +176,39 @@ export function taskOf(issue: JiraIssue, mention: string): string {
   const esc = mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const body = issue.description
     .replace(new RegExp(esc, 'gi'), '')
-    .replace(/(?:^|\n)\s*repo\s*[:=]\s*\S+/gi, '')
-    // Jira wiki markup that only gets in the way
-    .replace(/\{code(?::[^}]*)?\}/g, '```')
-    .replace(/\{noformat\}/g, '```')
-    .trim();
-  return `${issue.key}: ${issue.summary}\n\n${body}`.trim();
+    .replace(/(?:^|\n)\s*repo\s*[:=]\s*\S+/gi, '');
+  // Jira wiki markup that only gets in the way
+  return `${issue.key}: ${issue.summary}\n\n${cleanWiki(body).trim()}`.trim();
+}
+
+/** The text of an @kurultay comment without the mention (undefined: not for Kurultay). */
+export function requestOf(comment: JiraComment, mention: string): string | undefined {
+  if (!comment.body.toLowerCase().includes(mention.toLowerCase())) return undefined;
+  return cleanWiki(comment.body.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '')).trim() || undefined;
+}
+
+/**
+ * What changed between two versions of a description, line by line: the lines that are new
+ * and the ones that are gone (order kept, Jira wiki markup made plain).
+ */
+export function descriptionChange(before: string, after: string): { added: string[]; removed: string[] } {
+  const lines = (t: string) => cleanWiki(t).split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+  // the lines of xs that ys does not have (as often as they occur)
+  const minus = (xs: string[], ys: string[]) => {
+    const left = ys.reduce((m, y) => m.set(y, (m.get(y) ?? 0) + 1), new Map<string, number>());
+    return xs.filter((x) => {
+      const n = left.get(x) ?? 0;
+      if (n) left.set(x, n - 1);
+      return !n;
+    });
+  };
+  const a = lines(before);
+  const b = lines(after);
+  return { added: minus(b, a), removed: minus(a, b) };
+}
+
+function cleanWiki(t: string): string {
+  return t.replace(/\{code(?::[^}]*)?\}/g, '```').replace(/\{noformat\}/g, '```');
 }
 
 function b64(s: string): string {

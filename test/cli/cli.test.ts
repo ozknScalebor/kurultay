@@ -257,6 +257,21 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     assert.match(h.stdout, /\| 0\.9\.0 \| mini \| single \| 1 \| 3 \| 66\.7% \| 100\.0% \| 0\.0% \|/);
   });
 
+  it('init --user writes the commented user configuration and names what to fill in', async () => {
+    const kh = join(tmpProject({}), 'kh');
+    const r = await cli(['init', '--user'], root, { KURULTAY_HOME: kh });
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /created .*config\.json/);
+    assert.match(r.stdout, /replace each <\.\.\.> value: baseUrl, apiKey, models\[0\]/);
+    assert.match(readFileSync(join(kh, 'config.json'), 'utf8'), /"pollSeconds": 30/);
+    const again = await cli(['init', '--user'], root, { KURULTAY_HOME: kh });
+    assert.match(again.stdout, /already exists \(--force overwrites it\)/);
+    // a command that needs the models says which values are still open
+    const status = await cli(['status'], tmpProject({}), { KURULTAY_HOME: kh });
+    assert.equal(status.code, 1);
+    assert.match(status.stdout + status.stderr, /still has values to fill in: baseUrl/);
+  });
+
   it('swebench: usage errors and collect without prepared tasks', async () => {
     const none = await cli(['swebench'], root);
     assert.equal(none.code, 1);

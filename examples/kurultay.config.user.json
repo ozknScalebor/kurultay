@@ -1,0 +1,40 @@
+{
+  "$comment": "Kurultay user configuration – ~/.kurultay/config.json (Windows: C:\\Users\\<you>\\.kurultay\\config.json), used by every project. Replace every value written as <...>; Kurultay names the ones still left when it starts. A section you do not use (jira, gitlab, helper) can be deleted. A value written as ${NAME} is read from the environment variable NAME (e.g. \"token\": \"${JIRA_TOKEN}\"), so passwords and keys can stay out of the file.",
+  "baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>",
+  "apiKey": "<API key of the LLM server – none if it needs no key>",
+  "models": [
+    "<first model name as the server lists it – e.g. qwen3-coder-30b>",
+    "<second model (optional: delete this line if there is only one)>"
+  ],
+  "helper": {
+    "$comment": "Optional: a small model that only writes summaries. Delete the whole section if you have none.",
+    "baseUrl": "<address of the small model's server – e.g. http://127.0.0.1:8080/v1>",
+    "models": ["<small model name – e.g. qwen2.5-coder-1.5b-instruct>"],
+    "roles": ["fast", "summarizer"]
+  },
+  "verify": {
+    "$comment": "Build and test commands, run after every change. Leave empty when the project builds only in an IDE; a project's own kurultay.config.json can set them per project.",
+    "build": "",
+    "test": ""
+  },
+  "jira": {
+    "$comment": "Only for 'kurultay jira': issues assigned to you that mention @kurultay. Server/Data Center: a personal access token (Profile → Personal Access Tokens) in token; or username + password. Cloud: your e-mail in username and an API token in token.",
+    "url": "<Jira address – e.g. https://jira.company.local>",
+    "token": "<Jira personal access token>",
+    "mention": "@kurultay",
+    "intervalMinutes": 5,
+    "pollSeconds": 30,
+    "maxWaitMinutes": 120,
+    "retryMinutes": 5,
+    "comment": true,
+    "transition": ""
+  },
+  "gitlab": {
+    "$comment": "The repository the Jira work is done in. token: a GitLab personal access token with scope 'api' (opens the merge request); targetBranch empty = the default branch.",
+    "repo": "<repository address – e.g. https://gitlab.company.local/team/app.git>",
+    "token": "<GitLab access token (scope api)>",
+    "targetBranch": "",
+    "branchPrefix": "kurultay/"
+  },
+  "language": "en"
+}

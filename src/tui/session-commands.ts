@@ -1,11 +1,11 @@
 /** Conversation sessions, rewind and git worktrees of the console (/resume, /branch, /history, /rewind, /worktree). */
-import { cpSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from '../agent/checkpoint.js';
 import { color } from '../ui/terminal.js';
 import { errorMessage } from '../util/async.js';
 import { branchConversation, findConversation, listConversations, relativeTime, saveConversation, type Conversation } from './conversation.js';
-import { commitWorktree, createWorktree, currentBranch, listWorktrees, mergeWorktree, realPath, removeWorktree, repoRoot, worktreeDiff, type WorktreeInfo } from './worktree.js';
+import { commitWorktree, copySharedState, createWorktree, currentBranch, listWorktrees, mergeWorktree, realPath, removeWorktree, repoRoot, worktreeDiff, type WorktreeInfo } from './worktree.js';
 import { shortPath } from './state.js';
 import type { KurultayConsole } from './console.js';
 import { plural } from '../util/text.js';
@@ -139,9 +139,7 @@ export async function worktreeCommand(con: KurultayConsole, arg: string): Promis
         // reuse the main workspace's index, analysis and capability profile instead of recomputing
         const src = join(main, con.app!.config.stateDir);
         const dst = join(wt.path, con.app!.config.stateDir);
-        for (const item of ['index', 'ARCHITECTURE.md', 'INDEX.md', 'modules', 'flows', 'PROJECT_NOTES.md', 'capabilities.json', 'CAPABILITIES.md', 'rules', 'skills', 'review_rules.md']) {
-          if (existsSync(join(src, item))) cpSync(join(src, item), join(dst, item), { recursive: true });
-        }
+        copySharedState(src, dst);
         con.mainConfig = existsSync(join(main, 'kurultay.config.json')) ? join(main, 'kurultay.config.json') : con.mainConfig;
         con.mainRoot = main;
         con.out(`${color.green('✓')} worktree: ${shortPath(wt.path)} (branch ${wt.branch})`);

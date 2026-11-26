@@ -304,6 +304,11 @@ export class KurultayConsole {
       return true;
     } catch (e) {
       if (!(e instanceof ConfigError)) throw e;
+      // a file that is there but not filled in (or broken) is shown, never overwritten by the setup
+      if (!/^No configuration found/.test(e.message)) {
+        this.out(color.yellow(e.message));
+        return false;
+      }
       this.out(color.yellow('No LLM configuration found.'));
       return this.setupWizard();
     }

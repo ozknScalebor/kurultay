@@ -291,6 +291,12 @@ export class Router {
    * off to escalate to the slower (often stronger) models when the fast ones failed.
    */
   speedBand: number;
+  /** how long chat() keeps waiting when every model is unreachable (default 10 min; RouteOptions.recoveryWaitMs wins) */
+  recoveryWaitMs = 10 * 60_000;
+  /** longest wait between two recovery rounds (default 60 s) */
+  recoveryMaxIntervalMs = 60_000;
+  /** since when no model has answered (set when every model failed, cleared by the next answer) */
+  outageSince: number | undefined;
 
   /**
    * Expected milliseconds per output token including the wait for the first token: the live
@@ -594,7 +600,7 @@ export class Router {
   async chat(req: ChatRequest, opts: RouteOptions = {}): Promise<ChatResult> {
     if (this.models.size === 0) throw new LlmError('No registered model – check the endpoint configuration and the output of "kurultay probe"', 'not_found');
     const promptTokens = estimateTokens(req.messages.map((m) => m.content ?? '').join('\n')) + 512;
-    const deadline = Date.now() + (opts.recoveryWaitMs ?? 10 * 60_000);
+    const deadline = Date.now() + (opts.recoveryWaitMs ?? this.recoveryWaitMs);
     const tried = new Set<string>();
     let lastErr: LlmError | undefined;
     let round = 0;
@@ -626,7 +632,9 @@ export class Router {
       for (const h of candidates) {
         if (req.signal?.aborted) throw new LlmError('aborted', 'aborted');
         try {
-          return await this.callModel(h, req, opts.attemptsPerModel ?? 3, opts.retryBaseMs ?? 1000);
+          const r = await this.callModel(h, req, opts.attemptsPerModel ?? 3, opts.retryBaseMs ?? 1000);
+          this.outageSince = undefined;
+          return r;
         } catch (e) {
           const err = e as LlmError;
           lastErr = err;
@@ -639,7 +647,8 @@ export class Router {
       const connectionTrouble = !lastErr || ['network', 'timeout', 'server', 'rate_limit', 'circuit_open'].includes(lastErr.kind);
       if (!connectionTrouble || Date.now() >= deadline) break;
       round++;
-      const wait = Math.min(60_000, (opts.recoveryIntervalMs ?? 5000) * 2 ** Math.min(round - 1, 4), Math.max(0, deadline - Date.now()));
+      this.outageSince ??= Date.now();
+      const wait = Math.min(this.recoveryMaxIntervalMs, (opts.recoveryIntervalMs ?? 5000) * 2 ** Math.min(round - 1, 6), Math.max(0, deadline - Date.now()));
       this.bus?.warn('router', `All models are unreachable; retrying in ${Math.round(wait / 1000)} s`, { round });
       await sleep(wait, req.signal);
       tried.clear();

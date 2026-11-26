@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 /**
@@ -74,6 +74,24 @@ export function slugify(name: string): string {
       .replace(/^-+|-+$/g, '')
       .slice(0, 40) || `wt-${Date.now().toString(36)}`
   );
+}
+
+/** What every work tree of a project can share: the index, the architecture analysis, the measured capabilities, rules and skills. */
+export const SHARED_STATE = ['index', 'ARCHITECTURE.md', 'INDEX.md', 'modules', 'flows', 'PROJECT_NOTES.md', 'capabilities.json', 'CAPABILITIES.md', 'rules', 'skills', 'review_rules.md'];
+
+/** Copy the shared state folders/files from one state dir to another (missing ones are skipped). */
+export function copySharedState(src: string, dst: string): number {
+  let n = 0;
+  for (const item of SHARED_STATE) {
+    if (!existsSync(join(src, item))) continue;
+    try {
+      cpSync(join(src, item), join(dst, item), { recursive: true });
+      n++;
+    } catch {
+      /* best effort: the work tree builds what is missing */
+    }
+  }
+  return n;
 }
 
 export function worktreeDir(root: string, slug: string): string {

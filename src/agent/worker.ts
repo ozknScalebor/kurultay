@@ -13,6 +13,7 @@ import { parseTextToolCalls, textToolInstructions, type ParsedCall } from './tex
 import type { ExternalTools } from '../mcp/manager.js';
 import { executeTool, renderTodos, toolTokens, toolCatalogue, toolSpecs, type ToolContext } from './tools.js';
 import type { Materializer, Overlay } from './workspace.js';
+import type { Inbox, WorkSnapshot } from './inbox.js';
 
 export interface WorkerSkills {
   registry: SkillRegistry;
@@ -134,15 +135,21 @@ export class AgentWorker {
   private previousSummary = '';
   private readonly touched = { read: new Set<string>(), modified: new Set<string>() };
   private readonly staleFiles = new Set<string>();
+  /** messages for the run that came while it was going (Jira: the issue changed) */
+  private readonly inbox?: Inbox;
+  private inboxCursor = 0;
+  private readonly onCheckpoint?: (s: WorkSnapshot) => void;
 
   constructor(
     private readonly spec: WorkerSpec,
     private readonly router: Router,
     private readonly cfg: KurultayConfig,
-    deps: { index?: ProjectIndex; materializer: Materializer; root: string; bus?: EventBus; signal?: AbortSignal; external?: ExternalTools },
+    deps: { index?: ProjectIndex; materializer: Materializer; root: string; bus?: EventBus; signal?: AbortSignal; external?: ExternalTools; inbox?: Inbox; onCheckpoint?: (s: WorkSnapshot) => void },
     private readonly bus = deps.bus,
     private readonly signal = deps.signal,
   ) {
+    this.inbox = deps.inbox;
+    this.onCheckpoint = deps.onCheckpoint;
     void spec.lateHint?.then((h) => {
       if (h) this.lateHint = h;
     });
@@ -517,6 +524,33 @@ export class AgentWorker {
     this.bus?.emitEvent('worker.hint', { source: this.spec.id, data: { chars: this.lateHint.length } });
   }
 
+  /** Messages that came for the run since the last step: the request changed, follow it from now on. */
+  private readInbox(): void {
+    if (!this.inbox || this.spec.readOnly) return;
+    const { texts, cursor } = this.inbox.take(this.inboxCursor);
+    this.inboxCursor = cursor;
+    if (!texts.length) return;
+    const text = `[Kurultay] The user changed the request while you were working. Follow it from now on – it overrides the earlier text where they differ; keep what you did that still fits, change what does not${this.toolCtx.todos ? ', and update the todo list (todo_write)' : ''}:\n\n${texts.join('\n\n---\n\n')}`;
+    const last = this.messages[this.messages.length - 1];
+    if (last?.role === 'user') last.content = `${last.content ?? ''}\n\n${text}`;
+    else this.messages.push({ role: 'user', content: text });
+    this.interventions.push('inbox');
+    this.bus?.emitEvent('worker.inbox', { source: this.spec.id, message: texts[0].split('\n')[0].slice(0, 120), data: { messages: texts.length } });
+  }
+
+  /** Save what was done so far (files, todo list, last words) – an interrupted job goes on from here. */
+  private checkpoint(step: number, note: string, done = false): void {
+    if (!this.onCheckpoint || this.spec.readOnly) return;
+    try {
+      const o = this.spec.overlay;
+      const files: Record<string, string | null> = {};
+      for (const p of o.changedFiles()) files[p] = o.peek(p) ?? null;
+      this.onCheckpoint({ worker: this.spec.id, step, model: this.currentModel, files, todos: this.toolCtx.todos?.map((t) => ({ content: t.content, status: t.status })), note: note.slice(-2000), done: done || undefined });
+    } catch {
+      /* a checkpoint never stops the work */
+    }
+  }
+
   /**
    * Errors the same model gets past once the request changes: a window smaller than assumed
    * (lower it, compact, ask again) and a server that rejects reasoning_content in the history.
@@ -620,6 +654,7 @@ export class AgentWorker {
       this.toolCtx.step = step;
       if (this.signal?.aborted) return this.result('failed', 'cancelled', step, finalText, 'aborted');
       this.addLateHint();
+      this.readInbox();
       await this.condense();
       let r: ChatResult;
       try {
@@ -679,6 +714,15 @@ export class AgentWorker {
           if (s) this.skillLog.push({ name: s.name, how: 'tool' });
         }
         if (out.finished) {
+          // the request changed while the model was finishing: not done yet, the next step reads the change
+          if (out.finished.status === 'done' && this.inbox && !this.spec.readOnly && this.inbox.size > this.inboxCursor) {
+            const wait = 'Not finished yet: the user changed the request meanwhile – read the update below and continue.';
+            if (useNative) this.messages.push({ role: 'tool', tool_call_id: c.id, content: wait });
+            else results.push(`<tool_result name="finish" error="true">\n${wait}\n</tool_result>`);
+            // every call of a native step needs its answer
+            if (useNative) for (const rest of calls.slice(calls.indexOf(c) + 1)) this.messages.push({ role: 'tool', tool_call_id: rest.id, content: 'not run: the request changed' });
+            break;
+          }
           if (useNative) this.messages.push({ role: 'tool', tool_call_id: c.id, content: 'ok' });
           return this.result(out.finished.status, out.finished.summary || finalText, step, finalText);
         }
@@ -704,6 +748,7 @@ export class AgentWorker {
         else results.push(`<tool_result name="${c.name}"${out.isError ? ' error="true"' : ''}>\n${text}\n</tool_result>`);
       }
       if (results.length) this.messages.push({ role: 'user', content: results.join('\n') });
+      this.checkpoint(step, finalText);
     }
     return this.result('max_steps', `step limit reached (${maxSteps})`, maxSteps, finalText);
   }
@@ -714,6 +759,7 @@ export class AgentWorker {
   }
 
   private result(status: WorkerResult['status'], summary: string, steps: number, finalText: string, error?: string): WorkerResult {
+    this.checkpoint(steps, summary || finalText, status === 'done');
     const res: WorkerResult = {
       id: this.spec.id,
       status,

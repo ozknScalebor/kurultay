@@ -244,6 +244,7 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`, `--ascii`) |
 | `kurultay rewind [session]` | Undo the changes a task applied to the project (default: last task; `--yes`, `--force` for files changed since) |
 | `kurultay init` | Creates configuration and rule templates; guesses build/test commands (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
+| `kurultay init --user` | Writes the commented user configuration `~/.kurultay/config.json`: fill in each `<...>` (LLM server, models, Jira, GitLab) |
 | `kurultay probe [--model a,b] [--deep] [--quick]` | Measures the models again and saves the profile (all configured models, or only `--model`). Standard: 2 coding + 2 editing tasks, context up to 32K, 1→2→4 parallel requests. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the coding benchmark; `--minimal` sends about 4 requests per model (reachability, speed, tool calling, JSON) and takes the window from the server or the model family |
 | `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
@@ -266,11 +267,23 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 | File | Used for |
 |---|---|
-| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names). `KURULTAY_HOME` moves the folder |
+| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names), or `kurultay init --user` writes a commented template to fill in. `KURULTAY_HOME` moves the folder |
 | `<project>/kurultay.config.json` (or `<project>/.kurultay/config.json`) | Project settings: build/test commands, rules, tool options. **Without endpoints it extends the user file** – the project only carries what is its own. With endpoints it replaces the user file |
 | `--config <file>` | An explicit file (CI, the bench); the project's own file is still merged on top of it |
 
 The files are plain JSON (the `//` comments below are explanations only – leave them out). Any string can use environment variables: `"${JIRA_TOKEN}"` or `"${KURULTAY_API_KEY:-none}"` with a default, so keys and passwords need not be written into the file. `kurultay init` writes a project file with the build/test commands it guesses (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make).
+
+### Starting from the template
+
+```sh
+kurultay init --user      # writes ~/.kurultay/config.json (Windows: C:\Users\<you>\.kurultay\config.json)
+```
+
+The file is [`examples/kurultay.config.user.json`](examples/kurultay.config.user.json): the LLM server, the models, an optional helper model, Jira and GitLab, with a `$comment` in every section. Every value you have to enter is written as `<...>` – e.g. `"baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>"`. Replace them and delete the sections you do not use. Until then Kurultay does not start but names what is left:
+
+```
+~/.kurultay/config.json still has values to fill in: baseUrl, apiKey, models[0], jira.url, jira.token – replace each <...> with your value, or delete a section you do not use (jira, gitlab, helper).
+```
 
 ### The smallest configuration
 
@@ -449,7 +462,9 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 "jira": {
   "url": "https://jira.company.local",
   "token": "${JIRA_TOKEN}",            // personal access token (Server / Data Center 8.14+) …
-  "intervalMinutes": 5                 // watch mode
+  "intervalMinutes": 5,                // watch mode: a new look at Jira every 5 minutes
+  "pollSeconds": 30,                   // the issue being worked on is read again every 30 s
+  "maxWaitMinutes": 120                // no model answers: keep trying this long, then the next issue
 },
 "gitlab": {
   "repo": "https://gitlab.company.local/team/app.git",
@@ -471,20 +486,39 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 ### What happens per issue
 
 1. **Find.** The built-in query is `assignee = currentUser() AND description ~ "kurultay" AND statusCategory != Done`; only issues whose description really contains `@kurultay` are taken.
-2. **Repository.** A line `repo: <url>` in the description, else `jira.repos` by project key, else `gitlab.repo`. It is cloned once into `~/.kurultay/jira-work` and fetched later.
-3. **Branch.** `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`), started from the target branch (`gitlab.targetBranch`, default the repository's default branch). A prefix git would refuse is reported at start.
-4. **Work.** Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands, rules).
+2. **Repository.** A line `repo: <url>` in the description, else `jira.repos` by project key, else `gitlab.repo`. It is cloned once into `~/.kurultay/jira-work/<repo>` and fetched later. Every issue gets a **work tree of its own** next to it (`~/.kurultay/jira-work/<repo>.issues/ABC-12`, a git worktree – the clone's objects are shared): its changes, session and todo list stay there while other issues are worked on. The index and the architecture analysis are shared by all issues of the repository and kept up to date by each of them.
+3. **Branch.** `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`). A new issue starts from the target branch (`gitlab.targetBranch`, default the repository's default branch); an issue whose branch is already on the server goes on from there. A prefix git would refuse is reported at start.
+4. **Work.** Kurultay works on the summary and description of the issue, and on the comments that mention `@kurultay`, with the project's own `kurultay.config.json` (build/test commands, rules). Meanwhile it reads the issue again every `pollSeconds` (30 s): see [Changing the request](#changing-the-request).
 5. **Merge request.** Commit, push and a merge request from the branch to the target branch – through the API with `gitlab.token`, otherwise with GitLab push options (git access is enough). A failing build or test still opens the merge request; its description and the comment say `FAILED`.
 6. **Comment** (and, with `jira.transition`, the issue is moved, e.g. to `"In Review"`).
 
 | Outcome | Comment under the issue |
 |---|---|
 | Merge request opened / updated | The merge request link, branch → target branch, build/test result (`passed`, `FAILED`, `not run`), status and changed files |
-| No change produced | That Kurultay worked on it without a change, and that editing the description hands it over again |
+| No change produced | That Kurultay worked on it without a change, and that editing the description or an `@kurultay` comment hands it over again |
+| No model answers for `maxWaitMinutes` | That the issue is paused, the work so far is kept and goes on later (written once per pause) |
 | No repository for the project | Which settings name a repository |
 | Error (clone, push, merge request, models) | The error message, with passwords and tokens masked |
 
-An issue is done once. Editing its summary or description hands it over again: the same branch is used and the open merge request is updated. If the PC is switched off in the middle, the issue is picked up again on the next start. `"comment": false` turns the comments off.
+An issue is done once; `"comment": false` turns the comments off. Kurultay's own comments never count as requests.
+
+### Changing the request
+
+There are two ways to change or add to the request, both while Kurultay is working and after the merge request:
+
+- **A comment that mentions `@kurultay`** – e.g. `@kurultay also reject negative values`. Recommended: the description stays the definition of the issue, and the comments show what was asked when.
+- **Editing the description.** Kurultay takes the lines that are new or changed and the ones that are gone, not the whole text again.
+
+| When | What Kurultay does |
+|---|---|
+| While it works on the issue | The change reaches the running agent within `pollSeconds` (30 s): at its next step it reads "the user changed the request", follows the new text from then on and updates its todo list. An agent that was just finishing is told it is not done yet. A change that comes after the agent finished gets one more run before the commit |
+| After the merge request | The issue is taken again on the next look. The work goes on **on the same branch, on top of the earlier commits** (no force push): the agent is told the earlier work is on the branch and only the new request is to be done. A new commit, the merge request is updated, and the comment lists what was done on request |
+
+### When no model answers
+
+The agent first moves to another model (see [Resilience](#resilience)). When none answers, Kurultay does not give up: it keeps trying – after a few seconds at first, then at most every `retryMinutes` (5) – for `maxWaitMinutes` (120). Then it writes under the issue that the work is paused, goes on with the next issue, and takes this one again on the next look; in watch mode the assigned issues keep coming round this way.
+
+Paused work goes on **from where it stopped**, not from the beginning. After every agent step Kurultay saves what was done so far – the changed files, the todo list and the agent's last note – in `~/.kurultay/jira-progress/ABC-12.json`. When the issue is taken again, the files are put back into its work tree and the agent is told where the earlier attempt stopped, which items of its todo list were done and what it was doing. The same holds when Kurultay or the PC is stopped in the middle of an issue (Ctrl+C, shutdown): the next start goes on with it. The saved progress is removed once the work is pushed.
 
 ### Settings
 
@@ -493,9 +527,12 @@ An issue is done once. Editing its summary or description hands it over again: t
 | `url` | *required* | `https://jira.company.local` or `https://company.atlassian.net` |
 | `token` | – | Server / Data Center: personal access token (sent as Bearer). Cloud: API token, with the e-mail address as `username` |
 | `username`, `password` | – | User name and password instead of a token |
-| `mention` | `@kurultay` | The word in the description that hands an issue to Kurultay |
+| `mention` | `@kurultay` | The word in the description that hands an issue to Kurultay; in a comment it asks for more |
 | `jql` | assigned to you, mention, not done | Replaces the built-in query |
 | `intervalMinutes` | `5` | Minutes between two looks in watch mode |
+| `pollSeconds` | `30` | Seconds between two looks at the issue being worked on (a changed description or a new `@kurultay` comment reaches the running work) |
+| `maxWaitMinutes` | `120` | When no model answers: minutes to keep trying before the issue is paused (comment, next issue, again on a later look) |
+| `retryMinutes` | `5` | Longest pause between two tries while no model answers |
 | `repos` | – | Project key → repository URL, `"*"` for any other project |
 | `comment` | `true` | Write the result as a comment |
 | `transition` | – | Move the issue to this status or transition after the merge request |
@@ -508,7 +545,7 @@ An issue is done once. Editing its summary or description hands it over again: t
 | `token` | – | Personal access token (scope `api`): used for git over HTTPS and for the merge request API |
 | `username`, `password` | – | Git over HTTPS without a token (accounts with 2FA or SSO need a token) |
 | `url` | from the repository URL | GitLab base URL, when GitLab runs under a path |
-| `workDir` | `~/.kurultay/jira-work` | Where the repositories are cloned |
+| `workDir` | `~/.kurultay/jira-work` | Where the repositories are cloned (and the work tree of each issue is kept) |
 
 ### Notes
 

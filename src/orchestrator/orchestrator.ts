@@ -5,6 +5,7 @@ import { diffStat } from '../agent/diff.js';
 import { loadProjectRules, renderRules, selectRules, type ProjectRules } from '../agent/rules.js';
 import { AgentWorker, type WorkerResult } from '../agent/worker.js';
 import { CheckpointRecorder } from '../agent/checkpoint.js';
+import type { Inbox, WorkSnapshot } from '../agent/inbox.js';
 import { Overlay, type Materializer, type MergeReport } from '../agent/workspace.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import type { Router } from '../llm/router.js';
@@ -43,6 +44,10 @@ export interface RunOptions {
   approvePlan?: (plan: Plan, info: { mode: RunMode; round: number }) => Promise<boolean | string>;
   /** overrides config.orchestrator.maxTokens / maxMinutes for this run */
   budget?: { tokens?: number; minutes?: number };
+  /** messages that change the request while the run is going (every agent reads them at its next step) */
+  inbox?: Inbox;
+  /** called after every agent step with what is done so far (to go on after an interruption) */
+  onCheckpoint?: (s: WorkSnapshot) => void;
 }
 
 /** Per-model consumption (REPORT.md table, /stats). */
@@ -296,7 +301,12 @@ export class Orchestrator {
     for (const n of opts.skills ?? []) if (!this.skills.get(n)) this.bus.warn('skills', `requested skill not found: ${n}`);
     if (this.skills.size) this.bus.info('skills', `${this.skills.size} skills found${this.explicitSkills.length ? `; selected: ${this.explicitSkills.join(', ')}` : ''}`);
     this.stopReason = undefined;
+    this.inbox = opts.inbox;
+    this.onCheckpoint = opts.onCheckpoint;
   }
+
+  private inbox: Inbox | undefined;
+  private onCheckpoint: ((s: WorkSnapshot) => void) | undefined;
 
   async run(task: string, opts: RunOptions = {}): Promise<RunReport> {
     const sessionId = opts.sessionId ?? new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -861,7 +871,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
             { id: overlay.id, task: this.workerTask(st, plan, fullTask), acceptance: plan.acceptance, context: contextFor(mk), model: mk, overlay, skills: workerSkills, temperature: sample ? 0.7 : undefined, lateHint },
             this.router,
             this.cfg,
-            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal: workerSignal, external: this.external },
+            { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal: workerSignal, external: this.external, inbox: this.inbox, onCheckpoint: this.onCheckpoint },
           );
           let result: WorkerResult;
           try {
@@ -1013,7 +1023,7 @@ Only implement YOUR subtask; other engineers handle the rest in parallel.${this.
         },
         this.router,
         this.cfg,
-        { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external },
+        { index: this.index, materializer: this.materializer, root: this.root, bus: this.bus, signal, external: this.external, inbox: this.inbox, onCheckpoint: this.onCheckpoint },
       );
       const fr = await fixer.run();
       fr.models.forEach((m) => this.used.add(m));

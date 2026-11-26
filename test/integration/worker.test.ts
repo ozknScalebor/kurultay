@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { AgentWorker } from '../../src/agent/worker.js';
+import { Inbox, type WorkSnapshot } from '../../src/agent/inbox.js';
 import { SkillRegistry, selectSkillsFor } from '../../src/skills/skills.js';
 import { Materializer, Overlay } from '../../src/agent/workspace.js';
 import { ProjectIndex } from '../../src/index/project-index.js';
@@ -38,9 +39,9 @@ async function setup(
   const index = new ProjectIndex(root, join(root, '.kurultay'));
   index.build();
   const materializer = new Materializer(root, join(root, '.kurultay'));
-  const make = (model: string, over: Partial<ConstructorParameters<typeof AgentWorker>[0]> = {}) => {
+  const make = (model: string, over: Partial<ConstructorParameters<typeof AgentWorker>[0]> = {}, deps: Partial<ConstructorParameters<typeof AgentWorker>[3]> = {}) => {
     const overlay = new Overlay('w1', root);
-    const w = new AgentWorker({ id: 'w1', task: 'change a to 2', context: 'ctx', model: `${model}@e`, overlay, ...over }, router, cfg, { index, materializer, root, bus });
+    const w = new AgentWorker({ id: 'w1', task: 'change a to 2', context: 'ctx', model: `${model}@e`, overlay, ...over }, router, cfg, { index, materializer, root, bus, ...deps });
     return { w, overlay: over.overlay ?? overlay };
   };
   return { s, root, bus, router, make };
@@ -499,5 +500,33 @@ describe('AgentWorker – hedged requests', () => {
     assert.ok(Date.now() - t0 < 2500, 'did not wait for the stuck model');
     assert.ok(r.failovers.some((f) => f.from === 'stuck@e' && f.to === 'spare@e'), 'moved to the spare model');
     assert.ok(bus.ofType('log.warn').some((e) => /answers too late/.test(e.message ?? '')));
+  });
+
+  it('a change of the request reaches the running agent at its next step – even while it is finishing – and every step is saved', async () => {
+    const inbox = new Inbox();
+    const snaps: WorkSnapshot[] = [];
+    let seen = '';
+    const { make } = await setup([
+      {
+        id: 'm',
+        script: (n, q) => {
+          if (n === 2) inbox.post('The description of the issue was changed.\n+ also set b to 3');
+          if (n === 3) seen = q.messages.map((m) => m.content ?? '').join('\n');
+          return [call('read_file', { path: 'src/a.c' }), call('write_file', { path: 'src/a.c', content: 'int a = 2;\n' }), call('finish', { summary: 'a is 2' }), call('write_file', { path: 'src/a.c', content: 'int a = 2;\nint b = 3;\n' }), call('finish', { summary: 'a is 2, b is 3' })][n];
+        },
+      },
+    ]);
+    const { w, overlay } = make('m', {}, { inbox, onCheckpoint: (s) => snaps.push(s) });
+    const r = await w.run();
+    assert.equal(r.status, 'done');
+    assert.match(seen, /Not finished yet: the user changed the request/);
+    assert.match(seen, /\[Kurultay\] The user changed the request while you were working[\s\S]*\+ also set b to 3/);
+    assert.equal(overlay.read('src/a.c'), 'int a = 2;\nint b = 3;\n');
+    assert.deepEqual(inbox.unread(), [], 'the agent read the change');
+    assert.ok(snaps.length >= 3, 'a snapshot after every step');
+    assert.deepEqual(snaps[1].files, { 'src/a.c': 'int a = 2;\n' });
+    assert.equal(snaps.at(-1)?.done, true);
+    assert.equal(snaps.at(-1)?.files['src/a.c'], 'int a = 2;\nint b = 3;\n');
+    assert.ok(r.interventions.includes('inbox'));
   });
 });

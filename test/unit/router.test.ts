@@ -125,9 +125,27 @@ describe('Router – resilience', () => {
     const s = await mock([{ id: 'boot', quality: 'good', tools: true, ctx: 32768, handler: (q) => (q.n <= 4 ? { status: 503, error: 'loading' } : undefined) }]);
     const bus = recordingBus();
     const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), [caps('boot', 'e')], bus);
+    const seen: Array<number | undefined> = [];
+    bus.on('event', (e: { type: string }) => {
+      if (e.type === 'log.warn') seen.push(r.outageSince);
+    });
     const res = await r.chat(PING, { attemptsPerModel: 1, recoveryWaitMs: 10_000, recoveryIntervalMs: 20 });
     assert.equal(res.content, 'PONG');
     assert.ok(bus.ofType('log.warn').some((e) => /unreachable/.test(e.message ?? '')));
+    assert.ok(seen.some((t) => typeof t === 'number'), 'the outage start is known while it lasts');
+    assert.equal(r.outageSince, undefined, 'and cleared by the answer');
+  });
+
+  it('the router-wide recovery wait and the longest pause between tries can be set (the Jira work waits for hours)', async () => {
+    const s = await mock([{ id: 'down', quality: 'good', tools: true, ctx: 32768, handler: () => ({ status: 503, error: 'down' }) }]);
+    const r = routerFor(config({ endpoints: [{ name: 'e', baseUrl: s.url }] }), [caps('down', 'e')]);
+    r.recoveryWaitMs = 400;
+    r.recoveryMaxIntervalMs = 30;
+    const t0 = Date.now();
+    await assert.rejects(r.chat(PING, { attemptsPerModel: 1, retryBaseMs: 1 }));
+    assert.ok(Date.now() - t0 >= 380 && Date.now() - t0 < 4000);
+    assert.ok(s.log.length >= 5, `tried again every 30 ms at most (${s.log.length} requests)`);
+    assert.ok(r.outageSince && r.outageSince <= Date.now());
   });
 
   it('stops waiting at the recovery deadline', async () => {
