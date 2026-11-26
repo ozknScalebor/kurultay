@@ -167,6 +167,24 @@ function redact(text: string, env: NodeJS.ProcessEnv): string {
   return out;
 }
 
+/**
+ * The branch of an issue: the configured prefix joined with the issue key ("feature/" + ABC-12 →
+ * feature/ABC-12; a "{key}" in the prefix marks where the key goes). Names git would refuse
+ * are reported before anything is cloned.
+ */
+export function branchName(key: string, prefix = 'kurultay/'): string {
+  const name = prefix.includes('{key}') ? prefix.split('{key}').join(key) : `${prefix}${key}`;
+  const bad =
+    !name ||
+    /[\s~^:?*[\\\x00-\x1f\x7f]/.test(name) ||
+    name.includes('..') ||
+    name.includes('//') ||
+    name.includes('@{') ||
+    /^[/.-]|[/.]$|\.lock$|\/\./.test(name);
+  if (bad) throw new GitError(`gitlab.branchPrefix "${prefix}" gives the branch name "${name}", which git does not accept`);
+  return name;
+}
+
 /** A folder name for a repository URL. */
 export function repoSlug(url: string): string {
   return url

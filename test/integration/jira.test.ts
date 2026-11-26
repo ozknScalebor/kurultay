@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after, describe, it } from 'node:test';
-import { GitRepo, projectOf, repoSlug } from '../../src/integrations/gitlab.js';
+import { branchName, GitRepo, projectOf, repoSlug } from '../../src/integrations/gitlab.js';
 import { JiraClient, repoFor, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
 import { installStartup, JiraWorker } from '../../src/integrations/jira-worker.js';
 import { tmpProject } from '../helpers.js';
@@ -90,6 +90,12 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.deepEqual(projectOf('https://srv.local/gitlab/team/app.git', 'https://srv.local/gitlab'), { base: 'https://srv.local/gitlab', path: 'team/app' });
     assert.deepEqual(projectOf('git@gitlab.local:team/app.git'), { base: 'https://gitlab.local', path: 'team/app' });
     assert.equal(repoSlug('https://user@gitlab.local/team/app.git'), 'gitlab.local_team_app');
+    // the branch: prefix + issue key, or the key where {key} stands
+    assert.equal(branchName('ABC-12'), 'kurultay/ABC-12');
+    assert.equal(branchName('ABC-12', 'feature/'), 'feature/ABC-12');
+    assert.equal(branchName('ABC-12', 'bugfix-'), 'bugfix-ABC-12');
+    assert.equal(branchName('ABC-12', 'feature/{key}-ai'), 'feature/ABC-12-ai');
+    for (const bad of ['feature //', 'a..b/', 'x~', '/lead', 'f/{key}.lock', 'with space/']) assert.throws(() => branchName('ABC-12', bad), /does not accept/, bad);
   });
 
   it('clones, works on a branch, pushes, opens the merge request and comments the link on the issue – once', async () => {
@@ -100,7 +106,7 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     ]);
     const home = tmpProject({});
     const cfgFile = join(home, 'config.json');
-    writeFileSync(cfgFile, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 'jira-pat', transition: 'In Review' }, gitlab: { repo: pathToFileURL(bare).href, url: fake.url, token: 'gl-token', workDir: join(home, 'work') } }));
+    writeFileSync(cfgFile, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 'jira-pat', transition: 'In Review' }, gitlab: { repo: pathToFileURL(bare).href, url: fake.url, token: 'gl-token', workDir: join(home, 'work'), branchPrefix: 'feature/' } }));
     const tasks: string[] = [];
     const worker = new JiraWorker({
       config: cfgFile,
@@ -116,12 +122,12 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.deepEqual(r.done, [{ key: 'ABC-1', status: 'merge-request', mr: 'https://gitlab.local/team/app/-/merge_requests/7' }]);
     assert.match(tasks[0], /^ABC-1: add\(\) subtracts\n\nadd returns a-b\.\s+fix it/);
     // the branch is on the remote with the change
-    assert.match(git(bare, 'show', 'kurultay/ABC-1:calc.c'), /return a \+ b/);
-    assert.equal(git(bare, 'log', '-1', '--format=%s', 'kurultay/ABC-1').trim(), 'ABC-1: add() subtracts');
+    assert.match(git(bare, 'show', 'feature/ABC-1:calc.c'), /return a \+ b/);
+    assert.equal(git(bare, 'log', '-1', '--format=%s', 'feature/ABC-1').trim(), 'ABC-1: add() subtracts');
     // merge request through the API, with the token
     const mr = fake.calls.find((c) => c.url.includes('/merge_requests'))!;
     assert.equal(mr.auth, 'gl-token');
-    assert.deepEqual({ ...(mr.body as Record<string, unknown>), description: undefined }, { source_branch: 'kurultay/ABC-1', target_branch: 'main', title: 'ABC-1: add() subtracts', description: undefined, remove_source_branch: true });
+    assert.deepEqual({ ...(mr.body as Record<string, unknown>), description: undefined }, { source_branch: 'feature/ABC-1', target_branch: 'main', title: 'ABC-1: add() subtracts', description: undefined, remove_source_branch: true });
     // the merge request link goes under the issue as a comment
     const comment = fake.calls.find((c) => c.url === '/rest/api/2/issue/ABC-1/comment')!;
     assert.equal(comment.auth, 'Bearer jira-pat');

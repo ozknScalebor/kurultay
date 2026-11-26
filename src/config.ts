@@ -323,6 +323,11 @@ export interface GitLabConfig {
   token?: string;
   /** branch the merge request targets (default: the repository's default branch) */
   targetBranch?: string;
+  /**
+   * prefix of the branch Kurultay works on, joined with the issue key: "feature/" → feature/ABC-12
+   * (default "kurultay/"). A "{key}" in it marks where the key goes: "feature/{key}-ai".
+   */
+  branchPrefix?: string;
   /** where the repositories are cloned (default ~/.kurultay/jira-work) */
   workDir?: string;
 }

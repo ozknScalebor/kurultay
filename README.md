@@ -455,7 +455,8 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
   "repo": "https://gitlab.company.local/team/app.git",
   "username": "ozkan.eren",
   "password": "${GITLAB_PASSWORD}",    // git over HTTPS
-  "token": "${GITLAB_TOKEN}"           // optional, scope "api": merge request through the API
+  "token": "${GITLAB_TOKEN}",          // optional, scope "api": merge request through the API
+  "branchPrefix": "feature/"           // branch = prefix + issue key → feature/ABC-12 (default "kurultay/")
 }
 ```
 
@@ -466,7 +467,7 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 | `kurultay jira startup` | Starts `kurultay jira --watch` when you log in (Windows: a `.cmd` in the Startup folder; Linux: an autostart entry); `--remove` takes it out |
 | `kurultay jira --dry-run` / `--issue ABC-12` | Only lists what would be done / only this issue |
 
-Per issue: the repository is cloned once into `~/.kurultay/jira-work` (later fetched), a branch `kurultay/<KEY>` starts from the target branch (`gitlab.targetBranch`, default the repository's default branch), Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands), commits, pushes and opens the merge request – through the API with `gitlab.token`, otherwise with GitLab push options (needs only git access). The comment holds the merge request link, the build/test result and the changed files; with `jira.transition` (e.g. `"In Review"`) the issue is also moved. An issue is done once; editing its description hands it over again (same branch, the merge request is updated). If nothing changed or the work failed, the comment says so.
+Per issue: the repository is cloned once into `~/.kurultay/jira-work` (later fetched), a branch named `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"branchPrefix": "feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`) starts from the target branch (`gitlab.targetBranch`, default the repository's default branch), Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands), commits, pushes and opens the merge request – through the API with `gitlab.token`, otherwise with GitLab push options (needs only git access). The comment holds the merge request link, the build/test result and the changed files; with `jira.transition` (e.g. `"In Review"`) the issue is also moved. An issue is done once; editing its description hands it over again (same branch, the merge request is updated). If nothing changed or the work failed, the comment says so.
 
 - Several repositories: `"jira": { "repos": { "ABC": "https://…/abc.git", "*": "https://…/other.git" } }` by project key, or a line `repo: <url>` in the description.
 - Passwords and tokens: use `${ENV_VAR}` as above. Git gets them from an inline credential helper (never written to disk or into the remote URL) and they are masked in messages.

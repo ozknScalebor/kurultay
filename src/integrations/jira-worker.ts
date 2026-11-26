@@ -6,7 +6,7 @@ import { kurultayHome, loadConfig, type GitLabConfig, type JiraConfig } from '..
 import { Orchestrator, type RunReport } from '../orchestrator/orchestrator.js';
 import { errorMessage, sleep } from '../util/async.js';
 import { EventBus } from '../util/events.js';
-import { GitRepo, openMergeRequest, repoSlug, type MergeRequest } from './gitlab.js';
+import { branchName, GitRepo, openMergeRequest, repoSlug, type MergeRequest } from './gitlab.js';
 import { JiraClient, repoFor, taskOf, type JiraIssue } from './jira.js';
 
 /**
@@ -73,6 +73,8 @@ export class JiraWorker {
     this.jira = config.jira;
     this.gitlab = config.gitlab ?? {};
     if (!this.gitlab.repo && !Object.keys(this.jira.repos ?? {}).length) throw new Error('no repository: set "gitlab.repo" (or jira.repos per project)');
+    // a branch prefix git would refuse is reported at once, not on every issue
+    branchName('ABC-1', this.gitlab.branchPrefix);
     this.client = new JiraClient(this.jira, opts.fetch);
   }
 
@@ -131,9 +133,9 @@ export class JiraWorker {
     }
     const dir = resolve(this.gitlab.workDir ?? join(this.home, 'jira-work'), repoSlug(url));
     const repo = new GitRepo(dir, this.gitlab);
-    const branch = `kurultay/${issue.key}`;
-    this.log(`${issue.key}: "${issue.summary}" – ${url}, branch ${branch}`);
     try {
+      const branch = branchName(issue.key, this.gitlab.branchPrefix);
+      this.log(`${issue.key}: "${issue.summary}" – ${url}, branch ${branch}`);
       const target = await repo.prepare(url, branch);
       const report = await (this.opts.run ?? this.runKurultay.bind(this))(dir, taskOf(issue, this.client.mention), this.opts.signal);
       const files = await repo.changed();
