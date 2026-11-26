@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1
+
+- `kurultay jira`: the branch is named from `gitlab.branchPrefix` and the issue key (`"feature/"` → `feature/ABC-12`, default `kurultay/ABC-12`; `{key}` marks where the key goes). A prefix git would refuse is reported at start.
+- README: the Jira section lists every `jira` and `gitlab` setting, what happens per issue and which comment each outcome writes.
+- Bench: automatic runs compare Kurultay with the reference agent only; no multi-model note when no multi-model work was done.
+
 ## v0.1.0
 
 First release.

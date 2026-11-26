@@ -149,7 +149,7 @@ kurultay            # or: kurultay console --workspace /my/project
  ╦╔═╦ ╦╦═╗╦ ╦╦ ╔╦╗╔═╗╦ ╦
  ╠╩╗║ ║╠╦╝║ ║║  ║ ╠═╣╚╦╝
  ╩ ╩╚═╝╩╚═╚═╝╩═╝╩ ╩ ╩ ╩
- v0.1.0 · one agent, every local LLM as its backup · offline
+ v0.1.1 · one agent, every local LLM as its backup · offline
 
 LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capability profile: saved
   Endpoint
@@ -440,23 +440,20 @@ The commands run in the project root of a sandbox copy. The agent is told to run
 
 ## Jira → merge request
 
-Issues **assigned to you** whose **description mentions `@kurultay`** are done by Kurultay and come back as a GitLab merge request; the merge request link is written under the issue as a comment.
+Issues **assigned to you** whose **description mentions `@kurultay`** are done by Kurultay and come back as a GitLab merge request; the merge request link is written under the issue as a comment. Works with Jira Server / Data Center (REST API v2, e.g. 8.x and later) and Jira Cloud, and with GitLab over HTTPS.
 
 ```jsonc
 // ~/.kurultay/config.json (next to the models)
 "jira": {
   "url": "https://jira.company.local",
-  "token": "${JIRA_TOKEN}",            // personal access token (Server / Data Center) …
-  "username": "ozkan.eren",            // … or user name + password; Jira Cloud: e-mail + API token
-  "password": "${JIRA_PASSWORD}",
+  "token": "${JIRA_TOKEN}",            // personal access token (Server / Data Center 8.14+) …
   "intervalMinutes": 5                 // watch mode
 },
 "gitlab": {
   "repo": "https://gitlab.company.local/team/app.git",
-  "username": "ozkan.eren",
-  "password": "${GITLAB_PASSWORD}",    // git over HTTPS
-  "token": "${GITLAB_TOKEN}",          // optional, scope "api": merge request through the API
-  "branchPrefix": "feature/"           // branch = prefix + issue key → feature/ABC-12 (default "kurultay/")
+  "username": "user.name",
+  "token": "${GITLAB_TOKEN}",          // scope "api": push and merge request through the API
+  "branchPrefix": "feature/"           // branch = prefix + issue key → feature/ABC-12
 }
 ```
 
@@ -465,13 +462,58 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 | `kurultay jira` | Looks once: every waiting issue is done one after another |
 | `kurultay jira --watch` | Looks again every `intervalMinutes` (log: `~/.kurultay/jira.log`) |
 | `kurultay jira startup` | Starts `kurultay jira --watch` when you log in (Windows: a `.cmd` in the Startup folder; Linux: an autostart entry); `--remove` takes it out |
-| `kurultay jira --dry-run` / `--issue ABC-12` | Only lists what would be done / only this issue |
+| `kurultay jira --dry-run` | Only lists the issues it would do and the repository of each |
+| `kurultay jira --issue ABC-12` | Only this issue (also when it was done before) |
 
-Per issue: the repository is cloned once into `~/.kurultay/jira-work` (later fetched), a branch named `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"branchPrefix": "feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`) starts from the target branch (`gitlab.targetBranch`, default the repository's default branch), Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands), commits, pushes and opens the merge request – through the API with `gitlab.token`, otherwise with GitLab push options (needs only git access). The comment holds the merge request link, the build/test result and the changed files; with `jira.transition` (e.g. `"In Review"`) the issue is also moved. An issue is done once; editing its description hands it over again (same branch, the merge request is updated). If nothing changed or the work failed, the comment says so.
+### What happens per issue
 
-- Several repositories: `"jira": { "repos": { "ABC": "https://…/abc.git", "*": "https://…/other.git" } }` by project key, or a line `repo: <url>` in the description.
-- Passwords and tokens: use `${ENV_VAR}` as above. Git gets them from an inline credential helper (never written to disk or into the remote URL) and they are masked in messages.
-- Company certificates: set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem` for the Jira/GitLab API calls; git uses its own settings (`http.sslCAInfo`).
+1. **Find.** The built-in query is `assignee = currentUser() AND description ~ "kurultay" AND statusCategory != Done`; only issues whose description really contains `@kurultay` are taken.
+2. **Repository.** A line `repo: <url>` in the description, else `jira.repos` by project key, else `gitlab.repo`. It is cloned once into `~/.kurultay/jira-work` and fetched later.
+3. **Branch.** `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`), started from the target branch (`gitlab.targetBranch`, default the repository's default branch). A prefix git would refuse is reported at start.
+4. **Work.** Kurultay works on the summary and description of the issue with the project's own `kurultay.config.json` (build/test commands, rules).
+5. **Merge request.** Commit, push and a merge request from the branch to the target branch – through the API with `gitlab.token`, otherwise with GitLab push options (git access is enough). A failing build or test still opens the merge request; its description and the comment say `FAILED`.
+6. **Comment** (and, with `jira.transition`, the issue is moved, e.g. to `"In Review"`).
+
+| Outcome | Comment under the issue |
+|---|---|
+| Merge request opened / updated | The merge request link, branch → target branch, build/test result (`passed`, `FAILED`, `not run`), status and changed files |
+| No change produced | That Kurultay worked on it without a change, and that editing the description hands it over again |
+| No repository for the project | Which settings name a repository |
+| Error (clone, push, merge request, models) | The error message, with passwords and tokens masked |
+
+An issue is done once. Editing its summary or description hands it over again: the same branch is used and the open merge request is updated. If the PC is switched off in the middle, the issue is picked up again on the next start. `"comment": false` turns the comments off.
+
+### Settings
+
+| `jira.` | Default | Meaning |
+|---|---|---|
+| `url` | *required* | `https://jira.company.local` or `https://company.atlassian.net` |
+| `token` | – | Server / Data Center: personal access token (sent as Bearer). Cloud: API token, with the e-mail address as `username` |
+| `username`, `password` | – | User name and password instead of a token |
+| `mention` | `@kurultay` | The word in the description that hands an issue to Kurultay |
+| `jql` | assigned to you, mention, not done | Replaces the built-in query |
+| `intervalMinutes` | `5` | Minutes between two looks in watch mode |
+| `repos` | – | Project key → repository URL, `"*"` for any other project |
+| `comment` | `true` | Write the result as a comment |
+| `transition` | – | Move the issue to this status or transition after the merge request |
+
+| `gitlab.` | Default | Meaning |
+|---|---|---|
+| `repo` | – | Repository the work is done in (unless `jira.repos` or the description names one) |
+| `branchPrefix` | `kurultay/` | Prefix of the branch, joined with the issue key; `{key}` marks where the key goes |
+| `targetBranch` | default branch | Branch the merge request targets |
+| `token` | – | Personal access token (scope `api`): used for git over HTTPS and for the merge request API |
+| `username`, `password` | – | Git over HTTPS without a token (accounts with 2FA or SSO need a token) |
+| `url` | from the repository URL | GitLab base URL, when GitLab runs under a path |
+| `workDir` | `~/.kurultay/jira-work` | Where the repositories are cloned |
+
+### Notes
+
+- **Mention as plain text:** typing `@` in a Jira description opens the user picker. When a user named "kurultay" exists and is picked, Jira stores `[~kurultay]` instead of `@kurultay` and the issue is not taken – close the picker with Esc so the text stays plain (or set another `mention`).
+- **Without build/test commands** the work is applied unchecked and the comment says `build/tests: not run`; set `verify` in the project's `kurultay.config.json` so every merge request is built first.
+- **Passwords and tokens:** use `${ENV_VAR}` as above (`setx JIRA_TOKEN "…"` on Windows). Git gets them from an inline credential helper – never written to disk or into the remote URL – and they are masked in messages and comments.
+- **Company certificates:** set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem` for the Jira/GitLab API calls; git uses its own setting (`git config --global http.sslCAInfo …`).
+- **First try:** `kurultay jira --dry-run`, then `kurultay jira --issue ABC-12`, then `kurultay jira startup`.
 
 ## SWE-bench
 
@@ -491,7 +533,7 @@ kurultay swebench collect --dir swe-other --name other-agent
 
 # 3. machine with Docker: the official harness
 pip install swebench
-swebench eval verified -p predictions-kurultay-0.1.0.jsonl --run-id kurultay -j 6
+swebench eval verified -p predictions-kurultay-0.1.1.jsonl --run-id kurultay -j 6
 swebench eval verified -p predictions-other-agent.jsonl --run-id other-agent -j 6
 ```
 
