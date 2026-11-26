@@ -44,7 +44,7 @@ describe('offline distribution', () => {
     assert.ok(existsSync(join(dir, 'runtime', isWin ? 'node.exe' : 'node')));
     assert.ok(existsSync(join(rel, `${portable}${isWin ? '.zip' : '.tar.gz'}`)), 'portable archive created');
     const launcher = join(dir, isWin ? 'kurultay.cmd' : 'kurultay');
-    const help = spawnSync(launcher, ['--help'], { encoding: 'utf8', shell: isWin });
+    const help = spawnSync(launcher, ['--help'], { encoding: 'utf8', shell: isWin, env: { ...process.env, KURULTAY_NO_PAUSE: '1' } });
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /Commands:/);
   });

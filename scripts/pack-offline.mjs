@@ -44,7 +44,22 @@ cpSync(join(root, 'dist', 'src'), join(dir, 'dist', 'src'), { recursive: true })
 const [maj, min] = process.versions.node.split('.').map(Number);
 const sysCa = maj >= 24 || (maj === 23 && min >= 8) || (maj === 22 && min >= 15) ? ' --use-system-ca' : '';
 if (isWin) {
-  writeFileSync(join(dir, 'kurultay.cmd'), `@echo off\r\n"%~dp0runtime\\node.exe"${sysCa} "%~dp0bin\\kurultay.js" %*\r\n`);
+  // started on its own (double click, Win+R, Start search, start ""): Windows closes the window as
+  // soon as Kurultay ends and the answer or the error is gone – then it waits for a key. Typed
+  // into an open console window it does not (the console's command line does not name this file).
+  writeFileSync(
+    join(dir, 'kurultay.cmd'),
+    [
+      '@echo off',
+      'setlocal',
+      `"%~dp0runtime\\node.exe"${sysCa} "%~dp0bin\\kurultay.js" %*`,
+      'set "KURULTAY_EXIT=%ERRORLEVEL%"',
+      // scripts that call it set KURULTAY_NO_PAUSE=1
+      'if not defined KURULTAY_NO_PAUSE echo %CMDCMDLINE% | find /i "%~nx0" >nul && (echo. & echo Kurultay ended ^(exit code %KURULTAY_EXIT%^). Press a key to close this window. & pause >nul)',
+      'exit /b %KURULTAY_EXIT%',
+      '',
+    ].join('\r\n'),
+  );
 } else {
   writeFileSync(join(dir, 'kurultay'), `#!/bin/sh\nHERE="$(cd "$(dirname "$0")" && pwd)"\nexec "$HERE/runtime/node"${sysCa} "$HERE/bin/kurultay.js" "$@"\n`);
   chmodSync(join(dir, 'kurultay'), 0o755);
