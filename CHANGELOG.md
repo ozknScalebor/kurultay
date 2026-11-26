@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.1
+
+- Console start screen: Jira & GitLab connection – Jira version, signed-in user, issues waiting for `@kurultay`, GitLab version, the branch that will be used, start-up watch on or off.
+- `/jira`, `/jira run [KEY]`, `/jira startup`, `/jira log` in the console – no workspace needed, the Jira work runs in its own clone.
+- Windows: the portable `kurultay.cmd` starts Node with `--use-system-ca`, so company certificates in the Windows store are trusted; `kurultay jira startup` keeps the Node flags in the start-up entry.
+- Windows: `--pause` or `KURULTAY_PAUSE=1` keeps Kurultay's window open until Enter (for PCs where Node runs in a window of its own); `kurultay.cmd` started on its own waits for a key; unexpected errors also go to `~/.kurultay/last-error.log`.
+
 ## v0.1.0
 
 First release.
