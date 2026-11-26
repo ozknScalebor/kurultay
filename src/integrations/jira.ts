@@ -105,6 +105,16 @@ export class JiraClient {
       .filter((i) => i.description.toLowerCase().includes(mention));
   }
 
+  /** Version and kind of the server (works without a login on most servers). */
+  serverInfo(): Promise<{ version?: string; deploymentType?: string; serverTitle?: string }> {
+    return this.call('GET', '/rest/api/2/serverInfo');
+  }
+
+  /** The user the token or password belongs to (fails with 401 when the credentials are wrong). */
+  myself(): Promise<{ name?: string; displayName?: string; emailAddress?: string }> {
+    return this.call('GET', '/rest/api/2/myself');
+  }
+
   async comment(key: string, text: string): Promise<void> {
     await this.call('POST', `/rest/api/2/issue/${encodeURIComponent(key)}/comment`, { body: text });
   }

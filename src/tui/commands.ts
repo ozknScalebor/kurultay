@@ -156,6 +156,13 @@ export function buildCommands(con: KurultayConsole): Command[] {
           await con.openWorkspace(c.path);
         },
       },
+      {
+        name: 'jira',
+        args: '[run [KEY] | startup | log]',
+        description: 'Jira: connection and waiting issues; run does them (merge requests) – no workspace needed',
+        complete: (a) => ['run', 'startup', 'log'].filter((x) => x.startsWith(a)).map((x) => ({ value: x, label: x, description: x === 'run' ? 'do the waiting issues (or one: run ABC-12)' : x === 'startup' ? 'watch Jira when you log in' : 'last lines of jira.log' })),
+        run: (a) => con.jiraCommand(a),
+      },
       { name: 'index', ws: true, description: 'update the static index (no LLM needed)', run: () => con.reindex() },
       { name: 'analyze', ws: true, args: '[--force]', description: 'architecture analysis: file summaries, ARCHITECTURE.md, flows, project notes', complete: (a) => ('--force'.startsWith(a) ? [{ value: '--force', label: '--force', description: 'summarise every file again' }] : []), run: (a) => con.analyze(a.includes('--force')) },
       { name: 'ask', aliases: ['a'], ws: true, args: '<question>', description: 'ask a question (the council answers, no code changes)', run: (a) => con.ask(a) },

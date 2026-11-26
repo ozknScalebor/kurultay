@@ -186,6 +186,7 @@ Applied to the project: 3 files written
 ```
 
 - **On start** it shows the live state of the endpoints, the models, their measured capabilities, parallel capacity and timeout settings. Without any configuration it asks once for the endpoint URL, the API key and the model names, and writes them to `~/.kurultay/config.json` (see [Configuration](#configuration)).
+- **Jira & GitLab** (when the configuration has a `jira` section): the start screen also shows whether Jira answers, which user the token belongs to, how many issues wait for `@kurultay`, the GitLab version, the branch that will be used and whether the start-up watch is on. `/jira` lists the waiting issues, `/jira run [KEY]` does them, `/jira startup` and `/jira log` – all without a workspace, since the Jira work happens in its own clone.
 - **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/analyze` do it by hand).
 - **The capability probe runs once.** Its result is saved in `~/.kurultay/capabilities.json` and used by every project; later starts do not probe again. Only a model added to the configuration later is probed (on its own). `/probe` re-measures every model, `/probe <model>` one of them, `/probe --deep` measures more (bigger context, more parallel requests).
 - **Typing `/` opens the command menu**; it filters as you type, ↑/↓ selects, Tab/Enter runs. Command arguments (`/mode r` → `race`), `@file` and `$skill` complete too.
@@ -465,6 +466,7 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 | `kurultay jira startup` | Starts `kurultay jira --watch` when you log in (Windows: a `.cmd` in the Startup folder; Linux: an autostart entry); `--remove` takes it out |
 | `kurultay jira --dry-run` | Only lists the issues it would do and the repository of each |
 | `kurultay jira --issue ABC-12` | Only this issue (also when it was done before) |
+| Console: `/jira`, `/jira run [KEY]`, `/jira startup`, `/jira log` | The same from the interactive console; its start screen shows the Jira and GitLab connection |
 
 ### What happens per issue
 

@@ -211,6 +211,14 @@ export class JiraWorker {
  * Start `kurultay jira --watch` when the user logs in: a .cmd in the Windows Startup folder,
  * an autostart entry on Linux desktops. Returns the file written (or removed).
  */
+/** Where `kurultay jira startup` puts its entry: the Windows Startup folder, or the Linux autostart folder. */
+export function startupFile(opts: { platform?: NodeJS.Platform; appData?: string; home?: string } = {}): string {
+  const platform = opts.platform ?? process.platform;
+  const home = opts.home ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
+  if (platform === 'win32') return join(opts.appData ?? process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'kurultay-jira.cmd');
+  return join(home, '.config', 'autostart', 'kurultay-jira.desktop');
+}
+
 export function installStartup(opts: { remove?: boolean; node?: string; nodeArgs?: string[]; script?: string; config?: string; platform?: NodeJS.Platform; appData?: string; home?: string } = {}): { file: string; removed?: boolean } {
   const platform = opts.platform ?? process.platform;
   const node = opts.node ?? process.execPath;
@@ -220,14 +228,11 @@ export function installStartup(opts: { remove?: boolean; node?: string; nodeArgs
   // company certificate in the Windows store) – without them the watch could not reach Jira
   const flags = (opts.nodeArgs ?? process.execArgv).filter((a) => a.startsWith('--') && !/^--(inspect|test|eval|print)/.test(a)).map((a) => ` ${a}`).join('');
   const home = opts.home ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
-  let file: string;
+  const file = startupFile({ platform, appData: opts.appData, home });
   let body: string;
   if (platform === 'win32') {
-    const startup = join(opts.appData ?? process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-    file = join(startup, 'kurultay-jira.cmd');
     body = `@echo off\r\nrem Kurultay: Jira issues that mention @kurultay (log: %USERPROFILE%\\.kurultay\\jira.log)\r\nstart "Kurultay Jira" /min "${node}"${flags} "${script}" jira --watch${cfg}\r\n`;
   } else {
-    file = join(home, '.config', 'autostart', 'kurultay-jira.desktop');
     body = `[Desktop Entry]\nType=Application\nName=Kurultay Jira\nExec="${node}"${flags} "${script}" jira --watch${cfg}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n`;
   }
   if (opts.remove) {

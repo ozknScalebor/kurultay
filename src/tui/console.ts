@@ -27,7 +27,8 @@ import { listConversations, newConversation, relativeTime, saveConversation, typ
 import type { Completion } from './editor.js';
 import { renderMarkdown } from './markdown.js';
 import { currentBranch } from './worktree.js';
-import { banner, llmPanel, type EndpointHealth } from './panels.js';
+import { banner, jiraPanel, llmPanel, type EndpointHealth } from './panels.js';
+import { jiraStatus } from '../integrations/jira-status.js';
 import { Screen, type TermIO } from './screen.js';
 import { buildCommands } from './commands.js';
 import type { Command } from './command-types.js';
@@ -206,9 +207,16 @@ export class KurultayConsole {
       this.out(banner(this.opts.version, this.screen.columns));
       this.out('');
       if (!(await this.loadLlmConfig())) return 1;
+      // the Jira check runs alongside the model health checks
+      const jira = this.config?.jira?.url ? jiraStatus(this.config, { timeoutMs: this.opts.healthTimeoutMs ?? 6000 }).catch(() => undefined) : undefined;
       await this.refreshModels();
       this.out(llmPanel({ config: this.config!, configPath: this.configPath, router: this.router!, probed: this.probed, health: this.health, width: this.screen.columns }));
       this.out('');
+      const js = await jira;
+      if (js) {
+        this.out(jiraPanel(js));
+        this.out('');
+      }
       if (!(await this.selectWorkspace())) return 0;
       if (this.opts.resume) await this.resume(this.opts.resume === true ? '1' : this.opts.resume);
       if (this.opts.worktree) await this.worktreeCommand(`new ${this.opts.worktree}`);
@@ -393,6 +401,7 @@ export class KurultayConsole {
     this.out(color.bold('Select a workspace') + color.dim(' (required – the root folder of the project)'));
     candidates.forEach((c, i) => this.out(`  ${color.cyan(String(i + 1))}) ${shortPath(c.path)}${c.note ? color.dim(`  ${c.note}`) : ''}`));
     if (!candidates.length) this.out(color.dim('  (nothing recent) type a folder path; Tab completes'));
+    if (this.config?.jira?.url) this.out(color.dim(`  Jira work needs no workspace (it works in its own clone): ${color.cyan('/jira')} lists the waiting issues, ${color.cyan('/jira run')} does them`));
     for (;;) {
       const input = await this.screen.readLine(`${color.bold('Workspace')} ${color.dim('[number or path]')} ❯ `, (t) => this.completeWorkspace(t, candidates));
       if (input === null) return false;
@@ -615,6 +624,39 @@ export class KurultayConsole {
     this.out(`  ${color.green('✓')} ${plural(r.filesSummarized, 'file')} summarised · ${plural(r.modules, 'module')} · ${plural(r.flowPaths.length, 'flow document')}${r.failures ? color.yellow(` · ${plural(r.failures, 'failure')}`) : ''}`);
     this.out(color.dim(`    ${shortPath(r.architecturePath)}${r.notesPath ? ` · ${shortPath(r.notesPath)}` : ''}`));
     this.printUsage();
+  }
+
+  /** /jira: status and waiting issues; run [KEY] does them; startup; log. No workspace needed – the work happens in a clone. */
+  async jiraCommand(arg: string): Promise<void> {
+    if (!this.config?.jira?.url) return this.out(color.yellow('No "jira" section in the configuration (url and token, plus gitlab.repo) – see the README, "Jira → merge request".'));
+    const [sub = '', key] = arg.trim().split(/\s+/);
+    const { JiraWorker, installStartup } = await import('../integrations/jira-worker.js');
+    const userConfig = join(kurultayHome(), 'config.json');
+    const config = this.configPath && this.configPath !== userConfig ? this.configPath : undefined;
+    try {
+      if (sub === 'startup') {
+        const r = installStartup({ config });
+        return this.out(`${color.green('✓')} Jira is watched from the next log-in on (${shortPath(r.file)}); remove it with: kurultay jira startup --remove`);
+      }
+      if (sub === 'log') {
+        const log = join(kurultayHome(), 'jira.log');
+        if (!existsSync(log)) return this.out(color.dim('No jira.log yet.'));
+        return this.out(readFileSync(log, 'utf8').trimEnd().split('\n').slice(-20).join('\n'));
+      }
+      if (sub && sub !== 'run' && sub !== 'list') return this.out(color.yellow('Usage: /jira · /jira run [KEY] · /jira startup · /jira log'));
+      if (sub !== 'run') {
+        const st = await jiraStatus(this.config, { timeoutMs: this.opts.healthTimeoutMs ?? 6000 });
+        if (st) this.out(jiraPanel(st));
+        if (!st?.ok) return;
+      }
+      const worker = new JiraWorker({ config, issue: key, dryRun: sub !== 'run', onProgress: (l) => this.out(sub === 'run' ? l : color.dim(l)) });
+      const r = await worker.pass();
+      if (sub !== 'run') return this.out(r.seen ? color.dim(`${plural(r.seen, 'issue')} found – /jira run does them, /jira run ${key ?? 'ABC-12'} only one`) : color.dim('No issue waits (assigned to you, @kurultay in the description, not done).'));
+      if (!r.done.length) return this.out(color.dim(key ? `${key} is not waiting (assigned to you, @kurultay in the description, not done).` : 'No issue waits.'));
+      for (const d of r.done) this.out(`${d.status === 'merge-request' ? color.green('✓') : color.yellow('⚠')} ${d.key}: ${d.status}${d.mr ? ` – ${d.mr}` : ''}${d.error ? ` – ${d.error}` : ''}`);
+    } catch (e) {
+      this.out(color.red(`Jira: ${errorMessage(e)}`));
+    }
   }
 
   async ask(question: string): Promise<void> {

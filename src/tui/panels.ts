@@ -1,4 +1,5 @@
 import type { KurultayConfig } from '../config.js';
+import type { JiraStatus } from '../integrations/jira-status.js';
 import type { Router } from '../llm/router.js';
 import { color } from '../ui/terminal.js';
 import { displayWidth, fitWidth } from './keys.js';
@@ -90,6 +91,24 @@ export function llmPanel(args: { config: KurultayConfig; configPath?: string; ro
       `  timeouts: first token ${secs(l.firstTokenTimeoutMs)} · silence ${secs(l.idleTimeoutMs)} · total ${secs(l.timeoutMs)} · pause after a hang ${secs(l.timeoutCooldownMs)} · sticky failover ${l.stickyFailover ? 'on' : 'off'}`,
     ),
   );
+  return out.join('\n');
+}
+
+/** The startup "Jira & GitLab" panel: connection, user, waiting issues, GitLab, start-up entry, last log line. */
+export function jiraPanel(st: JiraStatus): string {
+  const out: string[] = [color.bold('Jira & GitLab')];
+  const jira = st.ok
+    ? `${color.green(`● ${st.ms} ms`)}  ${st.server ?? ''}${st.user ? ` · signed in as ${st.user}` : ''} · ${st.pending === 1 ? '1 issue waits' : `${st.pending ?? 0} issues wait`} for @kurultay`
+    : color.red(`● ${fitWidth(st.error ?? 'unreachable', 90)}`);
+  out.push(`  Jira    ${st.url}  ${jira}`);
+  if (st.gitlab) {
+    const g = st.gitlab;
+    const state = g.error ? color.red(`● ${fitWidth(g.error, 80)}`) : g.ok ? color.green(`● GitLab ${g.version ?? ''}`.trimEnd()) : color.dim('not checked (no gitlab.token)');
+    out.push(`  GitLab  ${g.repo ?? '(jira.repos)'}  ${state}`);
+    if (!g.error) out.push(color.dim(`          branch ${g.branch} → ${g.target}`));
+  } else out.push(color.yellow('  GitLab  no repository: set gitlab.repo'));
+  out.push(color.dim(`  watch at start-up: ${st.startup ? 'on' : 'off (kurultay jira startup)'}${st.lastLog ? ` · last: ${fitWidth(st.lastLog, 100)}` : ''}`));
+  out.push(color.dim('  /jira lists the waiting issues, /jira run [KEY] works on them – no workspace needed'));
   return out.join('\n');
 }
 

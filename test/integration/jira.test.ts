@@ -8,6 +8,9 @@ import { after, describe, it } from 'node:test';
 import { branchName, GitRepo, projectOf, repoSlug } from '../../src/integrations/gitlab.js';
 import { JiraClient, repoFor, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
 import { installStartup, JiraWorker } from '../../src/integrations/jira-worker.js';
+import { jiraStatus } from '../../src/integrations/jira-status.js';
+import { jiraPanel } from '../../src/tui/panels.js';
+import { parseConfig } from '../../src/config.js';
 import { tmpProject } from '../helpers.js';
 
 const closers: Array<() => void> = [];
@@ -59,6 +62,9 @@ async function fakeServers(issues: Array<Partial<JiraIssue> & { key: string }>) 
     if (req.url?.includes('/transitions') && req.method === 'GET') return json(200, { transitions: [{ id: '31', name: 'Start review', to: { name: 'In Review' } }] });
     if (req.url?.includes('/transitions')) return json(204, {});
     if (req.url?.includes('/comment')) return json(201, { id: '1' });
+    if (req.url === '/rest/api/2/serverInfo') return json(200, { version: '8.20.4', deploymentType: 'Server' });
+    if (req.url === '/rest/api/2/myself') return req.headers.authorization === 'Bearer bad' ? json(401, { errorMessages: ['no'] }) : json(200, { name: 'oz', displayName: 'Ozkan E' });
+    if (req.url === '/api/v4/version') return json(200, { version: '19.2.7-ee' });
     if (req.url?.includes('/merge_requests')) return json(201, { web_url: 'https://gitlab.local/team/app/-/merge_requests/7', iid: 7 });
     return json(404, {});
   });
@@ -205,5 +211,26 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     const home = tmpProject({});
     const l = installStartup({ platform: 'linux', home, node: '/usr/bin/node', nodeArgs: [], script: '/k/kurultay.js' });
     assert.match(readFileSync(l.file, 'utf8'), /Exec="\/usr\/bin\/node" "\/k\/kurultay\.js" jira --watch/);
+  });
+  it('the console shows the Jira connection: server, user, waiting issues, GitLab, start-up entry', async () => {
+    const fake = await fakeServers([{ key: 'ABC-1', description: '@kurultay fix' }, { key: 'ABC-2', description: 'no mention' }]);
+    const home = tmpProject({ 'jira.log': '2026-11-26T10:00:00Z jira: 1 issue(s) to do: ABC-1\n' });
+    const cfg = parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 'jira-pat' }, gitlab: { repo: `${fake.url}/team/app.git`, url: fake.url, token: 'gl', branchPrefix: 'feature/', targetBranch: 'develop' } });
+    const st = (await jiraStatus(cfg, { home, platform: 'linux' }))!;
+    assert.equal(st.ok, true);
+    assert.equal(st.server, 'Jira 8.20.4 (Server)');
+    assert.equal(st.user, 'Ozkan E');
+    assert.equal(st.pending, 1);
+    assert.deepEqual({ ok: st.gitlab?.ok, version: st.gitlab?.version, branch: st.gitlab?.branch, target: st.gitlab?.target }, { ok: true, version: '19.2.7-ee', branch: 'feature/ABC-12', target: 'develop' });
+    assert.match(st.lastLog ?? '', /ABC-1/);
+    const panel = jiraPanel(st);
+    assert.match(panel, /Jira 8\.20\.4 \(Server\) · signed in as Ozkan E · 1 issue waits/);
+    assert.match(panel, /GitLab 19\.2\.7-ee/);
+    assert.match(panel, /branch feature\/ABC-12 → develop/);
+    const bad = (await jiraStatus(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 'bad' } }), { home, platform: 'linux' }))!;
+    assert.equal(bad.ok, false);
+    assert.match(bad.error ?? '', /401/);
+    assert.match(jiraPanel(bad), /GitLab {2}no repository/);
+    assert.equal(await jiraStatus(parseConfig({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }] })), undefined);
   });
 });
