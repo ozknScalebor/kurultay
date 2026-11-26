@@ -202,6 +202,7 @@ Applied to the project: 3 files written
     now: T1: the agent is coding in its sandbox
     T1-1  devstral-small-2     editing CsvProductLoader.java · step 7
   ```
+- **Windows window that closes at once**: on some company PCs Node always runs in a window of its own, which closes – with Kurultay's answer or error – as soon as the command ends. `kurultay --pause …` (or `setx KURULTAY_PAUSE 1` once) waits for Enter before the window closes; unexpected errors also go to `~/.kurultay/last-error.log`.
 - **Old Windows consoles** (cmd.exe / PowerShell in conhost) cannot draw some symbols; Kurultay detects them and prints plain ASCII instead (`+` for ✓, `>` for →, …). Windows Terminal, VS Code and Git Bash get the Unicode version. Force it with `--ascii` or `KURULTAY_ASCII=1` (`=0` forces Unicode).
 - Main commands: `/models`, `/model add|remove`, `/llm` (timeouts, `/llm set …`), `/endpoint add|remove`, `/probe`, `/workspace`, `/index`, `/analyze`, `/ask`, `/run`, `/plan`, `/continue-run`, `/stats`, `/mcp`, `/mode`, `/intent`, `/skills`, `/search`, `/map`, `/status`, `/runs`, `/report`, `/diff`, `/dry-run`, `/auto-apply`, `/verbose`, `/ui`, `/clear`, `/exit`.
 

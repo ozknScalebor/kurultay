@@ -103,6 +103,7 @@ Options:
   --ui [--port 7420]   Open the live web dashboard (offline, 127.0.0.1)
   --verbose            Show every step, tool call and LLM request
   --ascii              Plain ASCII output (for consoles that cannot show symbols)
+  --pause              Wait for Enter before the window closes (or KURULTAY_PAUSE=1)
 `;
 
 function out(s: string) {
