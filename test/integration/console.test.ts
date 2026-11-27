@@ -446,7 +446,7 @@ describe('Kurultay console', () => {
       const { out } = await session(['/jira', '/jira run'], { cwd: tmpProject({ 'x.txt': 'not a project' }), autoProbe: false, autoAnalyze: false });
       // the list: no second connection panel, one line per issue
       assert.equal(out.match(/GitLab {2}/g)?.length, 1, 'the connection panel is shown once, on start');
-      assert.match(out, /── Jira ─+\n {2}1 issue to do: YN-7 \(new\)\n {2}YN-7 {5}clamp returns the value unchanged – in file:/);
+      assert.match(out, /── Jira ─+\n {2}1 issue to do: YN-7 \(new\)\n {2}YN-7 {5}clamp returns the value unchanged – in\s+file:/, 'a long path goes on in the next line');
       assert.match(out, /\/jira run does them all/);
       // the run: a heading for the issue, labelled lines, numbered steps, the result
       assert.match(out, /── YN-7 ─+\nclamp returns the value unchanged\n {2}repo {5}file:.*\n {2}branch {3}kurultay\/YN-7 → main \(new\)/);

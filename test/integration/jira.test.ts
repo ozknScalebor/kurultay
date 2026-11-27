@@ -625,7 +625,8 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
         home,
         onProgress: (l, k) => lines.push([l, k]),
         run: async (root) => {
-          seen = readFileSync(join(root, 'lib', 'util.c'), 'utf8');
+          // git on Windows may check text out with CRLF
+          seen = readFileSync(join(root, 'lib', 'util.c'), 'utf8').replace(/\r\n/g, '\n');
           writeFileSync(join(root, 'calc.c'), 'int add(int a, int b) { return a + b; }\n');
           writeFileSync(join(root, 'lib', 'util.c'), 'int util(void) { return 2; }\n');
           return ok(['calc.c', 'lib/util.c']);
