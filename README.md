@@ -265,7 +265,8 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 | File | Used for |
 |---|---|
-| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names), or copy [`config_template.json`](config_template.json) there and fill it in. `KURULTAY_HOME` moves the folder |
+| `~/.kurultay/settings.json` | Every setting with a default – timeouts, Jira timings, limits – written with the defaults on the first start, so they can be found and changed. `/llm set …` writes here. Lowest priority: the files below win |
+| `~/.kurultay/config.json` | What has to be entered: the models and keys, Jira and GitLab access – for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names), or copy [`config_template.json`](config_template.json) there and fill it in. `KURULTAY_HOME` moves the folder |
 | `<project>/kurultay.config.json` (or `<project>/.kurultay/config.json`) | Project settings: build/test commands, rules, tool options. **Without endpoints it extends the user file** – the project only carries what is its own. With endpoints it replaces the user file |
 | `--config <file>` | An explicit file (CI, the bench); the project's own file is still merged on top of it |
 
@@ -280,7 +281,7 @@ mkdir %USERPROFILE%\.kurultay
 copy C:\kurultay\config_template.json %USERPROFILE%\.kurultay\config.json
 ```
 
-(Linux: `cp config_template.json ~/.kurultay/config.json`.) It has the LLM server, the models, an optional helper model, Jira and GitLab, with a `$comment` in every section. Every value you have to enter is written as `<...>` – e.g. `"baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>"`. Replace them and delete the sections you do not use. Until then Kurultay does not start but names what is left:
+(Linux: `cp config_template.json ~/.kurultay/config.json`.) It has only what you have to enter – the LLM server, the models, an optional helper model, Jira and GitLab access – with a `$comment` in every section; everything else has a default and is in `settings.json`, which Kurultay writes next to it on the first start. Every value you have to enter is written as `<...>` – e.g. `"baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>"`. Replace them and delete the sections you do not use. Until then Kurultay does not start but names what is left:
 
 ```
 ~/.kurultay/config.json still has values to fill in: baseUrl, apiKey, models[0], jira.url, jira.token – replace each <...> with your value, or delete a section you do not use (jira, gitlab, helper).
@@ -329,7 +330,7 @@ A model is addressed as `name@endpoint` (or just `name` when it is unique). An e
 
 ### Reference
 
-Every field is optional unless marked *required*; the defaults are what Kurultay uses without the field.
+Every field is optional unless marked *required*; the defaults are what Kurultay uses without the field. Any field can go into any of the files above; by habit the access fields (endpoints, `jira.url`/`token`, `gitlab.*`) live in `config.json` and the rest in `settings.json`.
 
 #### Endpoints (`endpoints[]`, or the top-level `baseUrl` / `apiKey` / `models`)
 
@@ -469,13 +470,11 @@ The console shows what it took when the workspace opens (`build/test from .gitla
 Issues **assigned to you** whose **description mentions `@kurultay`** (optionally with the repository: `@kurultay{repo:https://gitlab.company.local/team/app.git}`) are done by Kurultay and come back as a GitLab merge request; the merge request link is written under the issue as a comment. Works with Jira Server / Data Center (REST API v2, e.g. 8.x and later) and Jira Cloud, and with GitLab over HTTPS.
 
 ```jsonc
-// ~/.kurultay/config.json (next to the models)
+// ~/.kurultay/config.json (next to the models); the timings (intervalMinutes, pollSeconds,
+// maxWaitMinutes …) have defaults in ~/.kurultay/settings.json
 "jira": {
   "url": "https://jira.company.local",
-  "token": "${JIRA_TOKEN}",            // personal access token (Server / Data Center 8.14+) …
-  "intervalMinutes": 5,                // watch mode: a new look at Jira every 5 minutes
-  "pollSeconds": 30,                   // the issue being worked on is read again every 30 s
-  "maxWaitMinutes": 120                // no model answers: keep trying this long, then the next issue
+  "token": "${JIRA_TOKEN}"             // personal access token (Server / Data Center 8.14+) …
 },
 "gitlab": {
   "repo": "https://gitlab.company.local/team/app.git",   // optional when issues say @kurultay{repo:<url>}

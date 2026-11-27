@@ -2,6 +2,7 @@
 
 ## v0.1.4
 
+- Settings split in two: `~/.kurultay/config.json` holds only what has to be entered – the models and keys, Jira and GitLab access; `~/.kurultay/settings.json` holds every setting with a default (timeouts, Jira timings, limits) and is written with the defaults on the first start. `config.json` and a project's `kurultay.config.json` still win over it; `/llm set` writes to `settings.json`; `config_template.json` lists only what has to be entered.
 - Console: no workspace question on start – the prompt takes commands at once. `/workspace <path>` opens a project, `/workspace` lists the recent ones, `/workspace 2` opens the second; commands that need a project say so, `/jira` needs none.
 - Models without a capability profile are measured right after the start screen (and before the first Jira issue), once – not only when a project was opened.
 - Jira: the analysis belongs to the repository, not to the issue. Its first issue analyses the repository (file summaries, `ARCHITECTURE.md`, flows, project notes) in the shared clone at the target branch, and keeps it with the index, skills and rules in the project folder `~/.kurultay/projects/<group_project>/`. Later issues fetch first and summarise only the files that changed on the target branch (`jira.reanalyzeFiles`, default 30, makes the whole analysis again); an issue's own branch never goes into it. `jira.analyze: false` turns it off.

@@ -194,7 +194,7 @@ describe('Kurultay console', () => {
     const proj = tmpProject({ 'a.c': 'int a;' });
     const r = await session(
       [
-        proj,
+        `/workspace ${proj}`,
         '/llm',
         '/llm set firstTokenTimeoutMs 120000',
         '/llm set stickyFailover off',
@@ -217,10 +217,16 @@ describe('Kurultay console', () => {
     assert.match(r.out, /Invalid baseUrl/);
     assert.match(r.out, /Usage: \/endpoint add/);
     assert.match(r.out, /No endpoint named ghost/);
+    // timeouts go to settings.json (the defaults file), endpoints to config.json
+    const settings = JSON.parse(readFileSync(join(h, 'settings.json'), 'utf8'));
+    assert.equal(settings.llm.firstTokenTimeoutMs, 120000);
+    assert.equal(settings.llm.stickyFailover, false);
+    assert.equal(settings.llm.idleTimeoutMs, 90000, 'a value that does not validate is not written');
+    assert.equal(settings.jira.pollSeconds, 30, 'the other defaults are written with it');
     const cfg = JSON.parse(readFileSync(join(h, 'config.json'), 'utf8'));
-    assert.equal(cfg.llm.firstTokenTimeoutMs, 120000);
-    assert.equal(cfg.llm.stickyFailover, false);
+    assert.equal(cfg.llm, undefined);
     assert.deepEqual(cfg.endpoints.map((e: { name: string }) => e.name), ['mock']);
+    assert.match(r.out, /LLM settings .*settings\.json/);
   });
 
   it('completes commands, arguments, @files, $skills and paths', async () => {

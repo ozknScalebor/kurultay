@@ -262,6 +262,8 @@ describe('kurultay CLI (end-to-end against a mock LLM server)', () => {
     const status = await cli(['status'], tmpProject({}), { KURULTAY_HOME: kh });
     assert.equal(status.code, 1);
     assert.match(status.stdout + status.stderr, /still has values to fill in: baseUrl, apiKey, models\[0\]/);
+    assert.ok(existsSync(join(kh, 'settings.json')), 'the defaults file is written on the first start');
+    assert.match(readFileSync(join(kh, 'settings.json'), 'utf8'), /"firstTokenTimeoutMs": 180000/);
     const none = await cli(['status'], tmpProject({}), { KURULTAY_HOME: tmpProject({}) });
     assert.match(none.stdout + none.stderr, /Copy config_template\.json from the Kurultay folder to .*config\.json/);
   });

@@ -6,7 +6,7 @@ import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from '../app.js';
 import { closeLspServers } from '../lsp/client.js';
 import type { McpManager } from '../mcp/manager.js';
-import { ConfigError, kurultayHome, loadConfig, parseConfig, type KurultayConfig, type RunMode } from '../config.js';
+import { ConfigError, kurultayHome, loadConfig, parseConfig, SETTINGS_TEMPLATE, settingsPath, type KurultayConfig, type RunMode } from '../config.js';
 import type { ProjectIndex } from '../index/project-index.js';
 import { OpenAICompatClient } from '../llm/client.js';
 import { Router } from '../llm/router.js';
@@ -868,6 +868,18 @@ export class KurultayConsole {
     writeFileSync(path, JSON.stringify(raw, null, 2));
     this.config = parsed;
     this.configPath = path;
+    this.out(`${color.green('✓')} saved ${shortPath(path)}`);
+  }
+
+  /** Change ~/.kurultay/settings.json (the defaults file) and load the configuration again. */
+  writeSettings(mut: (raw: Record<string, unknown>) => void): void {
+    const path = settingsPath();
+    const raw = existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>) : (JSON.parse(JSON.stringify(SETTINGS_TEMPLATE)) as Record<string, unknown>);
+    mut(raw);
+    parseConfig({ ...raw, endpoints: this.config?.endpoints ?? [] }); // validate before writing
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, JSON.stringify(raw, null, 2) + '\n');
+    this.config = loadConfig(this.workspace ?? this.cwd, this.opts.config).config;
     this.out(`${color.green('✓')} saved ${shortPath(path)}`);
   }
 

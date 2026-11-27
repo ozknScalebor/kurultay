@@ -6,7 +6,7 @@ import { ProjectAnalyzer } from './analyze/summarizer.js';
 import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from './app.js';
 import { closeLspServers } from './lsp/client.js';
 import { VectorStore } from './index/embeddings.js';
-import { ConfigError, SAMPLE_CONFIG, kurultayHome, loadConfig, type RunMode } from './config.js';
+import { ConfigError, SAMPLE_CONFIG, ensureSettingsFile, kurultayHome, loadConfig, type RunMode } from './config.js';
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
@@ -571,6 +571,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (args.flags.version || args.flags.v) return out(VERSION);
   if (args.cmd === '' && !args.flags.help && !args.flags.h && process.stdin.isTTY && process.stdout.isTTY) args.cmd = 'console';
   if (args.cmd === '' || args.cmd === 'help' || args.flags.help || args.flags.h) return out(HELP);
+  // the settings with their defaults, written once so they can be found and changed
+  ensureSettingsFile();
   if (args.cmd === 'console' || args.cmd === 'tui' || args.cmd === 'chat') {
     const { KurultayConsole } = await import('./tui/console.js');
     const c = new KurultayConsole(

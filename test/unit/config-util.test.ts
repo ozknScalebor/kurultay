@@ -179,3 +179,34 @@ import { readFileSync } from 'node:fs';
 function require_lines(file: string): string[] {
   return readFileSync(file, 'utf8').trim().split('\n');
 }
+
+describe('settings.json: the defaults file next to config.json', () => {
+  it('is written once with the defaults, sits under config.json and the project file, and matches the built-in defaults', async () => {
+    const { ensureSettingsFile, SETTINGS_TEMPLATE, settingsPath, DEFAULT_CONFIG } = await import('../../src/config.js');
+    const { tmpProject } = await import('../helpers.js');
+    const prev = process.env.KURULTAY_HOME;
+    const home = tmpProject({});
+    process.env.KURULTAY_HOME = home;
+    try {
+      assert.equal(ensureSettingsFile(), join(home, 'settings.json'));
+      assert.equal(ensureSettingsFile(), undefined, 'written only once – a changed file stays');
+      // the template says what the code does when a setting is left out
+      for (const k of ['firstTokenTimeoutMs', 'idleTimeoutMs', 'timeoutMs', 'timeoutRetries', 'timeoutCooldownMs', 'stickyFailover'] as const) assert.equal(SETTINGS_TEMPLATE.llm[k], DEFAULT_CONFIG.llm[k], k);
+      assert.equal(SETTINGS_TEMPLATE.verify.timeoutMs, DEFAULT_CONFIG.verify.timeoutMs);
+      assert.equal(SETTINGS_TEMPLATE.orchestrator.maxIterations, DEFAULT_CONFIG.orchestrator.maxIterations);
+      // config.json wins over settings.json, a project file over both
+      writeFileSync(settingsPath(), JSON.stringify({ llm: { idleTimeoutMs: 1000, firstTokenTimeoutMs: 2000 }, jira: { pollSeconds: 7 }, orchestrator: { maxIterations: 2 } }));
+      writeFileSync(join(home, 'config.json'), JSON.stringify({ baseUrl: 'http://x/v1', models: ['m'], llm: { idleTimeoutMs: 3000 }, jira: { url: 'https://jira.local', token: 't' } }));
+      const proj = tmpProject({ 'kurultay.config.json': JSON.stringify({ orchestrator: { maxIterations: 6 } }) });
+      const { config } = loadConfig(proj);
+      assert.deepEqual([config.llm.idleTimeoutMs, config.llm.firstTokenTimeoutMs, config.jira?.pollSeconds, config.jira?.url, config.orchestrator.maxIterations], [3000, 2000, 7, 'https://jira.local', 6]);
+      assert.equal(config.llm.timeoutMs, DEFAULT_CONFIG.llm.timeoutMs, 'what neither file sets keeps its default');
+      // a broken settings.json is reported
+      writeFileSync(settingsPath(), '{ nope');
+      assert.throws(() => loadConfig(proj), /could not read .*settings\.json/);
+    } finally {
+      if (prev === undefined) delete process.env.KURULTAY_HOME;
+      else process.env.KURULTAY_HOME = prev;
+    }
+  });
+});

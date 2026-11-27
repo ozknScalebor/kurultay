@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { LspConfig } from './lsp/client.js';
@@ -438,6 +438,71 @@ export function kurultayHome(): string {
 
 export const CONFIG_FILE_NAMES = ['kurultay.config.json', '.kurultay/config.json'];
 
+/** ~/.kurultay/settings.json: every setting with a default (timeouts, Jira timings, limits). */
+export function settingsPath(): string {
+  return join(kurultayHome(), 'settings.json');
+}
+
+/**
+ * What settings.json holds when Kurultay writes it the first time: the settings a user may want
+ * to change, with their defaults. config.json keeps only what has to be entered – the models,
+ * Jira and GitLab access – so it stays short.
+ */
+export const SETTINGS_TEMPLATE = {
+  $comment:
+    'Kurultay settings with their default values. Change what you need; a line you delete takes its default again. The models and the Jira / GitLab access are in config.json next to this file. Any setting may also go into config.json or a project\'s kurultay.config.json, which win over this file.',
+  llm: {
+    $comment: 'Model requests: timeouts in milliseconds. A model that misses them is left for another one (failover).',
+    firstTokenTimeoutMs: 180_000,
+    idleTimeoutMs: 90_000,
+    timeoutMs: 600_000,
+    timeoutRetries: 0,
+    timeoutCooldownMs: 120_000,
+    stickyFailover: true,
+    hedge: true,
+    hedgeMinMs: 30_000,
+  },
+  jira: {
+    $comment: 'Jira work (kurultay jira, /jira run).',
+    mention: '@kurultay',
+    intervalMinutes: 5,
+    pollSeconds: 30,
+    maxWaitMinutes: 120,
+    retryMinutes: 5,
+    analyze: true,
+    reanalyzeFiles: 30,
+    comment: true,
+    transition: '',
+  },
+  verify: { $comment: 'Build/test: time limit per command; take them from the CI pipeline when a project has none.', timeoutMs: 900_000, fromPipeline: true },
+  orchestrator: { defaultMode: 'auto', maxIterations: 4, maxStepsPerWorker: 40, maxConsecutiveErrors: 6, confirmMerge: false },
+  tools: { allowCommands: true, commandTimeoutMs: 600_000, isolation: 'sandbox' },
+  index: { maxFileBytes: 524_288, summaryLanguage: 'en', repoMapTokens: 2048 },
+  skills: { includeUser: true, maxPreload: 3 },
+  language: 'en',
+};
+
+/** Write settings.json with the defaults when there is none yet; returns its path when it was written. */
+export function ensureSettingsFile(): string | undefined {
+  const file = settingsPath();
+  if (existsSync(file)) return undefined;
+  try {
+    mkdirSync(kurultayHome(), { recursive: true });
+    writeFileSync(file, JSON.stringify(SETTINGS_TEMPLATE, null, 2) + '\n');
+    return file;
+  } catch {
+    return undefined; // a read-only home: the defaults apply anyway
+  }
+}
+
+/** settings.json, if there is one (a broken one is reported, not ignored). */
+function readSettings(): Record<string, unknown> | undefined {
+  const file = settingsPath();
+  if (!existsSync(file)) return undefined;
+  const v = readJson(file);
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
 function interpolateEnv(value: unknown): unknown {
   if (typeof value === 'string') {
     return value.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/gi, (_m, name: string, def?: string) => process.env[name] ?? def ?? '');
@@ -540,6 +605,9 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
       (raw as { endpoints?: unknown[] }).endpoints = eps;
     }
   }
+  // settings.json under everything: the config files win over it
+  const settings = readSettings();
+  if (settings) raw = deepMerge(settings, raw as Record<string, unknown>);
   const config = parseConfig(raw);
   return { config, path };
 }

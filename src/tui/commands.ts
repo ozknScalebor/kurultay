@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { type LlmConfig, type RunMode } from '../config.js';
+import { settingsPath, type LlmConfig, type RunMode } from '../config.js';
 import { SkillRegistry } from '../skills/skills.js';
 import { startDashboard } from '../ui/dashboard.js';
 import { attachTerminal, color } from '../ui/terminal.js';
@@ -51,7 +51,7 @@ export function buildCommands(con: KurultayConsole): Command[] {
             if (!llmKeys.includes(key)) return con.out(color.yellow(`Unknown setting: ${m[1]}. Valid: ${llmKeys.join(', ')}`));
             const value = key === 'stickyFailover' ? con.onOff(m[2], true) : Number(m[2]);
             try {
-              con.writeConfig((raw) => {
+              con.writeSettings((raw) => {
                 raw.llm = { ...((raw.llm as object) ?? {}), [key]: value };
               });
             } catch (e) {
@@ -62,7 +62,7 @@ export function buildCommands(con: KurultayConsole): Command[] {
             return;
           }
           const l = con.config!.llm;
-          con.out(`${color.bold('LLM settings')} ${color.dim(shortPath(con.configPath ?? '-'))}`);
+          con.out(`${color.bold('LLM settings')} ${color.dim(shortPath(settingsPath()))}`);
           for (const k of llmKeys) con.out(`  ${k.padEnd(20)} ${String(l[k])}`);
           for (const e of con.config!.endpoints) {
             con.out(`  ${color.cyan(e.name.padEnd(12))} ${e.baseUrl}${e.disabled ? color.dim(' (disabled)') : ''}${e.firstTokenTimeoutMs || e.idleTimeoutMs || e.timeoutMs ? color.dim(` · first token ${e.firstTokenTimeoutMs ?? '-'} · idle ${e.idleTimeoutMs ?? '-'} · total ${e.timeoutMs ?? '-'}`) : ''}`);
