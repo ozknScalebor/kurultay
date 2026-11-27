@@ -12,13 +12,16 @@ export class RateLimiter {
 
   async take(signal?: AbortSignal): Promise<number> {
     const t0 = Date.now();
+    let waited = false;
     for (;;) {
       const now = Date.now();
       while (this.stamps.length && now - this.stamps[0] >= 60_000) this.stamps.shift();
       if (this.stamps.length < this.perMinute) {
         this.stamps.push(now);
-        return now - t0;
+        // without a wait it is 0 – not the millisecond the clock may have moved meanwhile
+        return waited ? now - t0 : 0;
       }
+      waited = true;
       await sleep(Math.max(50, 60_000 - (now - this.stamps[0]) + 5), signal);
     }
   }
