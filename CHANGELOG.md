@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.2
 
 - Jira: a comment that mentions `@kurultay`, or an edited description, changes the request – also while Kurultay is working. The issue is read again every `jira.pollSeconds` (30 s); the change reaches the running agent at its next step (only what changed in the description is passed on). After the merge request the work goes on on the same branch, on top of the earlier commits, and the merge request is updated.
 - Jira: when no model answers, Kurultay keeps trying (at most every `jira.retryMinutes`, 5) for `jira.maxWaitMinutes` (120), then comments that the issue is paused, goes on with the next one and comes back to it later. The issue is no longer marked as failed.
