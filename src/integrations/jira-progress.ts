@@ -159,6 +159,12 @@ export class RunNarrator {
         } else this.say(msg.split('\n')[0], 'warn');
         break;
       }
+      case 'log.info':
+        if (e.source === 'verify' && typeof d.source === 'string') {
+          if (d.build) this.say(`build\t${String(d.build)} (from ${d.source})`, 'info');
+          if (d.test) this.say(`test\t${String(d.test)} (from ${d.source})`, 'info');
+        }
+        break;
       case 'llm.request':
         if (e.source) this.inflight.set(e.source, this.now());
         break;

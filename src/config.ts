@@ -120,6 +120,11 @@ export interface VerifyConfig {
   test?: string;
   lint?: string;
   timeoutMs?: number;
+  /**
+   * with neither build nor test set, take them from the project's CI pipeline (.gitlab-ci.yml,
+   * .github/workflows, azure-pipelines.yml, bitbucket-pipelines.yml …; default true)
+   */
+  fromPipeline?: boolean;
 }
 
 /** auto = single: one model at a time; multi = several models (race/split chosen per task), opt-in */
@@ -611,7 +616,9 @@ export function normalizeRawConfig(raw: unknown): unknown {
 }
 
 export function parseConfig(raw: unknown): KurultayConfig {
-  const merged = deepMerge({ ...DEFAULT_CONFIG, endpoints: [] } as KurultayConfig, normalizeRawConfig(interpolateEnv(raw)));
+  // a copy of the defaults: a section the file leaves out must not be the shared default object
+  // (a change to one loaded config would show up in every later one)
+  const merged = deepMerge({ ...structuredClone(DEFAULT_CONFIG), endpoints: [] } as KurultayConfig, normalizeRawConfig(interpolateEnv(raw)));
   merged.endpoints = (merged.endpoints || []).map((e) => ({ ...e, baseUrl: e.baseUrl.replace(/\/+$/, '') }));
   validateConfig(merged);
   return merged;

@@ -4,6 +4,7 @@ import type { KurultayConfig, VerifyConfig } from '../config.js';
 import { runShell } from '../agent/tools.js';
 import type { Materializer, Overlay } from '../agent/workspace.js';
 import { truncateMiddle } from '../util/text.js';
+import { detectPipelineVerify } from './pipeline.js';
 
 export interface VerifyStep {
   name: 'build' | 'test' | 'lint';
@@ -60,11 +61,15 @@ export function verifyFailureText(v: VerifyResult): string {
     .join('\n\n');
 }
 
-/** Guess verification commands for common build systems (used by `kurultay init`). */
+/** Verification commands for `kurultay init`: the CI pipeline's, else a guess from the build system. */
 export function detectVerifyCommands(root: string): VerifyConfig {
   const has = (f: string) => existsSync(join(root, f));
   const v: VerifyConfig = { build: '', test: '', lint: '' };
-  if (has('CMakeLists.txt')) {
+  const p = detectPipelineVerify(root);
+  if (p) {
+    v.build = p.build;
+    v.test = p.test;
+  } else if (has('CMakeLists.txt')) {
     v.build = 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --config Debug -j';
     v.test = 'ctest --test-dir build -C Debug --output-on-failure';
   } else if (has('meson.build')) {

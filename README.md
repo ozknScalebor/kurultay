@@ -391,8 +391,17 @@ Every field is optional unless marked *required*; the defaults are what Kurultay
 | `test` | – | Test command, e.g. `ctest --test-dir build --output-on-failure`, `mvn -q test` |
 | `lint` | – | Optional lint command |
 | `timeoutMs` | `900000` | Time limit of each command |
+| `fromPipeline` | `true` | With neither `build` nor `test` set, take them from the project's CI pipeline (see below) |
 
 The commands run in the project root of a sandbox copy. The agent is told to run them before it finishes; Kurultay runs them once more on the final result.
+
+**From the CI pipeline.** When neither `build` nor `test` is configured, Kurultay reads the project's pipeline file – `.gitlab-ci.yml`, `.github/workflows/*.yml` (also `.gitea/`, `.forgejo/`), `azure-pipelines.yml`, `bitbucket-pipelines.yml`, `.drone.yml`, `.woodpecker.yml` – because it already says how the project is built and tested. From its jobs and steps it takes the commands of build and test tools (Maven, Gradle, Ant, Make, CMake/CTest, Ninja, Meson, npm/yarn/pnpm, dotnet, MSBuild, Go, Cargo, pytest/tox, Bazel …):
+
+- the pipeline's `variables` / `env` are filled in (`$MAVEN_CLI_OPTS`), the checkout folder (`$CI_PROJECT_DIR`, `$GITHUB_WORKSPACE`) becomes the project root, a `cd` before a command and `working-directory` are kept; Azure `Maven@3` / `Gradle@2` tasks become `mvn …` / `gradlew …`;
+- left out: deploy, release, publish, pages, container, security-scan, lint and docs jobs; commands that push, upload, log in, use docker/kubectl/ssh/curl, or install packages (`npm ci`, `pip install`, `apt-get` – the offline PC has what it needs, or the command fails visibly); a command with a variable the pipeline does not define;
+- a command that tests (`mvn test`/`verify`, `ctest`, `npm test`, `go test`, `make check` …) or runs in a test job is the test command, the others the build command (up to three each, joined with `&&`).
+
+The console shows what it took when the workspace opens (`build/test from .gitlab-ci.yml: …`), and so does every Jira issue. `kurultay init` writes the same commands into the project file, where you can change them. Configured commands always win; `"fromPipeline": false` turns it off.
 
 #### `orchestrator`
 
@@ -552,7 +561,7 @@ Paused work goes on **from where it stopped**, not from the beginning. After eve
 ### Notes
 
 - **Mention as plain text:** typing `@` in a Jira description opens the user picker. When a user named "kurultay" exists and is picked, Jira stores `[~kurultay]` instead of `@kurultay` and the issue is not taken – close the picker with Esc so the text stays plain (or set another `mention`).
-- **Without build/test commands** the work is applied unchecked and the comment says `build/tests: not run`; set `verify` in the project's `kurultay.config.json` so every merge request is built first.
+- **Build and tests:** when the repository has a CI pipeline (`.gitlab-ci.yml` …), its build and test commands are used (see [`verify`](#verify--what-decides-that-a-task-is-done)). Without a pipeline and without `verify` in the project's `kurultay.config.json` the work is applied unchecked and the comment says `build/tests: not run`.
 - **Passwords and tokens:** use `${ENV_VAR}` as above (`setx JIRA_TOKEN "…"` on Windows). Git gets them from an inline credential helper – never written to disk or into the remote URL – and they are masked in messages and comments.
 - **Company certificates:** the portable package starts Node with `--use-system-ca`, so certificates in the Windows (or system) store are trusted for Jira, GitLab and the model servers. With your own Node.js start it the same way (`node --use-system-ca bin\kurultay.js …`, Node 22.15 or later); `kurultay jira startup` keeps the flag in the start-up entry. Otherwise set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem`. Git uses its own setting (`git config --global http.sslCAInfo …`).
 - **First try:** `kurultay jira --dry-run`, then `kurultay jira --issue ABC-12`, then `kurultay jira startup`.

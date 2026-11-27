@@ -416,6 +416,10 @@ describe('Kurultay console', () => {
     mkdirSync(join(seed, 'src'), { recursive: true });
     git(seed, 'init', '-q', '-b', 'main');
     writeFileSync(join(seed, 'src', 'mathutil.js'), 'export function clamp(value, min, max) {\n  return value;\n}\n');
+    // the pipeline says how the project is tested – no "verify" in any Kurultay config
+    writeFileSync(join(seed, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: 'node test.js' } }));
+    writeFileSync(join(seed, 'test.js'), "import { clamp } from './src/mathutil.js';\nif (clamp(5, 0, 3) !== 3 || clamp(-1, 0, 3) !== 0) { console.error('clamp is wrong'); process.exit(1); }\n");
+    writeFileSync(join(seed, '.gitlab-ci.yml'), 'stages: [test, deploy]\nunit:\n  stage: test\n  script:\n    - npm ci\n    - npm test\npages:\n  stage: deploy\n  script:\n    - npm run docs\n');
     git(seed, 'add', '.');
     git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
     git(seed, 'push', '-q', bare, 'main');
@@ -446,7 +450,9 @@ describe('Kurultay console', () => {
       assert.match(out, /\/jira run does them all/);
       // the run: a heading for the issue, labelled lines, numbered steps, the result
       assert.match(out, /── YN-7 ─+\nclamp returns the value unchanged\n {2}repo {5}file:.*\n {2}branch {3}kurultay\/YN-7 → main \(new\)/);
-      assert.match(out, /⚠ no build\/test commands – the changes are not compiled or tested/);
+      assert.match(out, / {2}test {5}npm test \(from \.gitlab-ci\.yml\)/);
+      assert.match(out, /build\/tests: passed/);
+      assert.doesNotMatch(out, /no build\/test commands/);
       assert.match(out, / {3}0:\d\d {2}step 1 · reading mathutil\.js/);
       assert.match(out, /✓ merge request opened: https:\/\/gl\/mr\/9/);
       assert.match(out, /── Done ─+\n {2}✓ YN-7 {11}merge-request {2}https:\/\/gl\/mr\/9/);

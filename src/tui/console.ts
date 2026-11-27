@@ -471,6 +471,10 @@ export class KurultayConsole {
     this.config = this.app.config;
     if (this.app.configPath !== this.configPath) this.out(color.dim(`  config: ${shortPath(this.app.configPath)}`));
     this.configPath = this.app.configPath;
+    if (this.app.verifyFrom) {
+      const v = this.app.config.verify;
+      this.out(color.dim(`  build/test from ${this.app.verifyFrom}:${v.build ? ` build \`${v.build}\`` : ''}${v.build && v.test ? ' ·' : ''}${v.test ? ` test \`${v.test}\`` : ''}`));
+    }
     this.router = this.app.router;
     this.probed = this.app.probed;
     this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l), width: () => this.screen.columns });

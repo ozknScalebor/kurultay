@@ -10,6 +10,7 @@ import { loadProfile } from './probe/profile.js';
 import { Router } from './llm/router.js';
 import { ModelStats } from './llm/stats.js';
 import { EventBus } from './util/events.js';
+import { detectPipelineVerify } from './orchestrator/pipeline.js';
 
 export interface App {
   root: string;
@@ -21,6 +22,8 @@ export interface App {
   materializer: Materializer;
   /** whether router models come from a probe (true) or plain discovery (false) */
   probed: boolean;
+  /** the CI pipeline file the build/test commands were taken from (none were configured) */
+  verifyFrom?: string;
 }
 
 export async function createApp(opts: { root?: string; config?: string; bus?: EventBus; requireModels?: boolean; discoverTimeoutMs?: number; learn?: boolean } = {}): Promise<App> {
@@ -28,6 +31,16 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   const { config, path } = loadConfig(root, opts.config);
   const stateDir = join(root, config.stateDir);
   const bus = opts.bus ?? new EventBus();
+  // no build/test commands configured: the project's CI pipeline says how it is built and tested
+  let verifyFrom: string | undefined;
+  if (!config.verify.build?.trim() && !config.verify.test?.trim() && config.verify.fromPipeline !== false) {
+    const p = detectPipelineVerify(root);
+    if (p) {
+      config.verify = { ...config.verify, build: p.build, test: p.test };
+      verifyFrom = p.source;
+      bus.info('verify', `build/test commands from ${p.source}: ${[p.build && `build \`${p.build}\``, p.test && `test \`${p.test}\``].filter(Boolean).join(' · ')}`, { source: p.source, build: p.build, test: p.test });
+    }
+  }
   const router = new Router(config, bus);
   // learned per-role quality, shared by every project of this user
   if (opts.learn !== false) router.learned = new ModelStats(join(kurultayHome(), 'model-stats.json'));
@@ -48,7 +61,7 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   if (router.size === 0 && opts.requireModels !== false) {
     router.register(await router.discover(opts.discoverTimeoutMs ? AbortSignal.timeout(opts.discoverTimeoutMs) : undefined));
   }
-  return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir, { isolation: config.tools.isolation, sandbox: config.tools.sandbox }), probed };
+  return { root, stateDir, config, configPath: path, bus, router, materializer: new Materializer(root, stateDir, { isolation: config.tools.isolation, sandbox: config.tools.sandbox }), probed, verifyFrom };
 }
 
 /**

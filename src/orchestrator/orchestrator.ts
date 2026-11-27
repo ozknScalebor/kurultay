@@ -416,7 +416,7 @@ export class Orchestrator {
   private warnUnverified(): void {
     const v = this.cfg.verify;
     if (!v.build?.trim() && !v.test?.trim()) {
-      this.bus.warn('verify', 'no build/test commands: the code will not be compiled or tested (kurultay init, or "verify" in kurultay.config.json)');
+      this.bus.warn('verify', 'no build/test commands: the code will not be compiled or tested (no CI pipeline with build/test steps found; set "verify" in kurultay.config.json, or run kurultay init)');
     }
   }
   /** winning workers of this run – exported as fine-tuning data when the run is verified */
