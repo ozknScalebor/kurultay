@@ -30,7 +30,7 @@
     "transition": ""
   },
   "gitlab": {
-    "$comment": "The repository the Jira work is done in. token: a GitLab personal access token with scope 'api' (opens the merge request); targetBranch empty = the default branch.",
+    "$comment": "The repository the Jira work is done in – optional when every issue names its own with @kurultay{repo:<url>} in the description (then delete the repo line). token: a GitLab personal access token with scope 'api' (opens the merge request); targetBranch empty = the default branch.",
     "repo": "<repository address – e.g. https://gitlab.company.local/team/app.git>",
     "token": "<GitLab access token (scope api)>",
     "targetBranch": "",
