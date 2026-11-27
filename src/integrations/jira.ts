@@ -162,21 +162,65 @@ export class JiraClient {
   }
 }
 
-/**
- * The repository of an issue: a "repo: <url>" line in the description, else the project's
- * entry in jira.repos, else its "*" entry, else gitlab.repo.
- */
-export function repoFor(issue: JiraIssue, repos: Record<string, string> = {}, fallback?: string): string | undefined {
-  const own = /(?:^|\n)\s*repo\s*[:=]\s*(\S+)/i.exec(issue.description)?.[1];
-  return own ?? repos[issue.project] ?? repos[issue.project.toUpperCase()] ?? repos['*'] ?? fallback;
+const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The mention with its optional settings: "@kurultay" or "@kurultay{repo: <url>}". */
+function mentionRe(mention: string): RegExp {
+  return new RegExp(`${esc(mention)}(?:\\s*\\{([^}]*)\\})?`, 'gi');
 }
 
-/** The task Kurultay gets: summary and description, without the mention and the repo line. */
+/**
+ * The settings written with the mention: @kurultay{repo:<url>} (several as key: value, separated
+ * by commas or semicolons). The first mention that has them counts.
+ */
+export function mentionSettings(text: string, mention = '@kurultay'): Record<string, string> {
+  for (const m of text.matchAll(mentionRe(mention))) {
+    if (!m[1]) continue;
+    const out: Record<string, string> = {};
+    // "repo: [https://x|https://x]" – a Jira link may hold "|"; split at , or ; outside brackets
+    let depth = 0;
+    let cur = '';
+    const parts: string[] = [];
+    for (const c of m[1]) {
+      if (c === '[' || c === '<') depth++;
+      else if (c === ']' || c === '>') depth = Math.max(0, depth - 1);
+      if ((c === ',' || c === ';') && depth === 0) {
+        parts.push(cur);
+        cur = '';
+      } else cur += c;
+    }
+    parts.push(cur);
+    for (const part of parts) {
+      const kv = /^\s*([A-Za-z][\w-]*)\s*[:=]\s*(.+?)\s*$/.exec(part);
+      if (kv) out[kv[1].toLowerCase()] = kv[2];
+    }
+    if (Object.keys(out).length) return out;
+  }
+  return {};
+}
+
+/** A URL as written in Jira: plain, in <…> or quotes, or as a wiki link [url] / [text|url]. */
+export function cleanUrl(v: string): string {
+  let u = v.trim();
+  const link = /^\[(?:[^|\]]*\|)?([^\]]+)\]$/.exec(u);
+  if (link) u = link[1].trim();
+  return u.replace(/^<(.*)>$/, '$1').replace(/^["'](.*)["']$/, '$1').trim();
+}
+
+/**
+ * The repository of an issue: @kurultay{repo: <url>} or a "repo: <url>" line in the description,
+ * else the project's entry in jira.repos, else its "*" entry, else gitlab.repo.
+ */
+export function repoFor(issue: JiraIssue, repos: Record<string, string> = {}, fallback?: string, mention = '@kurultay'): string | undefined {
+  const set = mentionSettings(issue.description, mention).repo;
+  const line = /(?:^|\n)\s*repo\s*[:=]\s*(\S+)/i.exec(issue.description)?.[1];
+  const own = set ?? line;
+  return (own ? cleanUrl(own) : undefined) || repos[issue.project] || repos[issue.project.toUpperCase()] || repos['*'] || fallback;
+}
+
+/** The task Kurultay gets: summary and description, without the mention (and its settings) and the repo line. */
 export function taskOf(issue: JiraIssue, mention: string): string {
-  const esc = mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const body = issue.description
-    .replace(new RegExp(esc, 'gi'), '')
-    .replace(/(?:^|\n)\s*repo\s*[:=]\s*\S+/gi, '');
+  const body = issue.description.replace(mentionRe(mention), '').replace(/(?:^|\n)\s*repo\s*[:=]\s*\S+/gi, '');
   // Jira wiki markup that only gets in the way
   return `${issue.key}: ${issue.summary}\n\n${cleanWiki(body).trim()}`.trim();
 }
@@ -184,7 +228,7 @@ export function taskOf(issue: JiraIssue, mention: string): string {
 /** The text of an @kurultay comment without the mention (undefined: not for Kurultay). */
 export function requestOf(comment: JiraComment, mention: string): string | undefined {
   if (!comment.body.toLowerCase().includes(mention.toLowerCase())) return undefined;
-  return cleanWiki(comment.body.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '')).trim() || undefined;
+  return cleanWiki(comment.body.replace(mentionRe(mention), '')).trim() || undefined;
 }
 
 /**

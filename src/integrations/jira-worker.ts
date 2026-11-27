@@ -135,7 +135,7 @@ export class JiraWorker {
     if (!config.jira?.url) throw new Error('no "jira" section in the configuration (url, username + password or token)');
     this.jira = config.jira;
     this.gitlab = config.gitlab ?? {};
-    if (!this.gitlab.repo && !Object.keys(this.jira.repos ?? {}).length) throw new Error('no repository: set "gitlab.repo" (or jira.repos per project)');
+    // without gitlab.repo or jira.repos every issue names its repository: @kurultay{repo: <url>}
     // a branch prefix git would refuse is reported at once, not on every issue
     branchName('ABC-1', this.gitlab.branchPrefix);
     this.client = new JiraClient(this.jira, opts.fetch);
@@ -213,7 +213,7 @@ export class JiraWorker {
     for (const { issue } of todo) {
       if (this.opts.signal?.aborted) break;
       if (this.opts.dryRun) {
-        this.log(`${issue.key}\t${issue.summary} – in ${repoFor(issue, this.jira.repos, this.gitlab.repo) ?? '(no repository)'}`, 'info');
+        this.log(`${issue.key}\t${issue.summary} – in ${repoFor(issue, this.jira.repos, this.gitlab.repo, this.client.mention) ?? '(no repository)'}`, 'info');
         continue;
       }
       this.current = issue.key;
@@ -249,10 +249,10 @@ export class JiraWorker {
       return s;
     };
     this.log(`${issue.key}\t${issue.summary}`, 'issue');
-    const url = repoFor(issue, this.jira.repos, this.gitlab.repo);
+    const url = repoFor(issue, this.jira.repos, this.gitlab.repo, this.client.mention);
     if (!url) {
       this.log(`no repository for project ${issue.project}`, 'fail');
-      await this.comment(issue, cur, `Kurultay could not start: no repository is configured for project ${issue.project} (gitlab.repo or jira.repos in the Kurultay configuration, or a line "repo: <url>" in the description).`);
+      await this.comment(issue, cur, `Kurultay could not start: no repository is configured for project ${issue.project} (write it with the mention in the description: @kurultay{repo:<url>}, or set gitlab.repo / jira.repos in the Kurultay configuration).`);
       return finish({ status: 'no-repo' });
     }
     const slug = repoSlug(url);
@@ -594,7 +594,8 @@ const firstLine = (t: string) => t.split('\n').find((l) => l.trim() && !/^(The d
 
 /** A changed description as a request: what is new, what is gone, the whole text. */
 function changeText(before: string, after: string, mention: string): string {
-  const strip = (t: string) => t.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
+  // the mention and its settings ({repo: …}) are not part of the request
+  const strip = (t: string) => t.replace(new RegExp(`${mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s*\\{[^}]*\\})?`, 'gi'), '');
   const { added, removed } = descriptionChange(strip(before), strip(after));
   return [
     'The description of the issue was changed.',

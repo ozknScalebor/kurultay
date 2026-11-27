@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after, describe, it } from 'node:test';
 import { branchName, GitRepo, projectOf, repoSlug } from '../../src/integrations/gitlab.js';
-import { descriptionChange, JiraClient, repoFor, requestOf, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
+import { descriptionChange, JiraClient, mentionSettings, repoFor, requestOf, taskOf, type JiraIssue } from '../../src/integrations/jira.js';
 import { Inbox } from '../../src/agent/inbox.js';
 import { installStartup, JiraWorker } from '../../src/integrations/jira-worker.js';
 import { jiraStatus } from '../../src/integrations/jira-status.js';
@@ -127,6 +127,19 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.equal(repoFor(i, {}, 'https://gitlab.local/team/app.git'), 'https://gitlab.local/x/own.git');
     assert.equal(repoFor({ ...i, description: '@kurultay' }, { ABC: 'https://g/abc.git' }, 'https://g/app.git'), 'https://g/abc.git');
     assert.equal(repoFor({ ...i, description: '@kurultay' }, {}, 'https://g/app.git'), 'https://g/app.git');
+    // the repository written with the mention: @kurultay{repo:<url>} – plain, in <…>, or as a Jira link
+    const withRepo = (d: string) => ({ ...i, description: d });
+    assert.equal(repoFor(withRepo('Fix it. @kurultay{repo:https://gitlab.local/yna/gui.git}'), {}, 'https://g/app.git'), 'https://gitlab.local/yna/gui.git');
+    assert.equal(repoFor(withRepo('@Kurultay{ repo: <https://gitlab.local/a/b.git> }'), {}), 'https://gitlab.local/a/b.git');
+    assert.equal(repoFor(withRepo('@kurultay{repo:[https://gitlab.local/a/c.git|https://gitlab.local/a/c.git]}'), {}), 'https://gitlab.local/a/c.git');
+    assert.equal(repoFor(withRepo('@kurultay{repo: [https://gitlab.local/a/d.git]; other: x}'), {}), 'https://gitlab.local/a/d.git');
+    assert.equal(repoFor(withRepo('@kurultay{repo:"https://gitlab.local/a/e.git"}'), { ABC: 'https://g/abc.git' }), 'https://gitlab.local/a/e.git');
+    assert.equal(repoFor(withRepo('@kurultay{} only'), { ABC: 'https://g/abc.git' }), 'https://g/abc.git', 'empty settings: the configured repository');
+    assert.equal(repoFor(withRepo('@kurultay{repo:<x@other>}'), {}, undefined, '@bot'), undefined, 'another mention word');
+    assert.deepEqual(mentionSettings('a @kurultay b @kurultay{repo: u, branch: dev}'), { repo: 'u', branch: 'dev' });
+    const tr = taskOf(withRepo('Fix the table @kurultay{repo:https://gitlab.local/yna/gui.git} please'), '@kurultay');
+    assert.match(tr, /^ABC-1: Fix add\n\nFix the table\s+please$/);
+    assert.equal(requestOf({ id: '3', body: '@kurultay{repo:x} also y', created: '' }, '@kurultay'), 'also y');
     const t = taskOf(i, '@kurultay');
     assert.match(t, /^ABC-1: Fix add\n\nplease fix add\(\)/);
     assert.doesNotMatch(t, /@kurultay|repo:/);
@@ -682,6 +695,32 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
         else process.env[k] = v;
       }
     }
+  });
+
+  it('the repository written in the issue: @kurultay{repo:<url>} – no gitlab.repo needed', async () => {
+    const bare = remote();
+    const url = pathToFileURL(bare).href;
+    const fake = await fakeServers([
+      { key: 'RP-1', summary: 'own repo', description: `Fix add. @kurultay{repo:<${url}>}` },
+      { key: 'RP-2', summary: 'none', description: '@kurultay but no repository anywhere' },
+    ]);
+    const home = tmpProject({});
+    const cfg = join(home, 'config.json');
+    writeFileSync(cfg, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 't', pollSeconds: 0.05 }, gitlab: { url: fake.url, token: 'g', workDir: join(home, 'work') } }));
+    const tasks: string[] = [];
+    const r = await new JiraWorker({
+      config: cfg,
+      home,
+      run: async (root, task) => {
+        tasks.push(task);
+        writeFileSync(join(root, 'calc.c'), 'int add(int a, int b) { return a + b; }\n');
+        return ok(['calc.c']);
+      },
+    }).pass();
+    assert.deepEqual(r.done.map((d) => [d.key, d.status]), [['RP-1', 'merge-request'], ['RP-2', 'no-repo']]);
+    assert.match(git(bare, 'show', 'kurultay/RP-1:calc.c'), /a \+ b/);
+    assert.doesNotMatch(tasks[0], /repo:|@kurultay|\{/, 'the setting is not part of the task');
+    assert.match(fake.comments('RP-2')[0], /@kurultay\{repo:<url>\}/);
   });
 
   it('the user configuration template names every value to fill in', async () => {

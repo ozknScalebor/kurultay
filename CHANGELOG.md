@@ -5,6 +5,7 @@
 - Console: no workspace question on start – the prompt takes commands at once. `/workspace <path>` opens a project, `/workspace` lists the recent ones, `/workspace 2` opens the second; commands that need a project say so, `/jira` needs none.
 - Models without a capability profile are measured right after the start screen (and before the first Jira issue), once – not only when a project was opened.
 - Jira: the analysis belongs to the repository, not to the issue. Its first issue analyses the repository (file summaries, `ARCHITECTURE.md`, flows, project notes) in the shared clone at the target branch, and keeps it with the index, skills and rules in the project folder `~/.kurultay/projects/<group_project>/`. Later issues fetch first and summarise only the files that changed on the target branch (`jira.reanalyzeFiles`, default 30, makes the whole analysis again); an issue's own branch never goes into it. `jira.analyze: false` turns it off.
+- Jira: an issue can name its repository with the mention: `@kurultay{repo:<url>}` (plain, in `<…>` or quotes, or a pasted Jira link); `gitlab.repo` is then not needed. The setting is not part of the task text.
 - Jira: skills and rules for a repository go into its project folder (`skills/`, `rules/`); the issue header shows the folder and the skills found.
 - The analysis no longer counts data files it never summarises as "changed" (they made every start look out of date).
 

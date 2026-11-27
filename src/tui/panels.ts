@@ -106,7 +106,7 @@ export function jiraPanel(st: JiraStatus): string {
     const state = g.error ? color.red(`● ${fitWidth(g.error, 80)}`) : g.ok ? color.green(`● GitLab ${g.version ?? ''}`.trimEnd()) : color.dim('not checked (no gitlab.token)');
     out.push(`  GitLab  ${g.repo ?? '(jira.repos)'}  ${state}`);
     if (!g.error) out.push(color.dim(`          branch ${g.branch} → ${g.target}`));
-  } else out.push(color.yellow('  GitLab  no repository: set gitlab.repo'));
+  } else out.push(color.yellow('  GitLab  no repository configured: every issue names its own with @kurultay{repo:<url>} (or set gitlab.repo)'));
   out.push(color.dim(`  watch at start-up: ${st.startup ? 'on' : 'off (kurultay jira startup)'}${st.lastLog ? ` · last: ${fitWidth(st.lastLog, 100)}` : ''}`));
   out.push(color.dim('  /jira lists the waiting issues, /jira run [KEY] works on them – no workspace needed'));
   return out.join('\n');
