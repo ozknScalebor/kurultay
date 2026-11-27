@@ -678,8 +678,8 @@ export class KurultayConsole {
       }
       if (!r) return;
       if (!r.done.length) return this.out(color.dim(key ? `  ${key} is not waiting (assigned to you, @kurultay in the description, not done).` : '  No issue waits.'));
-      this.out(section('Done', undefined, this.screen.columns));
-      for (const d of r.done) this.out(`  ${d.status === 'merge-request' ? color.green('✓') : d.status === 'failed' || d.status === 'no-repo' ? color.red('✗') : color.yellow('⚠')} ${d.key.padEnd(14)} ${d.status}${d.mr ? `  ${d.mr}` : ''}${d.error && d.status !== 'merge-request' ? color.dim(`  ${d.error.split('\n')[0].slice(0, 120)}`) : ''}`);
+      const { formatDone } = await import('../integrations/jira-progress.js');
+      this.out(formatDone(r.done, this.screen.columns));
     } catch (e) {
       this.out(color.red(`Jira: ${errorMessage(e)}`));
     }

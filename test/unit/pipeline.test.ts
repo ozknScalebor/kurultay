@@ -179,4 +179,23 @@ steps:
     const off = await createApp({ root, config: join(tmpProject({ 'c.json': cfg({ verify: { fromPipeline: false } }) }), 'c.json'), requireModels: false, learn: false });
     assert.equal(off.verifyFrom, undefined);
   });
+
+  it('GitLab includes: local files (also with a pattern and nested), their variables; other projects and URLs are skipped; pipelineFile', () => {
+    const root = tmpProject({
+      '.gitlab-ci.yml': "include:\n  - local: '/ci/build.yml'\n  - 'ci/tests/*.yml'\n  - project: other/templates\n    file: maven.yml\n  - remote: https://example.com/x.yml\nvariables:\n  OPTS: -B\nstages: [build, test]\n",
+      'ci/build.yml': 'include: ci/common.yml\nvariables:\n  OPTS: -X\n  MODULE: gui\nbuild:\n  stage: build\n  script:\n    - mvn $OPTS -f $MODULE/pom.xml compile\n',
+      'ci/common.yml': 'include: .gitlab-ci.yml\nlint:\n  script: [mvn checkstyle:check]\n',
+      'ci/tests/unit.yml': 'unit:\n  stage: test\n  script:\n    - mvn $OPTS test\n',
+      'ci/tests/notes.txt': 'not yaml',
+      'pipelines/main.yml': 'job:\n  script:\n    - make\n    - make check\n',
+    });
+    // the main file's variable wins over the included one
+    assert.deepEqual(detectPipelineVerify(root, 'linux'), { build: 'mvn -B -f gui/pom.xml compile', test: 'mvn -B test', source: '.gitlab-ci.yml' });
+    // a file under another name, as the project's CI/CD settings may name it
+    assert.deepEqual(detectPipelineVerify(root, 'linux', 'pipelines/main.yml'), { build: 'make', test: 'make check', source: 'pipelines/main.yml' });
+    assert.equal(detectPipelineVerify(root, 'linux', 'pipelines/none.yml'), undefined);
+    // .gitlab/ and ci/ folders are looked at too
+    const other = tmpProject({ '.gitlab/ci/pipeline.yml': 'test:\n  script:\n    - ./gradlew test\n' });
+    assert.deepEqual(detectPipelineVerify(other, 'win32'), { build: '', test: 'gradlew test', source: '.gitlab/ci/pipeline.yml' });
+  });
 });

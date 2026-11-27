@@ -17,7 +17,7 @@ export interface PipelineVerify {
 }
 
 const FILES = ['.gitlab-ci.yml', '.gitlab-ci.yaml', 'azure-pipelines.yml', 'azure-pipelines.yaml', 'bitbucket-pipelines.yml', '.drone.yml', '.woodpecker.yml'];
-const DIRS = ['.github/workflows', '.gitea/workflows', '.forgejo/workflows', '.woodpecker'];
+const DIRS = ['.github/workflows', '.gitea/workflows', '.forgejo/workflows', '.woodpecker', '.gitlab', '.gitlab/ci', 'ci', '.ci'];
 /** keys that hold shell commands */
 const SCRIPT_KEYS = new Set(['script', 'before_script', 'run', 'bash', 'commands', 'pwsh', 'powershell']);
 /** keys that hold variables */
@@ -129,6 +129,10 @@ export function verifyFromPipeline(text: string, source: string, platform: NodeJ
   } catch {
     return undefined;
   }
+  return verifyFromDoc(doc, source, platform);
+}
+
+function verifyFromDoc(doc: Yaml, source: string, platform: NodeJS.Platform): PipelineVerify | undefined {
   const vars: Record<string, string> = {};
   const scripts = collect(doc, vars).filter((s) => !OTHER_JOB.test(s.context));
   const build: string[] = [];
@@ -146,23 +150,82 @@ export function verifyFromPipeline(text: string, source: string, platform: NodeJ
   return { build: join3(build), test: join3(test), source };
 }
 
-/** The first pipeline file of the project that has build or test commands. */
-export function detectPipelineVerify(root: string, platform: NodeJS.Platform = process.platform): PipelineVerify | undefined {
+/** Local files a pattern names: a path, or one "*" in the file name (ci/*.yml). */
+function localFiles(root: string, pattern: string): string[] {
+  const rel = pattern.replace(/^\/+/, '');
+  if (!rel.includes('*')) return existsSync(join(root, rel)) ? [rel] : [];
+  const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+  const re = new RegExp(`^${rel.slice(dir ? dir.length + 1 : 0).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*?/g, '.*')}$`);
+  try {
+    return readdirSync(join(root, dir))
+      .filter((f) => re.test(f))
+      .sort()
+      .map((f) => (dir ? `${dir}/${f}` : f));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A GitLab pipeline with its local includes (`include: ci/build.yml`, `include: [{local: …}]`,
+ * up to three levels): the included jobs and variables are added where the file does not set
+ * them. Includes from other projects, templates or URLs cannot be read offline and are skipped.
+ */
+function withIncludes(root: string, file: string, depth = 0, seen = new Set<string>()): Yaml {
+  seen.add(file);
+  const doc = parseYaml(readFileSync(join(root, file), 'utf8'));
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || depth >= 3) return doc;
+  const inc = doc.include;
+  const items = Array.isArray(inc) ? inc : inc !== undefined ? [inc] : [];
+  for (const it of items) {
+    const path = typeof it === 'string' ? (/^https?:/i.test(it) ? undefined : it) : it && typeof it === 'object' && !Array.isArray(it) && typeof it.local === 'string' ? it.local : undefined;
+    if (!path) continue;
+    for (const f of localFiles(root, path)) {
+      if (seen.has(f)) continue;
+      let sub: Yaml;
+      try {
+        sub = withIncludes(root, f, depth + 1, seen);
+      } catch {
+        continue;
+      }
+      if (!sub || typeof sub !== 'object' || Array.isArray(sub)) continue;
+      for (const [k, v] of Object.entries(sub)) {
+        if (k === 'include') continue;
+        const mine = doc[k];
+        if (mine === undefined) doc[k] = v;
+        else if (k === 'variables' && mine && typeof mine === 'object' && !Array.isArray(mine) && v && typeof v === 'object' && !Array.isArray(v)) doc[k] = { ...v, ...mine };
+      }
+    }
+  }
+  return doc;
+}
+
+/** Build and test commands of one file of the project (GitLab includes followed). */
+function verifyFromFile(root: string, file: string, platform: NodeJS.Platform): PipelineVerify | undefined {
+  try {
+    return verifyFromDoc(withIncludes(root, file), file, platform);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The first pipeline file of the project that has build or test commands; `file` (verify.pipelineFile)
+ * names it when the project keeps it elsewhere (GitLab: Settings → CI/CD → CI/CD configuration file).
+ */
+export function detectPipelineVerify(root: string, platform: NodeJS.Platform = process.platform, file?: string): PipelineVerify | undefined {
+  if (file) return existsSync(join(root, file)) ? verifyFromFile(root, file.replace(/^\.?\/+/, ''), platform) : undefined;
   const files = [...FILES.filter((f) => existsSync(join(root, f)))];
   for (const d of DIRS) {
     try {
-      for (const f of readdirSync(join(root, d)).sort()) if (/\.ya?ml$/i.test(f)) files.push(`${d}/${f}`);
+      for (const f of readdirSync(join(root, d)).sort()) if (/\.ya?ml$/i.test(f) && !files.includes(`${d}/${f}`)) files.push(`${d}/${f}`);
     } catch {
       /* no such folder */
     }
   }
   for (const f of files) {
-    try {
-      const r = verifyFromPipeline(readFileSync(join(root, f), 'utf8'), f, platform);
-      if (r) return r;
-    } catch {
-      /* unreadable: the next one */
-    }
+    const r = verifyFromFile(root, f, platform);
+    if (r) return r;
   }
   return undefined;
 }

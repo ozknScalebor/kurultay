@@ -125,6 +125,8 @@ export interface VerifyConfig {
    * .github/workflows, azure-pipelines.yml, bitbucket-pipelines.yml …; default true)
    */
   fromPipeline?: boolean;
+  /** the pipeline file, when the project keeps it under another name (e.g. "ci/pipeline.yml") */
+  pipelineFile?: string;
 }
 
 /** auto = single: one model at a time; multi = several models (race/split chosen per task), opt-in */

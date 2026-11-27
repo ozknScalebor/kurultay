@@ -1,7 +1,7 @@
 import { describeTool } from '../tui/activity.js';
 import { wrap } from '../tui/markdown.js';
 import { plural } from '../util/text.js';
-import { color, section } from '../ui/terminal.js';
+import { color } from '../ui/terminal.js';
 import type { KEvent } from '../util/events.js';
 
 /**
@@ -32,27 +32,47 @@ export function plainLine(text: string, kind: JiraLineKind): string {
   return t;
 }
 
+const visible = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').length;
+
+/**
+ * A heading in colour, not only bold or dim: a classic Windows console shows dim text as plain
+ * text, so the start of every line has its own colour (headings cyan, labels cyan, times gray,
+ * step numbers magenta).
+ */
+function heading(title: string, width: number): string {
+  const w = Math.max(30, Math.min(width, 120) - 1);
+  return `\n${color.gray('── ')}${color.bold(color.cyan(title))} ${color.gray('─'.repeat(Math.max(3, w - title.length - 4)))}`;
+}
+
 /** A line for the terminal: headings, labels, symbols and colours; long text goes on in the next line. */
 export function formatJiraLine(text: string, kind: JiraLineKind, width = 100): string {
   const w = Math.max(40, Math.min(width, 140) - 1);
   // wrapped under its own start: "  ⚠ text …\n    … text"
-  const block = (t: string, lead: string, paint: (s: string) => string = (x) => x, rest = ' '.repeat(lead.length)) =>
-    wrap(t, w - lead.length).map((l, i) => (i ? rest : lead) + paint(l)).join('\n');
+  const block = (t: string, lead: string, paint: (s: string) => string = (x) => x, rest = ' '.repeat(visible(lead))) =>
+    wrap(t, w - visible(lead)).map((l, i) => (i ? rest : lead) + paint(l)).join('\n');
   switch (kind) {
     case 'pass':
-      return `${section('Jira', undefined, width)}\n${block(text, '  ')}`;
+      return `${heading('Jira', width)}\n${block(text, '  ')}`;
     case 'issue': {
       const [key, ...rest] = text.split('\t');
       const summary = rest.join(' ').trim();
-      return `${section(key, undefined, width)}${summary ? `\n${block(summary, '', color.bold)}` : ''}`;
+      return `${heading(key, width)}${summary ? `\n${block(summary, '', color.bold)}` : ''}`;
     }
     case 'info': {
       const [label, ...rest] = text.split('\t');
-      return rest.length ? block(rest.join(' '), `  ${color.dim(label.padEnd(8))} `, undefined, ' '.repeat(11)) : block(text, '  ', color.dim);
+      return rest.length ? block(rest.join(' '), `  ${color.cyan(label.padEnd(8))} `) : block(text, '  ', color.gray);
     }
     case 'step': {
       const [time, ...rest] = text.split('\t');
-      return rest.length ? block(rest.join(' '), `  ${color.dim(time.padStart(5))}  `, undefined, ' '.repeat(9)) : block(text, '  ');
+      if (!rest.length) return block(text, '  ');
+      const body = rest.join(' ');
+      const lead = `  ${color.gray(time.padStart(5))}  `;
+      // "step 3 · reading X": the step number in its own colour
+      const m = /^(step \d+)( · )([\s\S]*)$/.exec(body);
+      if (m) return block(m[3], `${lead}${color.magenta(m[1])}${color.gray(m[2])}`, undefined, ' '.repeat(9));
+      if (/^still working|^no model answers/.test(body)) return block(body, lead, color.gray, ' '.repeat(9));
+      if (/^build\/tests: passed/.test(body)) return block(body, lead, color.green, ' '.repeat(9));
+      return block(body, lead, undefined, ' '.repeat(9));
     }
     case 'change':
       return block(text, `  ${color.cyan('↻')} `, color.cyan, '    ');
@@ -65,6 +85,16 @@ export function formatJiraLine(text: string, kind: JiraLineKind, width = 100): s
     default:
       return text;
   }
+}
+
+/** The "Done" heading and one line per issue (console and command line). */
+export function formatDone(done: Array<{ key: string; status: string; mr?: string; error?: string }>, width = 100): string {
+  const lines = done.map((d) => {
+    const sym = d.status === 'merge-request' ? color.green('✓') : d.status === 'failed' || d.status === 'no-repo' ? color.red('✗') : color.yellow('⚠');
+    const err = d.error && d.status !== 'merge-request' ? color.gray(`  ${d.error.split('\n')[0].slice(0, 120)}`) : '';
+    return `  ${sym} ${color.bold(d.key.padEnd(14))} ${d.status}${d.mr ? `  ${d.mr}` : ''}${err}`;
+  });
+  return [heading('Done', width), ...lines].join('\n');
 }
 
 const fmtTime = (ms: number) => {

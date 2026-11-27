@@ -251,9 +251,13 @@ export class JiraWorker {
     try {
       const branch = branchName(issue.key, this.gitlab.branchPrefix);
       await shared.sync(url);
-      const { tree, target, continued } = await shared.issueTree(treeDir, branch, resuming);
+      const { tree, target, continued, submodules } = await shared.issueTree(treeDir, branch, resuming);
       this.log(`repo\t${url}`, 'info');
       this.log(`branch\t${branch} → ${target}${continued ? ' (goes on from the server)' : ' (new)'}`, 'info');
+      if (submodules.paths.length) {
+        if (submodules.error) this.log(`submodules could not all be fetched (${submodules.error}) – the work goes on without them`, 'warn');
+        else this.log(`submods\t${submodules.paths.join(', ')}`, 'info');
+      }
       // the index and the analysis are shared by every issue of the repository
       if (!existsSync(join(treeDir, '.kurultay', 'index'))) copySharedState(join(shared.dir, '.kurultay'), join(treeDir, '.kurultay'));
 
@@ -274,7 +278,12 @@ export class JiraWorker {
       const report = await this.runWatched(issue, cur, tree.dir, task, write, (t) => (task = t));
       // the index of this work tree is the newest one: the next issue starts from it
       copySharedState(join(treeDir, '.kurultay'), join(shared.dir, '.kurultay'));
-      const files = await tree.changed();
+      // changes inside a submodule belong to its own repository: they are not committed here
+      const inSub = (f: string) => submodules.paths.some((p) => f === p || f.startsWith(`${p}/`));
+      const all = await tree.changed();
+      const files = all.filter((f) => !inSub(f));
+      const subChanged = submodules.paths.filter((p) => all.some((f) => f === p || f.startsWith(`${p}/`)));
+      if (subChanged.length) this.log(`changes inside the submodule(s) ${subChanged.join(', ')} are not committed – Kurultay commits to ${slug} only`, 'warn');
       const verify = report.finalVerify ? (report.finalVerify.skipped ? 'not run (no build/test commands)' : report.finalVerify.ok ? 'passed' : 'FAILED') : 'not run';
       const asked = cur.requests!.length ? cur.requests! : undefined;
       if (!files.length) {
@@ -283,7 +292,7 @@ export class JiraWorker {
         rmSync(this.progressPath(issue.key), { force: true });
         return finish({ status: 'no-change' });
       }
-      await tree.commit(`${issue.key}: ${issue.summary}\n\n${issue.url}\n${asked ? `Follow-up: ${firstLine(asked[asked.length - 1])}\n` : ''}Done by Kurultay (${report.status}); build/tests: ${verify}.`);
+      await tree.commit(`${issue.key}: ${issue.summary}\n\n${issue.url}\n${asked ? `Follow-up: ${firstLine(asked[asked.length - 1])}\n` : ''}Done by Kurultay (${report.status}); build/tests: ${verify}.`, submodules.paths);
       const description = `${issue.url}\n\n${issue.summary}\n\nDone by Kurultay – status: ${report.status}, build/tests: ${verify}.\n\nChanged files:\n${files.map((f) => `- ${f}`).join('\n')}`;
       const mr: MergeRequest | undefined = await openMergeRequest(tree, url, this.gitlab, { branch, target, title: `${issue.key}: ${issue.summary}`.slice(0, 250), description }, this.opts.fetch);
       const link = mr?.url ?? `branch ${branch} (the server did not return a merge request link)`;

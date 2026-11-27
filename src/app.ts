@@ -34,7 +34,7 @@ export async function createApp(opts: { root?: string; config?: string; bus?: Ev
   // no build/test commands configured: the project's CI pipeline says how it is built and tested
   let verifyFrom: string | undefined;
   if (!config.verify.build?.trim() && !config.verify.test?.trim() && config.verify.fromPipeline !== false) {
-    const p = detectPipelineVerify(root);
+    const p = detectPipelineVerify(root, process.platform, config.verify.pipelineFile);
     if (p) {
       config.verify = { ...config.verify, build: p.build, test: p.test };
       verifyFrom = p.source;

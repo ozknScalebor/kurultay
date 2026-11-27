@@ -594,6 +594,65 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     await assert.rejects(repo.defaultBranch(), /set gitlab\.targetBranch/);
   });
 
+  it('submodules are checked out in the work tree of the issue; changes inside them are not committed', async () => {
+    // git refuses file:// submodules unless allowed (https ones need nothing)
+    const prev = { c: process.env.GIT_CONFIG_COUNT, k: process.env.GIT_CONFIG_KEY_0, v: process.env.GIT_CONFIG_VALUE_0 };
+    Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'protocol.file.allow', GIT_CONFIG_VALUE_0: 'always' });
+    try {
+      const base = tmpProject({});
+      const lib = join(base, 'lib.git');
+      mkdirSync(lib);
+      git(lib, 'init', '-q', '--bare', '-b', 'main');
+      const libSeed = join(base, 'lib-seed');
+      mkdirSync(libSeed);
+      git(libSeed, 'init', '-q', '-b', 'main');
+      writeFileSync(join(libSeed, 'util.c'), 'int util(void) { return 1; }\n');
+      git(libSeed, 'add', '.');
+      git(libSeed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'lib');
+      git(libSeed, 'push', '-q', lib, 'main');
+      const bare = remote();
+      const seed = join(base, 'app-seed');
+      git(base, 'clone', '-q', bare, seed);
+      git(seed, 'submodule', 'add', '-q', pathToFileURL(lib).href, 'lib');
+      git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'add lib');
+      git(seed, 'push', '-q', 'origin', 'main');
+      const fake = await fakeServers([{ key: 'SB-1', summary: 'use util', description: '@kurultay call util()' }]);
+      const home = tmpProject({});
+      const lines: Array<[string, string]> = [];
+      let seen = '';
+      const r = await new JiraWorker({
+        config: configFile(home, fake.url, bare),
+        home,
+        onProgress: (l, k) => lines.push([l, k]),
+        run: async (root) => {
+          seen = readFileSync(join(root, 'lib', 'util.c'), 'utf8');
+          writeFileSync(join(root, 'calc.c'), 'int add(int a, int b) { return a + b; }\n');
+          writeFileSync(join(root, 'lib', 'util.c'), 'int util(void) { return 2; }\n');
+          return ok(['calc.c', 'lib/util.c']);
+        },
+      }).pass();
+      assert.deepEqual(r.done.map((d) => d.status), ['merge-request']);
+      assert.equal(seen, 'int util(void) { return 1; }\n', 'the submodule was there when the work started');
+      assert.ok(lines.some(([l, k]) => k === 'info' && l === 'submods\tlib'));
+      assert.ok(lines.some(([l, k]) => k === 'warn' && /changes inside the submodule\(s\) lib are not committed/.test(l)));
+      // the main repository's change is committed, the submodule pointer is not
+      assert.match(git(bare, 'show', 'kurultay/SB-1:calc.c'), /a \+ b/);
+      assert.equal(git(bare, 'diff', '--name-only', 'main', 'kurultay/SB-1').trim(), 'calc.c');
+      // a submodule that cannot be fetched: a warning, the work goes on
+      const broken = new GitRepo(join(tmpProject({}), 'w'), {});
+      await broken.sync(pathToFileURL(bare).href);
+      git(broken.dir, 'checkout', '-q', 'origin/main');
+      writeFileSync(join(broken.dir, '.gitmodules'), '[submodule "gone"]\n\tpath = gone\n\turl = file:///nowhere/gone.git\n');
+      const sm = await broken.submodules();
+      assert.deepEqual(sm.paths, ['gone']);
+    } finally {
+      for (const [k, v] of [['GIT_CONFIG_COUNT', prev.c], ['GIT_CONFIG_KEY_0', prev.k], ['GIT_CONFIG_VALUE_0', prev.v]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('the user configuration template names every value to fill in', async () => {
     const { placeholdersIn, loadConfig } = await import('../../src/config.js');
     const text = readFileSync(new URL('../../../config_template.json', import.meta.url), 'utf8');

@@ -55,7 +55,31 @@ export class GitRepo {
     await this.git(['reset', '--quiet', '--hard']);
     await this.git(['clean', '-fdq', '-e', '.kurultay']);
     await this.git(['checkout', '--quiet', '-B', branch, start]);
+    await this.submodules();
     return target;
+  }
+
+  /** Paths of the repository's submodules (from .gitmodules). */
+  async submodulePaths(): Promise<string[]> {
+    if (!existsSync(join(this.dir, '.gitmodules'))) return [];
+    const r = await this.git(['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$'], { allowFail: true });
+    return r.stdout
+      .split('\n')
+      .map((l) => l.replace(/^\S+\s+/, '').trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * Check out the submodules at the commits the branch wants (recursively; the credentials go to
+   * them too, so submodules on the same server need nothing more). A submodule that cannot be
+   * fetched – e.g. on a server the offline network does not reach – does not stop the work.
+   */
+  async submodules(): Promise<{ paths: string[]; error?: string }> {
+    const paths = await this.submodulePaths();
+    if (!paths.length) return { paths };
+    await this.git(['submodule', 'sync', '--recursive', '--quiet'], { allowFail: true });
+    const r = await this.git(['submodule', 'update', '--init', '--recursive', '--quiet'], { allowFail: true, timeoutMs: 30 * 60_000 });
+    return { paths, error: r.code ? r.stderr.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(0, 400) || `exit ${r.code}` : undefined };
   }
 
   /** The shared clone of the repository: cloned once, fetched on every later call. */
@@ -87,22 +111,25 @@ export class GitRepo {
    * created on the issue's branch; `keep` leaves an existing one as it is (interrupted work goes
    * on), otherwise it is reset to where the branch is on the server.
    */
-  async issueTree(dir: string, branch: string, keep: boolean): Promise<{ tree: GitRepo; target: string; continued: boolean; kept: boolean }> {
+  async issueTree(dir: string, branch: string, keep: boolean): Promise<{ tree: GitRepo; target: string; continued: boolean; kept: boolean; submodules: { paths: string[]; error?: string } }> {
     const { target, start, continued } = await this.startOf(branch);
     const tree = new GitRepo(dir, this.cfg);
+    let kept = false;
     if (existsSync(join(dir, '.git'))) {
-      if (keep) return { tree, target, continued, kept: true };
-      await tree.git(['reset', '--quiet', '--hard']);
-      await tree.git(['clean', '-fdq', '-e', '.kurultay']);
-      await tree.git(['checkout', '--quiet', '-B', branch, start]);
-      return { tree, target, continued, kept: false };
+      if (keep) kept = true;
+      else {
+        await tree.git(['reset', '--quiet', '--hard']);
+        await tree.git(['clean', '-fdq', '-e', '.kurultay']);
+        await tree.git(['checkout', '--quiet', '-B', branch, start]);
+      }
+    } else {
+      // the shared clone stays detached so every branch can live in a work tree of its own
+      await this.git(['checkout', '--quiet', '--detach'], { allowFail: true });
+      await this.git(['worktree', 'prune']);
+      mkdirSync(join(dir, '..'), { recursive: true });
+      await this.git(['worktree', 'add', '--quiet', '--force', '-B', branch, dir, start]);
     }
-    // the shared clone stays detached so every branch can live in a work tree of its own
-    await this.git(['checkout', '--quiet', '--detach'], { allowFail: true });
-    await this.git(['worktree', 'prune']);
-    mkdirSync(join(dir, '..'), { recursive: true });
-    await this.git(['worktree', 'add', '--quiet', '--force', '-B', branch, dir, start]);
-    return { tree, target, continued, kept: false };
+    return { tree, target, continued, kept, submodules: await tree.submodules() };
   }
 
   async defaultBranch(): Promise<string> {
@@ -123,10 +150,12 @@ export class GitRepo {
       .filter((p) => !p.startsWith('.kurultay/'));
   }
 
-  async commit(message: string): Promise<boolean> {
+  /** Commit everything but `exclude` (submodules: their commits live in their own repositories). */
+  async commit(message: string, exclude: string[] = []): Promise<boolean> {
     // .kurultay is in info/exclude, so `add -A` skips it; naming it in a pathspec would make git refuse
     await this.git(['add', '-A']);
     await this.git(['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', '.kurultay'], { allowFail: true });
+    if (exclude.length) await this.git(['reset', '-q', '--', ...exclude], { allowFail: true });
     if ((await this.git(['diff', '--cached', '--quiet'], { allowFail: true })).code === 0) return false;
     const name = (await this.git(['config', 'user.name'], { allowFail: true })).stdout.trim() || 'Kurultay';
     const email = (await this.git(['config', 'user.email'], { allowFail: true })).stdout.trim() || 'kurultay@localhost';
