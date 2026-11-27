@@ -1,0 +1,229 @@
+{
+ "name": "v0.1.3",
+ "models": "Kurultay: main glm-5.3-flash + moonshotai/kimi-k3.1-pro (nvidia), helper nvidia/nemotron-3.5-lightning-30b-a3b · Qwen Code: glm-5.3-flash",
+ "at": "2026-11-27T09:17:50.134Z",
+ "tasks": [
+  {
+   "suite": "java-envanter",
+   "id": "K1-depo-transfer",
+   "kurultay": {
+    "passed": true,
+    "seconds": 108.146,
+    "requests": 8,
+    "tokens": 92677,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 108.1,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 82.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.6,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 139.618,
+    "requests": 11,
+    "tokens": 258772,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K2-siparis-guncelleme",
+   "qwen": {
+    "passed": true,
+    "seconds": 231.485,
+    "requests": 17,
+    "tokens": 500521,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 297.019,
+    "requests": 21,
+    "tokens": 596736,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 297,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 260.7,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.6,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   }
+  },
+  {
+   "suite": "java-envanter",
+   "id": "K3-iade",
+   "kurultay": {
+    "passed": true,
+    "seconds": 513.038,
+    "requests": 25,
+    "tokens": 948448,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 513,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 476.4,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 8.9,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 425.141,
+    "requests": 26,
+    "tokens": 1164958,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K1-cerceve-cozucu",
+   "qwen": {
+    "passed": false,
+    "seconds": 375.583,
+    "requests": 15,
+    "tokens": 610664,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 293.984,
+    "requests": 11,
+    "tokens": 203069,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 294,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 266.8,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K2-zaman-penceresi",
+   "kurultay": {
+    "passed": true,
+    "seconds": 175.201,
+    "requests": 9,
+    "tokens": 133941,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 175.2,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 144.1,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 0,
+     "verify": 1.4,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   },
+   "qwen": {
+    "passed": true,
+    "seconds": 300.042,
+    "requests": 10,
+    "tokens": 372983,
+    "exit": 0
+   }
+  },
+  {
+   "suite": "cpp-telemetri",
+   "id": "K3-alarm-hatti",
+   "qwen": {
+    "passed": true,
+    "seconds": 481.269,
+    "requests": 28,
+    "tokens": 1339937,
+    "exit": 0
+   },
+   "kurultay": {
+    "passed": true,
+    "seconds": 1123.055,
+    "requests": 66,
+    "tokens": 2553306,
+    "status": "completed",
+    "rateLimitWait": 0,
+    "multiModelSeconds": 0,
+    "multiModelShare": 0,
+    "timing": {
+     "totalSeconds": 1123.1,
+     "planning": 0,
+     "planCouncil": false,
+     "coding": 670.5,
+     "slowerCandidates": 0,
+     "selection": 0,
+     "fixes": 382.8,
+     "verify": 2.5,
+     "requirements": 0,
+     "rateLimitWait": 0,
+     "slotWait": 0,
+     "models": 1,
+     "multiModel": 0,
+     "multiModelShare": 0
+    }
+   }
+  }
+ ]
+}
