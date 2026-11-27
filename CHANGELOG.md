@@ -6,6 +6,7 @@
 - Jira: when no model answers, Kurultay keeps trying (at most every `jira.retryMinutes`, 5) for `jira.maxWaitMinutes` (120), then comments that the issue is paused, goes on with the next one and comes back to it later. The issue is no longer marked as failed.
 - Jira: every issue has its own git work tree next to the shared clone; the index and analysis are shared. After every agent step the changed files, the todo list and the agent's last note are saved, so a paused or interrupted issue (shutdown, Ctrl+C) goes on from where it stopped.
 - Jira: fixed `git add` failing on the `.kurultay` folder in the work tree.
+- Fixed: the rate limiter could report a 1 ms wait for a request that went through at once.
 - `config_template.json` in the Kurultay folder: a commented user configuration to copy to `~/.kurultay/config.json`, with every value to enter marked `<...>`; until they are filled in, Kurultay names the ones left.
 
 ## v0.1.1
