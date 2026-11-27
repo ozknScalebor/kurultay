@@ -9,6 +9,7 @@
 - Jira: an issue can name its repository with the mention: `@kurultay{repo:<url>}` (plain, in `<…>` or quotes, or a pasted Jira link); `gitlab.repo` is then not needed. The setting is not part of the task text.
 - Jira: skills and rules for a repository go into its project folder (`skills/`, `rules/`); the issue header shows the folder and the skills found.
 - The analysis no longer counts data files it never summarises as "changed" (they made every start look out of date).
+- CI: every commit on main runs on its own, so a later push can no longer drop a release run that is still waiting.
 
 ## v0.1.3
 
