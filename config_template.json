@@ -1,5 +1,5 @@
 {
-  "$comment": "Kurultay user configuration – ~/.kurultay/config.json (Windows: C:\\Users\\<you>\\.kurultay\\config.json), used by every project. Replace every value written as <...>; Kurultay names the ones still left when it starts. A section you do not use (jira, gitlab, helper) can be deleted. A value written as ${NAME} is read from the environment variable NAME (e.g. \"token\": \"${JIRA_TOKEN}\"), so passwords and keys can stay out of the file.",
+  "$comment": "Kurultay user configuration template. Copy it to ~/.kurultay/config.json (Windows: C:\\Users\\<you>\\.kurultay\\config.json); it is used by every project. Replace every value written as <...>; Kurultay names the ones still left when it starts. A section you do not use (jira, gitlab, helper) can be deleted. A value written as ${NAME} is read from the environment variable NAME (e.g. \"token\": \"${JIRA_TOKEN}\"), so passwords and keys can stay out of the file.",
   "baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>",
   "apiKey": "<API key of the LLM server – none if it needs no key>",
   "models": [

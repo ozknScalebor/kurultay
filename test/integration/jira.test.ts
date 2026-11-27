@@ -533,8 +533,8 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
   });
 
   it('the user configuration template names every value to fill in', async () => {
-    const { placeholdersIn, userConfigTemplate, loadConfig } = await import('../../src/config.js');
-    const text = userConfigTemplate();
+    const { placeholdersIn, loadConfig } = await import('../../src/config.js');
+    const text = readFileSync(new URL('../../../config_template.json', import.meta.url), 'utf8');
     const left = placeholdersIn(JSON.parse(text));
     assert.deepEqual(left, ['baseUrl', 'apiKey', 'models[0]', 'models[1]', 'helper.baseUrl', 'helper.models[0]', 'jira.url', 'jira.token', 'gitlab.repo', 'gitlab.token']);
     const dir = tmpProject({ 'kurultay.config.json': text });

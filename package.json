@@ -12,6 +12,7 @@
     "bin",
     "dist/src",
     "examples",
+    "config_template.json",
     "README.md",
     "LICENSE"
   ],

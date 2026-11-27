@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import type { LspConfig } from './lsp/client.js';
 import type { McpConfig } from './mcp/manager.js';
 
@@ -501,7 +500,7 @@ export function loadConfig(projectRoot: string, explicit?: string): { config: Ku
   const path = findConfigFile(projectRoot, explicit);
   if (!path || !existsSync(path)) {
     throw new ConfigError(
-      `No configuration found. "kurultay init --user" writes a commented one to ${join(kurultayHome(), 'config.json')} (fill in the <...> values); or run "kurultay" for the guided setup, or "kurultay init" in the project root.`,
+      `No configuration found. Copy config_template.json from the Kurultay folder to ${join(kurultayHome(), 'config.json')} and fill in the <...> values; or run "kurultay" for the guided setup, or "kurultay init" in the project root.`,
     );
   }
   const json = readJson(path);
@@ -542,18 +541,6 @@ export function placeholdersIn(value: unknown, at = ''): string[] {
     return Object.entries(value).flatMap(([k, v]) => (k.startsWith('$') ? [] : placeholdersIn(v, at ? `${at}.${k}` : k)));
   }
   return [];
-}
-
-/** The commented user configuration template (examples/kurultay.config.user.json, shipped with every package). */
-export function userConfigTemplate(): string {
-  for (const p of [join(here(), '..', '..', 'examples', 'kurultay.config.user.json'), join(here(), '..', 'examples', 'kurultay.config.user.json')]) {
-    if (existsSync(p)) return readFileSync(p, 'utf8');
-  }
-  return JSON.stringify(SAMPLE_CONFIG, null, 2) + '\n';
-}
-
-function here(): string {
-  return dirname(fileURLToPath(import.meta.url));
 }
 
 function readJson(path: string): unknown {

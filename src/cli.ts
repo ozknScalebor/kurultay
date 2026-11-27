@@ -6,7 +6,7 @@ import { ProjectAnalyzer } from './analyze/summarizer.js';
 import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from './app.js';
 import { closeLspServers } from './lsp/client.js';
 import { VectorStore } from './index/embeddings.js';
-import { ConfigError, SAMPLE_CONFIG, kurultayHome, loadConfig, placeholdersIn, userConfigTemplate, type RunMode } from './config.js';
+import { ConfigError, SAMPLE_CONFIG, kurultayHome, loadConfig, type RunMode } from './config.js';
 import { SKILL_TEMPLATE, SkillRegistry } from './skills/skills.js';
 import { modifiedSince, readCheckpoint, rewindCheckpoint } from './agent/checkpoint.js';
 import { ProjectIndex } from './index/project-index.js';
@@ -85,8 +85,6 @@ Commands:
   jira startup         Start "kurultay jira --watch" when you log in (Windows Startup folder; --remove)
   rewind [session]     Undo what a task applied to the project (default: last task; --yes, --force)
   init                 Create kurultay.config.json and rule/skill templates in the project root
-  init --user          Create the user configuration ~/.kurultay/config.json from a commented template:
-                         fill in each <...> (LLM server, models, Jira, GitLab) – Kurultay names what is left
   index                Index the project (symbols, dependency graph, PageRank) – no LLM needed
                          --embed: also build semantic search vectors with an embedding model
   analyze              Index + parallel summaries with all models: ARCHITECTURE.md, PROJECT_NOTES.md, flow documents
@@ -137,22 +135,6 @@ function requireModels(app: App): void {
 }
 
 async function cmdInit(root: string, flags: Args['flags']) {
-  if (flags.user) {
-    const file = join(kurultayHome(), 'config.json');
-    if (existsSync(file) && !flags.force) return out(`${file} already exists (--force overwrites it).`);
-    mkdirSync(kurultayHome(), { recursive: true });
-    const text = userConfigTemplate();
-    writeFileSync(file, text);
-    let fill: string[] = [];
-    try {
-      fill = placeholdersIn(JSON.parse(text));
-    } catch {
-      /* the template is valid JSON */
-    }
-    out(`${color.green('✓')} created ${file}`);
-    if (fill.length) out(`Open it in an editor and replace each <...> value: ${fill.join(', ')}.\nDelete a section you do not use (jira, gitlab, helper). Then: kurultay probe`);
-    return;
-  }
   const cfgPath = join(root, 'kurultay.config.json');
   if (existsSync(cfgPath) && !flags.force) {
     out(`${cfgPath} already exists (--force overwrites it).`);

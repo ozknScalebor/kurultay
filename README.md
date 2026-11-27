@@ -244,7 +244,6 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 | `kurultay` / `kurultay console` | Interactive console (`--workspace <dir>`, `--no-probe`, `--no-analyze`, `--ascii`) |
 | `kurultay rewind [session]` | Undo the changes a task applied to the project (default: last task; `--yes`, `--force` for files changed since) |
 | `kurultay init` | Creates configuration and rule templates; guesses build/test commands (CMake, Meson, Maven, Gradle, Cargo, Go, npm, pytest, Make) |
-| `kurultay init --user` | Writes the commented user configuration `~/.kurultay/config.json`: fill in each `<...>` (LLM server, models, Jira, GitLab) |
 | `kurultay probe [--model a,b] [--deep] [--quick]` | Measures the models again and saves the profile (all configured models, or only `--model`). Standard: 2 coding + 2 editing tasks, context up to 32K, 1→2→4 parallel requests. `--deep` measures up to a 256K context and 16 concurrent requests; `--quick` skips the coding benchmark; `--minimal` sends about 4 requests per model (reachability, speed, tool calling, JSON) and takes the window from the server or the model family |
 | `kurultay index [--embed]` | Static index (no LLM needed); `--embed` also builds the semantic search vectors |
 | `kurultay analyze [--force] [--drafts N] [--flows N]` | Parallel summaries, architecture document, `PROJECT_NOTES.md` and documents for the N most important flows (`--flows 0` turns them off). Incremental: only changed files are summarised again |
@@ -267,7 +266,7 @@ No GPU yet, or want to try it first? Use the mock LLM server: `kurultay mock --p
 
 | File | Used for |
 |---|---|
-| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names), or `kurultay init --user` writes a commented template to fill in. `KURULTAY_HOME` moves the folder |
+| `~/.kurultay/config.json` | Your models and keys, for every project. The console writes it on the first start (it asks for the endpoint URL, the API key and the model names), or copy [`config_template.json`](config_template.json) there and fill it in. `KURULTAY_HOME` moves the folder |
 | `<project>/kurultay.config.json` (or `<project>/.kurultay/config.json`) | Project settings: build/test commands, rules, tool options. **Without endpoints it extends the user file** – the project only carries what is its own. With endpoints it replaces the user file |
 | `--config <file>` | An explicit file (CI, the bench); the project's own file is still merged on top of it |
 
@@ -275,11 +274,14 @@ The files are plain JSON (the `//` comments below are explanations only – leav
 
 ### Starting from the template
 
-```sh
-kurultay init --user      # writes ~/.kurultay/config.json (Windows: C:\Users\<you>\.kurultay\config.json)
+[`config_template.json`](config_template.json) lies in the Kurultay folder (next to `kurultay.cmd` in the portable package). Copy it as your user configuration:
+
+```bat
+mkdir %USERPROFILE%\.kurultay
+copy C:\kurultay\config_template.json %USERPROFILE%\.kurultay\config.json
 ```
 
-The file is [`examples/kurultay.config.user.json`](examples/kurultay.config.user.json): the LLM server, the models, an optional helper model, Jira and GitLab, with a `$comment` in every section. Every value you have to enter is written as `<...>` – e.g. `"baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>"`. Replace them and delete the sections you do not use. Until then Kurultay does not start but names what is left:
+(Linux: `cp config_template.json ~/.kurultay/config.json`.) It has the LLM server, the models, an optional helper model, Jira and GitLab, with a `$comment` in every section. Every value you have to enter is written as `<...>` – e.g. `"baseUrl": "<address of your LLM server, ending in /v1 – e.g. http://10.0.0.5:8000/v1>"`. Replace them and delete the sections you do not use. Until then Kurultay does not start but names what is left:
 
 ```
 ~/.kurultay/config.json still has values to fill in: baseUrl, apiKey, models[0], jira.url, jira.token – replace each <...> with your value, or delete a section you do not use (jira, gitlab, helper).

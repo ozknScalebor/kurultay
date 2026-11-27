@@ -27,6 +27,7 @@ describe('offline distribution', () => {
     assert.ok(list.includes('package/bin/kurultay.js'));
     assert.ok(list.includes('package/dist/src/cli.js'));
     assert.ok(list.includes('package/README.md') && list.includes('package/LICENSE'));
+    assert.ok(list.includes('package/config_template.json'), 'the configuration template is in the npm package');
     assert.ok(!list.some((f) => f.includes('/test/') || f.endsWith('.ts') && !f.endsWith('.d.ts')), 'no tests or TypeScript sources shipped');
 
     // offline install into a fresh prefix (npm must not need the registry)
@@ -42,6 +43,7 @@ describe('offline distribution', () => {
     assert.ok(portable, 'portable folder created');
     const dir = join(rel, portable!);
     assert.ok(existsSync(join(dir, 'runtime', isWin ? 'node.exe' : 'node')));
+    assert.ok(existsSync(join(dir, 'config_template.json')), 'the configuration template is in the portable folder');
     assert.ok(existsSync(join(rel, `${portable}${isWin ? '.zip' : '.tar.gz'}`)), 'portable archive created');
     const launcher = join(dir, isWin ? 'kurultay.cmd' : 'kurultay');
     const help = spawnSync(launcher, ['--help'], { encoding: 'utf8', shell: isWin, env: { ...process.env, KURULTAY_NO_PAUSE: '1' } });

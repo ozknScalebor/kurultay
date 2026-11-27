@@ -35,7 +35,7 @@ const dir = join(rel, name);
 rmSync(dir, { recursive: true, force: true });
 mkdirSync(join(dir, 'runtime'), { recursive: true });
 copyFileSync(process.execPath, join(dir, 'runtime', isWin ? 'node.exe' : 'node'));
-for (const p of ['bin', 'README.md', 'LICENSE', 'package.json', 'examples']) {
+for (const p of ['bin', 'README.md', 'LICENSE', 'package.json', 'examples', 'config_template.json']) {
   if (existsSync(join(root, p))) cpSync(join(root, p), join(dir, p), { recursive: true });
 }
 cpSync(join(root, 'dist', 'src'), join(dir, 'dist', 'src'), { recursive: true });
