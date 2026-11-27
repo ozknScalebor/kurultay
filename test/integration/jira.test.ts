@@ -539,7 +539,8 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     const idx = JSON.parse(readFileSync(join(project, 'index', 'index.json'), 'utf8')) as { files: Array<{ path: string; summary?: string }> };
     assert.ok(idx.files.find((f) => f.path === 'src/extra.js')?.summary, 'the new file of main is in the project analysis');
     // what an issue changed on its own branch is not part of the project's analysis
-    assert.equal(git(bare, 'show', 'main:src/mathutil.js'), readFileSync(join(home, 'work', repoSlug(pathToFileURL(bare).href), 'src', 'mathutil.js'), 'utf8'));
+    const lf = (t: string) => t.replace(/\r\n/g, '\n'); // git on Windows checks text out with CRLF
+    assert.equal(lf(git(bare, 'show', 'main:src/mathutil.js')), lf(readFileSync(join(home, 'work', repoSlug(pathToFileURL(bare).href), 'src', 'mathutil.js'), 'utf8')));
   });
 
   it('Server/Cloud search fallback, error hints, an existing merge request, a status check that gets no answer', async () => {
