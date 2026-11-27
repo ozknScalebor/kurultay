@@ -10,8 +10,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # runs on main are queued, not cancelled, so a later push never kills a release run
+  # every commit on main has a group of its own: GitHub keeps only one *waiting* run per group, so a
+  # shared group let a later push drop a release run that was still waiting (v0.1.4, first try);
+  # other branches cancel their older runs
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
