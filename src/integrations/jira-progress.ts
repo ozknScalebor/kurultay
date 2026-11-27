@@ -121,6 +121,10 @@ export class RunNarrator {
   private readonly inflight = new Map<string, number>();
   /** no model answers since (the router's retry warnings are folded into one line) */
   private down: number | undefined;
+  /** quarters of the file summaries already told */
+  private analyzed = 0;
+  /** info lines already shown */
+  private readonly told = new Set<string>();
 
   constructor(
     private readonly emit: (text: string, kind: JiraLineKind) => void,
@@ -189,8 +193,26 @@ export class RunNarrator {
         } else this.say(msg.split('\n')[0], 'warn');
         break;
       }
+      case 'analyze.progress': {
+        // every quarter of the file summaries, then each module
+        if (d.phase === 'files') {
+          const done = Number(d.done ?? 0);
+          const total = Math.max(1, Number(d.total ?? 1));
+          const q = Math.floor((done / total) * 4);
+          if (q > this.analyzed && done < total) {
+            this.analyzed = q;
+            this.step(`analysis · ${done}/${total} files summarised`);
+          }
+        } else if (d.phase === 'modules' && d.module) this.step(`analysis · module ${String(d.module)}`);
+        break;
+      }
+      case 'analyze.done':
+        this.analyzed = 0;
+        break;
       case 'log.info':
-        if (e.source === 'verify' && typeof d.source === 'string') {
+        // once per run, even when the project is opened again (after the capability probe)
+        if (e.source === 'verify' && typeof d.source === 'string' && !this.told.has(e.message ?? '')) {
+          this.told.add(e.message ?? '');
           if (d.build) this.say(`build\t${String(d.build)} (from ${d.source})`, 'info');
           if (d.test) this.say(`test\t${String(d.test)} (from ${d.source})`, 'info');
         }

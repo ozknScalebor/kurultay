@@ -318,6 +318,10 @@ export interface JiraConfig {
   maxWaitMinutes?: number;
   /** longest pause between two tries while no model answers (default 5 minutes) */
   retryMinutes?: number;
+  /** analyse the repository (architecture, file summaries, notes) on its first issue (default true) */
+  analyze?: boolean;
+  /** analyse it again when this many files changed since (default 30) */
+  reanalyzeFiles?: number;
   /**
    * optional: Jira project key → repository URL when issues of several projects live in
    * different repositories ("*" = any other project). Without it gitlab.repo is used. A line

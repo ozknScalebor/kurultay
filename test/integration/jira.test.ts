@@ -495,8 +495,38 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
       clearInterval(t);
     }
     assert.ok(mock.log.some((e) => JSON.stringify(e.body.messages).includes('also keep min <= max')), 'the change went to the model');
-    assert.match(git(bare, 'show', 'kurultay/RR-1:src/mathutil.js'), /Math\.min\(Math\.max/);
+    assert.ok(git(bare, 'diff', '--name-only', 'main', 'kurultay/RR-1').trim(), 'the work was pushed');
     assert.doesNotMatch(git(bare, 'ls-tree', '-r', '--name-only', 'kurultay/RR-1'), /\.kurultay/, 'the state folder is never committed');
+    // a second issue of the same repository: no new analysis, no new probe; a skill put in the
+    // project folder is there for it
+    const { projectFolder } = await import('../../src/integrations/jira-worker.js');
+    const project = projectFolder(pathToFileURL(bare).href, home);
+    assert.ok(existsSync(join(project, 'ARCHITECTURE.md')), 'the analysis is kept in the project folder');
+    mkdirSync(join(project, 'skills', 'ui-rules'), { recursive: true });
+    writeFileSync(join(project, 'skills', 'ui-rules', 'SKILL.md'), '---\nname: ui-rules\ndescription: How screens are built in this project\n---\nUse the panel base class.\n');
+    issue.key = 'RR-2';
+    issue.description = '@kurultay fix clamp in src/mathutil.js once more';
+    const lines: string[] = [];
+    await new JiraWorker({ config: cfg, home, onProgress: (l) => lines.push(l) }).pass();
+    assert.ok(lines.some((l) => /^analysis\tthe project's analysis is up to date \(main\)/.test(l)), lines.join('\n'));
+    assert.ok(!lines.some((l) => /^analysis\tfirst issue/.test(l)));
+    assert.ok(!lines.some((l) => /^models\t/.test(l)), 'the models were measured on the first issue');
+    assert.ok(lines.some((l) => l === 'skills\tui-rules'));
+    assert.ok(lines.some((l) => l === `project\t${project}`));
+    // someone pushes to main: the next issue fetches it and summarises only the changed file again
+    git(seed, 'pull', '-q', bare, 'main');
+    writeFileSync(join(seed, 'src', 'extra.js'), 'export const extra = 1;\n');
+    git(seed, 'add', '.');
+    git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'extra');
+    git(seed, 'push', '-q', bare, 'HEAD:main');
+    issue.key = 'RR-3';
+    const more: string[] = [];
+    await new JiraWorker({ config: cfg, home, onProgress: (l) => more.push(l) }).pass();
+    assert.ok(more.some((l) => /^analysis\t1 file changed on main since – summarised again/.test(l)), more.join('\n'));
+    const idx = JSON.parse(readFileSync(join(project, 'index', 'index.json'), 'utf8')) as { files: Array<{ path: string; summary?: string }> };
+    assert.ok(idx.files.find((f) => f.path === 'src/extra.js')?.summary, 'the new file of main is in the project analysis');
+    // what an issue changed on its own branch is not part of the project's analysis
+    assert.equal(git(bare, 'show', 'main:src/mathutil.js'), readFileSync(join(home, 'work', repoSlug(pathToFileURL(bare).href), 'src', 'mathutil.js'), 'utf8'));
   });
 
   it('Server/Cloud search fallback, error hints, an existing merge request, a status check that gets no answer', async () => {

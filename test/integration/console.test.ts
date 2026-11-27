@@ -52,8 +52,9 @@ describe('Kurultay console', () => {
         '/run too early',
         'clamp nedir?',
         '/models',
-        join(proj, 'nope'),
-        proj,
+        cwd,
+        `/workspace ${join(proj, 'nope')}`,
+        `/workspace ${proj}`,
         'clamp fonksiyonu nerede?',
         'peki nasıl test ediliyor?',
         'Implement clamp in @src/mathutil.js',
@@ -97,9 +98,11 @@ describe('Kurultay console', () => {
     assert.match(out, /LLM settings\s+1 endpoint \(1 reachable\) · 2 models/);
     assert.match(out, /mock-coder-strong@mock/);
     // workspace is mandatory
-    assert.match(out, /Select a workspace \(required/);
-    assert.match(out, /❯ \/run too early\nSelect a workspace first\./);
-    assert.match(out, /❯ clamp nedir\?\nFolder not found/);
+    assert.match(out, /No project open\. \/workspace <path> opens one/);
+    assert.doesNotMatch(out, /Workspace \[number or path\]/, 'no workspace question at start');
+    assert.match(out, /❯ \/run too early\n\/run needs a project: \/workspace <folder> opens one\./);
+    assert.match(out, /❯ clamp nedir\?\nNo project open: \/workspace <folder> opens one/);
+    assert.match(out, /That is a folder\. To open it: \/workspace /);
     assert.match(out, /Folder not found: .*nope/);
     // automatic preparation
     assert.match(out, /✓ index: 3 files/);
@@ -140,7 +143,7 @@ describe('Kurultay console', () => {
     assert.match(out, /42\n\(exit code 0\)/);
     assert.match(out, /Type a command/);
     assert.match(out, /Unknown command: \/frobnicate/);
-    if (process.platform !== 'win32') assert.match(out, /That is a folder path\. To switch the workspace: \/workspace/);
+    if (process.platform !== 'win32') assert.match(out, /That is a folder\. To open it: \/workspace/);
     assert.match(out, /Settings: mode race · input ask · dry-run on · auto-apply on · skills log-format/);
     assert.match(out, /Workspace: .*\n/);
     assert.match(out, /New session started/);
@@ -157,16 +160,17 @@ describe('Kurultay console', () => {
     const b = tmpProject({ 'b.c': 'int b;' });
     const opts = { autoProbe: false, autoAnalyze: false };
     await session(['/exit'], { cwd: a, workspace: b, ...opts });
-    const r = await session(['9', '2', '/workspace', `/workspace ${b}/missing`, '/exit'], { cwd: a, ...opts });
+    const r = await session(['/workspace 9', '/workspace', '/workspace 2', '/workspace', `/workspace ${b}/missing`, '/exit'], { cwd: a, ...opts });
     assert.match(r.out, /1\) .*\s+current folder/);
     assert.match(r.out, /2\) .*\s+last used/);
-    assert.match(r.out, /There is no option 9 in the list/);
+    assert.match(r.out, /There is no recent workspace 9 – \/workspace lists them/);
+    assert.match(r.out, /Workspace: none\n/);
     assert.match(r.out, /Workspace: .*\n/);
     assert.match(r.out, /Folder not found: .*missing/);
     assert.ok(r.out.includes(`b.c`) || /index: 1 file/.test(r.out));
     const bad = await session(['/exit'], { cwd: a, workspace: '/definitely/not/here', ...opts });
     assert.match(bad.out, /Folder not found: .*definitely.not.here/);
-    assert.equal(bad.code, 0, '/exit at the workspace prompt quits cleanly');
+    assert.equal(bad.code, 0, 'a wrong --workspace is reported, /exit quits cleanly');
     const eof = await session([], { cwd: a, ...opts });
     assert.equal(eof.code, 0);
   });
@@ -366,7 +370,7 @@ describe('Kurultay console', () => {
     home();
     const proj = tmpProject({ ...CLAMP_PROJECT });
     const { code, out } = await session(
-      [proj, '/stats', '/continue-run', '/plan on', 'Implement clamp in src/mathutil.js', 'kenar durumlarını da test et', '', 'y', '/stats', '/plan off', '/exit'],
+      [`/workspace ${proj}`, '/stats', '/continue-run', '/plan on', 'Implement clamp in src/mathutil.js', 'kenar durumlarını da test et', '', 'y', '/stats', '/plan off', '/exit'],
       { cwd: proj },
     );
     assert.equal(code, 0, out);
@@ -386,7 +390,7 @@ describe('Kurultay console', () => {
     const h = home();
     writeFileSync(join(h, 'config.json'), JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], verify: { test: 'node test.js' }, skills: { includeUser: false }, orchestrator: { maxTokens: 1 } }));
     const proj = tmpProject({ ...CLAMP_PROJECT });
-    const { code, out } = await session([proj, '/auto-apply on', 'Implement clamp in src/mathutil.js', '/continue-run', '/continue-run 1', '/continue-run bogus-id', '/exit'], { cwd: proj });
+    const { code, out } = await session([`/workspace ${proj}`, '/auto-apply on', 'Implement clamp in src/mathutil.js', '/continue-run', '/continue-run 1', '/continue-run bogus-id', '/exit'], { cwd: proj });
     assert.equal(code, 0, out);
     assert.match(out, /Stopped: token budget used up.*\/continue-run/);
     assert.ok((out.match(/Result: incomplete/g) ?? []).length >= 3, out);
@@ -398,7 +402,7 @@ describe('Kurultay console', () => {
     const h = home();
     writeFileSync(join(h, 'config.json'), JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url }], skills: { includeUser: false }, mcp: { servers: { tracker: { command: process.execPath, args: [script(FAKE_MCP)] } } } }));
     const proj = tmpProject({ ...CLAMP_PROJECT });
-    const { code, out } = await session([proj, '/mcp', '/mcp restart', '/exit'], { cwd: proj });
+    const { code, out } = await session([`/workspace ${proj}`, '/mcp', '/mcp restart', '/exit'], { cwd: proj });
     assert.equal(code, 0, out);
     assert.match(out, /✓ MCP: 3 tools \(tracker\)/);
     assert.match(out, /mcp__tracker__lookup_ticket \(read-only\)\s+\[MCP tracker\] Read a ticket/);
@@ -450,10 +454,15 @@ describe('Kurultay console', () => {
       assert.match(out, /\/jira run does them all/);
       // the run: a heading for the issue, labelled lines, numbered steps, the result
       assert.match(out, /── YN-7 ─+\nclamp returns the value unchanged\n {2}repo {5}file:.*\n {2}branch {3}kurultay\/YN-7 → main \(new\)/);
-      assert.match(out, / {2}test {5}npm test \(from \.gitlab-ci\.yml\)/);
+      assert.equal(out.match(/ {2}test {5}npm test \(from \.gitlab-ci\.yml\)/g)?.length, 1, 'the commands are told once');
       assert.match(out, /build\/tests: passed/);
       assert.doesNotMatch(out, /no build\/test commands/);
-      assert.match(out, / {3}0:\d\d {2}step 1 · reading mathutil\.js/);
+      assert.match(out, / {3}0:\d\d {2}step 1 · reading \S+/);
+      // the repository is analysed on its first issue, the models are measured once, the project folder is named
+      assert.match(out, / {2}project {2}.*projects[\\/]/);
+      assert.match(out, / {2}models {3}1 model measured once: mock-coder-strong/);
+      assert.match(out, / {2}analysis first issue of this repository: analysing the project at main \(\d+ files?\)/);
+      assert.match(out, / {2}analysis done in /);
       assert.match(out, /✓ merge request opened: https:\/\/gl\/mr\/9/);
       assert.match(out, /── Done ─+\n {2}✓ YN-7 {11}merge-request {2}https:\/\/gl\/mr\/9/);
     } finally {

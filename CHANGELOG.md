@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.4
+
+- Console: no workspace question on start – the prompt takes commands at once. `/workspace <path>` opens a project, `/workspace` lists the recent ones, `/workspace 2` opens the second; commands that need a project say so, `/jira` needs none.
+- Models without a capability profile are measured right after the start screen (and before the first Jira issue), once – not only when a project was opened.
+- Jira: the analysis belongs to the repository, not to the issue. Its first issue analyses the repository (file summaries, `ARCHITECTURE.md`, flows, project notes) in the shared clone at the target branch, and keeps it with the index, skills and rules in the project folder `~/.kurultay/projects/<group_project>/`. Later issues fetch first and summarise only the files that changed on the target branch (`jira.reanalyzeFiles`, default 30, makes the whole analysis again); an issue's own branch never goes into it. `jira.analyze: false` turns it off.
+- Jira: skills and rules for a repository go into its project folder (`skills/`, `rules/`); the issue header shows the folder and the skills found.
+- The analysis no longer counts data files it never summarises as "changed" (they made every start look out of date).
+
 ## v0.1.3
 
 - Jira: every agent step on screen, with a heading per issue – the issue key and summary, then labelled lines (repository, branch, request, build/test commands), numbered steps with the elapsed time (`0:40  step 2 · reading Panel.java`), model changes, the build/test result and the merge request. After a quiet minute a line says what Kurultay waits for; an outage is one line instead of every retry. `/jira run` in the console gets the live activity block of `/run` (spinner, model, step, Ctrl+C); `/jira` no longer repeats the start panel; long lines wrap; `jira.log` names the issue on every line.

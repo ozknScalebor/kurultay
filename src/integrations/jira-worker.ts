@@ -11,7 +11,11 @@ import { copySharedState } from '../tui/worktree.js';
 import { errorMessage, sleep } from '../util/async.js';
 import { plural } from '../util/text.js';
 import { EventBus, type KEvent } from '../util/events.js';
-import { branchName, GitRepo, openMergeRequest, repoSlug, type MergeRequest } from './gitlab.js';
+import { branchName, GitRepo, openMergeRequest, projectOf, repoSlug, type MergeRequest } from './gitlab.js';
+import { filesToSummarise, ProjectAnalyzer } from '../analyze/summarizer.js';
+import { ProjectIndex } from '../index/project-index.js';
+import { runProbe } from '../probe/profile.js';
+import { SkillRegistry } from '../skills/skills.js';
 import { plainLine, RunNarrator, type JiraLineKind } from './jira-progress.js';
 import { descriptionChange, JiraClient, repoFor, requestOf, taskOf, type JiraComment, type JiraIssue } from './jira.js';
 
@@ -42,6 +46,8 @@ export interface IssueRunContext {
   maxWaitMs: number;
   /** longest pause between two tries */
   retryMs: number;
+  /** the repository's shared clone (at the target branch) and its project folder: the analysis is made there */
+  project?: { clone: string; dir: string; target: string };
 }
 
 export interface JiraRunOptions {
@@ -149,6 +155,10 @@ export class JiraWorker {
 
   /** the issue being worked on: the log file names it on every line */
   private current: string | undefined;
+  /** the models without a profile were measured (once per worker) */
+  private probed = false;
+  /** project folders analysed in this pass (several issues of one repository: once) */
+  private readonly analysed = new Set<string>();
 
   private log(line: string, kind: JiraLineKind = 'plain'): void {
     this.opts.onProgress?.(line, kind);
@@ -194,6 +204,7 @@ export class JiraWorker {
 
   /** One look at Jira: every waiting issue, one after another. */
   async pass(): Promise<JiraPassResult> {
+    this.analysed.clear();
     const issues = (await this.client.pending()).filter((i) => !this.opts.issue || i.key === this.opts.issue);
     const state = this.state();
     const todo = issues.map((i) => ({ issue: i, why: this.opts.issue ? 'asked for' : this.reason(i, state.issues[i.key]) })).filter((x) => x.why);
@@ -247,6 +258,7 @@ export class JiraWorker {
     const slug = repoSlug(url);
     const work = resolve(this.gitlab.workDir ?? join(this.home, 'jira-work'));
     const shared = new GitRepo(join(work, slug), this.gitlab);
+    const project = projectFolder(url, this.home);
     const treeDir = join(work, `${slug}.issues`, issue.key.replace(/[^A-Za-z0-9._-]/g, '_'));
     try {
       const branch = branchName(issue.key, this.gitlab.branchPrefix);
@@ -258,8 +270,14 @@ export class JiraWorker {
         if (submodules.error) this.log(`submodules could not all be fetched (${submodules.error}) – the work goes on without them`, 'warn');
         else this.log(`submods\t${submodules.paths.join(', ')}`, 'info');
       }
-      // the index and the analysis are shared by every issue of the repository
-      if (!existsSync(join(treeDir, '.kurultay', 'index'))) copySharedState(join(shared.dir, '.kurultay'), join(treeDir, '.kurultay'));
+      // the project folder of the repository: index, analysis, skills and rules – made from the
+      // shared clone at the target branch, used by every issue of the repository
+      mkdirSync(join(project, 'skills'), { recursive: true });
+      copySharedState(project, join(treeDir, '.kurultay'));
+      this.log(`project\t${project}`, 'info');
+      // the skills of this repository (its own folders and the project folder); user-wide ones apply too but are not listed
+      const skills = SkillRegistry.discover(treeDir, { includeUser: false }).visible();
+      if (skills.length) this.log(`skills\t${skills.map((x) => x.name).join(', ')}`, 'info');
 
       // what to do: the issue, plus what came since Kurultay last worked on it
       const known = prev?.description !== undefined && continued;
@@ -275,9 +293,7 @@ export class JiraWorker {
       if (resuming) this.log(`resume\tthe interrupted work goes on${prev?.stopped ? ` (it stopped: ${prev.stopped})` : ''}`, 'info');
       for (const r of cur.requests!) this.log(`request\t${firstLine(r)}`, 'info');
 
-      const report = await this.runWatched(issue, cur, tree.dir, task, write, (t) => (task = t));
-      // the index of this work tree is the newest one: the next issue starts from it
-      copySharedState(join(treeDir, '.kurultay'), join(shared.dir, '.kurultay'));
+      const report = await this.runWatched(issue, cur, tree.dir, task, write, (t) => (task = t), { clone: shared.dir, dir: project, target });
       // changes inside a submodule belong to its own repository: they are not committed here
       const inSub = (f: string) => submodules.paths.some((p) => f === p || f.startsWith(`${p}/`));
       const all = await tree.changed();
@@ -340,7 +356,7 @@ export class JiraWorker {
    * before an agent could read it is followed by one more run for it. No model answering for
    * maxWaitMinutes stops the run (ModelsDownError).
    */
-  private async runWatched(issue: JiraIssue, cur: IssueState, root: string, task: string, write: (s: Partial<IssueState>) => void, setTask: (t: string) => void) {
+  private async runWatched(issue: JiraIssue, cur: IssueState, root: string, task: string, write: (s: Partial<IssueState>) => void, setTask: (t: string) => void, project?: IssueRunContext['project']) {
     const inbox = new Inbox();
     const ctl = new AbortController();
     const stop = () => ctl.abort(this.opts.signal?.reason ?? new Error('stopped'));
@@ -390,6 +406,7 @@ export class JiraWorker {
       watchOutage: (fn) => (outage = fn),
       maxWaitMs: this.maxWaitMs,
       retryMs: this.retryMs,
+      project,
     };
     try {
       let report = await (this.opts.run ?? this.runKurultay.bind(this))(root, task, ctx);
@@ -476,13 +493,70 @@ export class JiraWorker {
       await sleep(Math.min(ctx.retryMs, Math.max(1000, ctx.maxWaitMs - (Date.now() - started))), ctx.signal);
       app = await createApp({ root, config: this.opts.config, bus, requireModels: true });
     }
+    // models without a capability profile are measured once (the profile is per user, kept)
+    if (!this.probed) {
+      this.probed = true;
+      const run = await runProbe(app.config, bus, { scope: 'missing', signal: ctx.signal }).catch((e: unknown) => {
+        if (ctx.signal.aborted) throw e;
+        this.log(`the capability probe failed (${errorMessage(e)}) – going on with what is known`, 'warn');
+        return undefined;
+      });
+      if (run) {
+        this.log(`models\t${plural(run.measured.models.length, 'model')} measured once: ${run.measured.models.map((m) => m.key.split('@')[0]).join(', ')}`, 'info');
+        app = await createApp({ root, config: this.opts.config, bus, requireModels: true });
+      }
+    }
     // the router waits instead of giving up; the Jira worker decides when it is enough
     app.router.recoveryWaitMs = ctx.maxWaitMs + 10 * 60_000;
     app.router.recoveryMaxIntervalMs = ctx.retryMs;
     ctx.watchOutage(() => app.router.outageSince);
     app.config.orchestrator.confirmMerge = false;
+    if (ctx.project) {
+      await this.analyseProject(ctx.project, app, bus, ctx.signal);
+      // the issue's work tree starts from the project's index and analysis (its own changes are indexed on top)
+      copySharedState(ctx.project.dir, join(root, app.config.stateDir));
+    }
     const { index } = loadOrBuildIndex(app);
     return new Orchestrator(root, app.config, app.router, app.materializer, index, bus).run(task, { signal: ctx.signal, inbox: ctx.inbox, onCheckpoint: ctx.onCheckpoint });
+  }
+
+  /**
+   * The repository's analysis, made in its shared clone at the target branch and kept in the
+   * project folder: the first issue analyses the project; later issues fetch, and the files that
+   * changed on the target branch since are summarised again (many changed files – jira.
+   * reanalyzeFiles, default 30 – bring the whole architecture analysis up to date). The changes
+   * of an issue's own branch never go into it.
+   */
+  private async analyseProject(p: NonNullable<IssueRunContext['project']>, app: Awaited<ReturnType<typeof createApp>>, bus: EventBus, signal: AbortSignal): Promise<void> {
+    if (this.jira.analyze === false) return;
+    if (this.analysed.has(p.dir)) return;
+    const clone = new GitRepo(p.clone, this.gitlab);
+    await clone.git(['checkout', '--quiet', '--detach', `origin/${p.target}`]);
+    await clone.submodules();
+    const cfg = app.config.index;
+    const index = ProjectIndex.load(p.clone, p.dir) ?? new ProjectIndex(p.clone, p.dir);
+    index.build({ include: cfg.include, exclude: cfg.exclude, maxFileBytes: cfg.maxFileBytes });
+    index.save();
+    const pending = filesToSummarise(index).length;
+    const has = existsSync(join(p.dir, 'ARCHITECTURE.md'));
+    const limit = this.jira.reanalyzeFiles ?? 30;
+    const analyzer = new ProjectAnalyzer(index, app.router, app.config, bus);
+    const t0 = Date.now();
+    try {
+      if (has && !pending) this.log(`analysis\tthe project's analysis is up to date (${p.target})`, 'info');
+      else if (has && pending < limit) {
+        this.log(`analysis\t${plural(pending, 'file')} changed on ${p.target} since – summarised again`, 'info');
+        await analyzer.updateSummaries(signal);
+      } else {
+        this.log(`analysis\t${has ? `${plural(pending, 'file')} changed on ${p.target} – the analysis is made again` : `first issue of this repository: analysing the project at ${p.target} (${plural(pending, 'file')}) – once, for all its issues`}`, 'info');
+        const r = await analyzer.run({ signal });
+        this.log(`analysis\tdone in ${fmtWait(Date.now() - t0)} – ${plural(r.filesSummarized, 'file')} summarised, ${plural(r.modules, 'module')}${r.failures ? `, ${plural(r.failures, 'failure')}` : ''}`, 'info');
+      }
+      this.analysed.add(p.dir);
+    } catch (e) {
+      if (signal.aborted) throw e;
+      this.log(`the analysis failed (${errorMessage(e)}) – the work goes on with the index only`, 'warn');
+    }
   }
 
   /** Look at Jira every few minutes until stopped; network or server errors only skip one round. */
@@ -500,7 +574,21 @@ export class JiraWorker {
   }
 }
 
-const fmtWait = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.round(ms / 1000)} seconds`);
+/**
+ * The folder of a repository's shared state – index, architecture analysis, skills, rules – that
+ * every issue of the repository uses: ~/.kurultay/projects/<group_project>.
+ */
+export function projectFolder(url: string, home = kurultayHome()): string {
+  let name: string;
+  try {
+    name = projectOf(url).path.replace(/[\\/]+/g, '_');
+  } catch {
+    name = repoSlug(url);
+  }
+  return join(home, 'projects', name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || repoSlug(url));
+}
+
+const fmtWait = (ms: number) => (ms >= 60_000 ? plural(Math.round(ms / 60_000), 'minute') : plural(Math.round(ms / 1000), 'second'));
 
 const firstLine = (t: string) => t.split('\n').find((l) => l.trim() && !/^(The description|Lines|A comment)/.test(l))?.trim().slice(0, 120) ?? t.split('\n')[0].slice(0, 120);
 

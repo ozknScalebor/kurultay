@@ -70,10 +70,19 @@ export class ProjectAnalyzer {
     return Math.max(1500, Math.min(12_000, Math.floor(minWin * 0.45)));
   }
 
+  /** Only the summaries of new or changed files (the architecture documents stay as they are). */
+  async updateSummaries(signal?: AbortSignal): Promise<number> {
+    const todo = filesToSummarise(this.index);
+    if (!todo.length) return 0;
+    this.bus?.emitEvent('analyze.start', { message: `${todo.length} files to summarise`, data: { files: todo.length, models: this.router.size } });
+    await this.summarizeFiles(todo, signal);
+    this.index.save();
+    this.bus?.emitEvent('analyze.done', { data: { usage: this.usage, failures: this.failures } });
+    return todo.length;
+  }
+
   async run(opts: AnalyzeOptions = {}): Promise<AnalyzeResult> {
-    const todo = (opts.force ? this.index.files : this.index.needsSummary()).filter(
-      (f) => !SKIP_SUMMARY_LANGS.has(f.lang) || /(^|\/)(package\.json|pom\.xml|CMakeLists\.txt|build\.gradle|Cargo\.toml|go\.mod|pyproject\.toml)$/.test(f.path),
-    );
+    const todo = filesToSummarise(this.index, opts.force);
     this.bus?.emitEvent('analyze.start', { message: `${todo.length} files to summarise`, data: { files: todo.length, models: this.router.size } });
 
     await this.summarizeFiles(todo, opts.signal);
@@ -522,4 +531,11 @@ ${sources}`;
     }
     writeFileSync(join(this.index.stateDir, 'INDEX.md'), lines.join('\n'));
   }
+}
+
+/** Files the analysis summarises: new or changed ones (all with `force`); data files only when they describe the build. */
+export function filesToSummarise(index: ProjectIndex, force = false) {
+  return (force ? index.files : index.needsSummary()).filter(
+    (f) => !SKIP_SUMMARY_LANGS.has(f.lang) || /(^|\/)(package\.json|pom\.xml|CMakeLists\.txt|build\.gradle|Cargo\.toml|go\.mod|pyproject\.toml)$/.test(f.path),
+  );
 }

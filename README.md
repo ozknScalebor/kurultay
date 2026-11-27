@@ -161,12 +161,11 @@ LLM settings  1 endpoint (1 reachable) · 4 models · 14 parallel slots · capab
   ...
   timeouts: first token 3 min · silence 90 s · total 10 min · pause after a hang 2 min
 
-Select a workspace (required – the root folder of the project)
+No project open. /workspace <path> opens one, /workspace 1 the first recent one:
   1) ~/projects/uart-driver   current folder
   2) ~/projects/gateway       last used 2026-10-21
-Workspace [number or path] ❯ 1
+kurultay ❯ /workspace 1
   ✓ index: 412 files, 3,180 definitions, 1,204 dependencies
-  ✓ capability profile saved (/probe to re-measure)
   ✓ architecture analysis up to date
 uart-driver ❯ Add DMA support to the UART driver
 → task: one agent works it through (/ask to only ask)
@@ -187,8 +186,8 @@ Applied to the project: 3 files written
 
 - **On start** it shows the live state of the endpoints, the models, their measured capabilities, parallel capacity and timeout settings. Without any configuration it asks once for the endpoint URL, the API key and the model names, and writes them to `~/.kurultay/config.json` (see [Configuration](#configuration)).
 - **Jira & GitLab** (when the configuration has a `jira` section): the start screen also shows whether Jira answers, which user the token belongs to, how many issues wait for `@kurultay`, the GitLab version, the branch that will be used and whether the start-up watch is on. `/jira` lists the waiting issues, `/jira run [KEY]` does them, `/jira startup` and `/jira log` – all without a workspace, since the Jira work happens in its own clone.
-- **Choosing a workspace is mandatory.** Recent ones are picked by number, paths complete with Tab. The index is updated automatically and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/analyze` do it by hand).
-- **The capability probe runs once.** Its result is saved in `~/.kurultay/capabilities.json` and used by every project; later starts do not probe again. Only a model added to the configuration later is probed (on its own). `/probe` re-measures every model, `/probe <model>` one of them, `/probe --deep` measures more (bigger context, more parallel requests).
+- **The prompt takes commands at once.** A project is opened with `/workspace <path>` (or `kurultay --workspace <path>`); `/workspace` alone lists the recent ones, `/workspace 2` opens the second. Commands that need a project say so; `/jira` needs none. When a project opens, the index is updated and changed files trigger an incremental architecture analysis (skip with Ctrl+C; `/index`, `/analyze` do it by hand).
+- **The capability probe runs once, on start.** Models without a measured profile are probed right after the start screen (also before the first Jira issue), and the result is saved in `~/.kurultay/capabilities.json` for every project; later starts do not probe again. Only a model added to the configuration later is probed (on its own). `/probe` re-measures every model, `/probe <model>` one of them, `/probe --deep` measures more (bigger context, more parallel requests).
 - **Typing `/` opens the command menu**; it filters as you type, ↑/↓ selects, Tab/Enter runs. Command arguments (`/mode r` → `race`), `@file` and `$skill` complete too.
 - **Plain text**: a question (`where is …?`, `how does … work`, `explain …`; Turkish questions are recognised too) is answered by the models as a council and follow-up questions know the previous answers; a task goes to the agent, and you are asked before the result is applied to the project. `/ask`, `/run` or `/intent` pin the behaviour. `!command` runs a shell command.
 - A running job stops with **Ctrl+C** (half-done changes are rolled back). Whatever you typed meanwhile goes to the next prompt.
@@ -498,11 +497,12 @@ Issues **assigned to you** whose **description mentions `@kurultay`** are done b
 ### What happens per issue
 
 1. **Find.** The built-in query is `assignee = currentUser() AND description ~ "kurultay" AND statusCategory != Done`; only issues whose description really contains `@kurultay` are taken.
-2. **Repository.** A line `repo: <url>` in the description, else `jira.repos` by project key, else `gitlab.repo`. It is cloned once into `~/.kurultay/jira-work/<repo>` and fetched later. Submodules are checked out in every issue's work tree at the commits its branch wants (recursively, with the same credentials – submodules on the same server need nothing more); one that cannot be fetched is reported and the work goes on without it. Changes the agent makes inside a submodule are not committed (they belong to the submodule's own repository) and are reported. Every issue gets a **work tree of its own** next to it (`~/.kurultay/jira-work/<repo>.issues/ABC-12`, a git worktree – the clone's objects are shared): its changes, session and todo list stay there while other issues are worked on. The index and the architecture analysis are shared by all issues of the repository and kept up to date by each of them.
+2. **Repository.** A line `repo: <url>` in the description, else `jira.repos` by project key, else `gitlab.repo`. It is cloned once into `~/.kurultay/jira-work/<repo>` and fetched later. Submodules are checked out in every issue's work tree at the commits its branch wants (recursively, with the same credentials – submodules on the same server need nothing more); one that cannot be fetched is reported and the work goes on without it. Changes the agent makes inside a submodule are not committed (they belong to the submodule's own repository) and are reported. Every issue gets a **work tree of its own** next to it (`~/.kurultay/jira-work/<repo>.issues/ABC-12`, a git worktree – the clone's objects are shared): its changes, session and todo list stay there while other issues are worked on. The index, the analysis, skills and rules come from the repository's project folder (step 4).
 3. **Branch.** `gitlab.branchPrefix` + the issue key (`kurultay/ABC-12` by default, `feature/ABC-12` with `"feature/"`; a `{key}` in the prefix marks where the key goes, e.g. `"feature/{key}-ai"`). A new issue starts from the target branch (`gitlab.targetBranch`, default the repository's default branch); an issue whose branch is already on the server goes on from there. A prefix git would refuse is reported at start.
-4. **Work.** Kurultay works on the summary and description of the issue, and on the comments that mention `@kurultay`, with the project's own `kurultay.config.json` (build/test commands, rules). Meanwhile it reads the issue again every `pollSeconds` (30 s): see [Changing the request](#changing-the-request).
-5. **Merge request.** Commit, push and a merge request from the branch to the target branch – through the API with `gitlab.token`, otherwise with GitLab push options (git access is enough). A failing build or test still opens the merge request; its description and the comment say `FAILED`.
-6. **Comment** (and, with `jira.transition`, the issue is moved, e.g. to `"In Review"`).
+4. **Analysis – per repository, not per issue.** The repository's analysis (file summaries, `ARCHITECTURE.md`, flows, project notes) is made in the shared clone at the target branch and kept in its **project folder** `~/.kurultay/projects/<group_project>/`, with the index, skills and rules. The first issue of a repository analyses it once. Every later issue fetches first: when files changed on the target branch, only their summaries are made again (`reanalyzeFiles`, default 30 changed files, makes the whole analysis again); with nothing changed the analysis is used as it is. What an issue changes on its own branch never goes into it. Every issue's work tree starts from the project folder.
+5. **Work.** Kurultay works on the summary and description of the issue, and on the comments that mention `@kurultay`, with the project's own `kurultay.config.json` (build/test commands, rules). Meanwhile it reads the issue again every `pollSeconds` (30 s): see [Changing the request](#changing-the-request).
+6. **Merge request.** Commit, push and a merge request from the branch to the target branch – through the API with `gitlab.token`, otherwise with GitLab push options (git access is enough). A failing build or test still opens the merge request; its description and the comment say `FAILED`.
+7. **Comment** (and, with `jira.transition`, the issue is moved, e.g. to `"In Review"`).
 
 | Outcome | Comment under the issue |
 |---|---|
@@ -545,6 +545,8 @@ Paused work goes on **from where it stopped**, not from the beginning. After eve
 | `pollSeconds` | `30` | Seconds between two looks at the issue being worked on (a changed description or a new `@kurultay` comment reaches the running work) |
 | `maxWaitMinutes` | `120` | When no model answers: minutes to keep trying before the issue is paused (comment, next issue, again on a later look) |
 | `retryMinutes` | `5` | Longest pause between two tries while no model answers |
+| `analyze` | `true` | Analyse each repository once (first issue) and keep it up to date |
+| `reanalyzeFiles` | `30` | Make the whole analysis again when this many files changed on the target branch (fewer: only their summaries) |
 | `repos` | – | Project key → repository URL, `"*"` for any other project |
 | `comment` | `true` | Write the result as a comment |
 | `transition` | – | Move the issue to this status or transition after the merge request |
@@ -640,6 +642,7 @@ paths: ["src/drivers/**"]         # suggested only while working on these files
 1. ...
 ```
 
+- **Jira work**: a repository's own skill folders (committed in it) are used, plus the project folder `~/.kurultay/projects/<group_project>/skills/` – put skills there that belong to the repository but not into it (the issue header shows the folder and the skills found). `~/.kurultay/skills` holds skills for every project. Rules work the same way (`~/.kurultay/projects/<group_project>/rules/*.md`).
 - **Where they are read from**: `.kurultay/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills`, `.qwen/skills`, `.goose/skills`, `.opencode/skills`, `.github/skills`, `skills/`, `~/.agents/skills` and `~/.claude/skills` in the home directory, plus `skills.paths`. Skills written for other agents work as they are. Old single-file `.md` skills are supported too.
 - **Progressive loading**: models first get only a list of names + descriptions; when needed a model opens the body with the `skill` tool and extra files with `skill_file`. Context is not wasted on small local models.
 - **Selection priority**: `--skill a,b` and `$name` in the task text > `always` > `keywords` > skills a planner assigned to the subtask (`--mode multi`). Lexically related ones are marked as "suggested". Skills with `paths` are announced when a worker touches those files.

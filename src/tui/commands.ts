@@ -145,13 +145,17 @@ export function buildCommands(con: KurultayConsole): Command[] {
           return a && !recent.length ? completePath(a, con.cwd) : [...recent, ...(a ? completePath(a, con.cwd) : [])];
         },
         run: async (a) => {
+          const candidates = con.workspaceCandidates().filter((w) => w.path !== con.workspace);
           if (!a) {
-            con.out(`Workspace: ${con.workspace ? shortPath(con.workspace) : '-'}`);
-            const others = con.state.recent.filter((r) => r.path !== con.workspace && existsSync(r.path));
-            if (others.length) con.out(color.dim(`Recent: ${others.slice(0, 5).map((r) => shortPath(r.path)).join(', ')}`));
+            con.out(`Workspace: ${con.workspace ? shortPath(con.workspace) : color.dim('none')}`);
+            candidates.forEach((w, i) => con.out(`  ${color.cyan(String(i + 1))}) ${shortPath(w.path)}${w.note ? color.dim(`  ${w.note}`) : ''}`));
+            con.out(color.dim(`  /workspace <path> opens a project${candidates.length ? `, /workspace 1 the first one above` : ''}`));
             return;
           }
-          const c = checkWorkspace(a, con.workspace ?? con.cwd);
+          // a number picks one of the recent ones
+          const pick = /^\d+$/.test(a) ? candidates[Number(a) - 1]?.path : a;
+          if (!pick) return con.out(color.yellow(`There is no recent workspace ${a} – /workspace lists them.`));
+          const c = checkWorkspace(pick, con.workspace ?? con.cwd);
           if (!c.path) return con.out(color.red(c.error!));
           await con.openWorkspace(c.path);
         },

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { basename, join } from 'node:path';
-import { ProjectAnalyzer } from '../analyze/summarizer.js';
+import { filesToSummarise, ProjectAnalyzer } from '../analyze/summarizer.js';
 import { runShell } from '../agent/tools.js';
 import { createApp, loadOrBuildIndex, prepareRetrieval, startMcp, type App } from '../app.js';
 import { closeLspServers } from '../lsp/client.js';
@@ -34,7 +34,7 @@ import { buildCommands } from './commands.js';
 import type { Command } from './command-types.js';
 import * as sessions from './session-commands.js';
 import { UsageMeter, fillBar, fillText, fmtTok, type UsageMark } from './usage.js';
-import { checkWorkspace, completePath, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath, type ConsoleState } from './state.js';
+import { checkWorkspace, loadState, looksLikeProject, rememberWorkspace, saveState, shortPath, type ConsoleState } from './state.js';
 
 export interface ConsoleOptions {
   version: string;
@@ -217,7 +217,14 @@ export class KurultayConsole {
         this.out(jiraPanel(js));
         this.out('');
       }
-      if (!(await this.selectWorkspace())) return 0;
+      // models without a capability profile are measured once, before anything else uses them
+      if (this.opts.autoProbe !== false && this.router?.size) await this.probeMissing();
+      // a workspace is opened with /workspace <path> (or --workspace); the prompt takes commands at once
+      if (this.opts.workspace) {
+        const c = checkWorkspace(this.opts.workspace, this.cwd);
+        if (c.path) await this.openWorkspace(c.path);
+        else this.out(color.red(c.error!));
+      } else this.workspaceHint();
       if (this.opts.resume) await this.resume(this.opts.resume === true ? '1' : this.opts.resume);
       if (this.opts.worktree) await this.worktreeCommand(`new ${this.opts.worktree}`);
       this.out(color.dim(`Ask a question or describe a task. Type ${color.cyan('/')} for commands.`));
@@ -262,7 +269,7 @@ export class KurultayConsole {
       const [head] = line.slice(1).split(/\s+/);
       const cmd = this.findCommand(head);
       if (!cmd && /[\\/]/.test(line.slice(1)) && existsSync(line)) {
-        this.out(color.yellow(`That is a folder path. To switch the workspace: /workspace ${line}`));
+        this.out(color.yellow(`That is a folder. To open it: /workspace ${line}`));
         return;
       }
       if (!cmd) {
@@ -271,7 +278,7 @@ export class KurultayConsole {
         return;
       }
       if (cmd.ws && !this.app) {
-        this.out(color.yellow('Select a workspace first: /workspace <folder>'));
+        this.out(color.yellow(`/${cmd.name} needs a project: /workspace <folder> opens one.`));
         return;
       }
       await cmd.run(line.slice(1 + head.length).trim());
@@ -279,7 +286,8 @@ export class KurultayConsole {
     }
     if (line.startsWith('!')) return this.shell(line.slice(1).trim());
     if (!this.app) {
-      this.out(color.yellow('Select a workspace first: /workspace <folder>'));
+      // a folder typed on its own: say how to open it
+      this.out(color.yellow(existsSync(line) && checkWorkspace(line, this.cwd).path ? `That is a folder. To open it: /workspace ${line}` : 'No project open: /workspace <folder> opens one (/workspace lists the recent ones).'));
       return;
     }
     if (line.startsWith('?')) return this.ask(line.slice(1).trim());
@@ -393,48 +401,26 @@ export class KurultayConsole {
 
   // ------------------------------------------------------------------ workspace
 
-  async selectWorkspace(): Promise<boolean> {
-    if (this.opts.workspace) {
-      const c = checkWorkspace(this.opts.workspace, this.cwd);
-      if (c.path) {
-        await this.openWorkspace(c.path);
-        return true;
-      }
-      this.out(color.red(c.error!));
-    }
+  /** No workspace yet: how to open one, the recent ones, and that Jira needs none. */
+  workspaceHint(): void {
     const candidates = this.workspaceCandidates();
-    this.out(color.bold('Select a workspace') + color.dim(' (required – the root folder of the project)'));
+    this.out(`${color.bold('No project open.')} ${color.cyan('/workspace <path>')} opens one${candidates.length ? `, ${color.cyan('/workspace 1')} the first recent one:` : '.'}`);
     candidates.forEach((c, i) => this.out(`  ${color.cyan(String(i + 1))}) ${shortPath(c.path)}${c.note ? color.dim(`  ${c.note}`) : ''}`));
-    if (!candidates.length) this.out(color.dim('  (nothing recent) type a folder path; Tab completes'));
-    if (this.config?.jira?.url) this.out(color.dim(`  Jira work needs no workspace (it works in its own clone): ${color.cyan('/jira')} lists the waiting issues, ${color.cyan('/jira run')} does them`));
-    for (;;) {
-      const input = await this.screen.readLine(`${color.bold('Workspace')} ${color.dim('[number or path]')} ❯ `, (t) => this.completeWorkspace(t, candidates));
-      if (input === null) return false;
-      const v = input.trim();
-      if (!v) continue;
-      if (v === '/exit' || v === '/quit' || v === '/q') return false;
-      // "/models" is a command, "/home/me/proje" is a path
-      const cmd = v.startsWith('/') ? this.findCommand(v.slice(1).split(/\s+/)[0]) : undefined;
-      if (cmd && cmd.name !== 'workspace') {
-        if (cmd.ws) this.out(color.yellow('Select a workspace first.'));
-        else await cmd.run(v.slice(1).split(/\s+/).slice(1).join(' '));
-        if (this.exitRequested) return false;
-        continue;
-      }
-      const raw = v.replace(/^\/workspace\s*/, '');
-      const pick = /^\d+$/.test(raw) ? candidates[Number(raw) - 1]?.path : raw;
-      if (!pick) {
-        this.out(color.yellow(`There is no option ${raw} in the list.`));
-        continue;
-      }
-      const c = checkWorkspace(pick, this.cwd);
-      if (!c.path) {
-        this.out(color.red(c.error!));
-        continue;
-      }
-      await this.openWorkspace(c.path);
-      return true;
+    if (this.config?.jira?.url) this.out(`${color.bold('Jira')} needs no project: ${color.cyan('/jira')} lists the waiting issues, ${color.cyan('/jira run')} does them.`);
+  }
+
+  /** Measure the models that have no capability profile yet (once; saved for every project). */
+  async probeMissing(): Promise<void> {
+    let missing: string[] = [];
+    try {
+      missing = await unprofiledModels(this.config!, loadProfile(), AbortSignal.timeout(this.opts.healthTimeoutMs ?? 10_000));
+    } catch {
+      return;
     }
+    if (!missing.length) return;
+    this.out(color.dim(`  capability probe for ${plural(missing.length, 'new model')} (once; Ctrl+C skips, /probe re-measures)`));
+    await this.probe({ models: missing });
+    this.out('');
   }
 
   workspaceCandidates(): Array<{ path: string; note?: string }> {
@@ -447,16 +433,7 @@ export class KurultayConsole {
     return out.slice(0, 9);
   }
 
-  completeWorkspace(text: string, candidates: Array<{ path: string; note?: string }>): Completion | undefined {
-    const t = text.replace(/^\/workspace\s*/, '');
-    const offset = text.length - t.length;
-    if (!t || /^\d+$/.test(t)) {
-      const items = candidates.map((c, i) => ({ value: c.path, label: `${i + 1}) ${shortPath(c.path)}`, description: c.note })).filter((_, i) => !t || String(i + 1).startsWith(t));
-      return items.length ? { items, from: offset, to: Array.from(text).length, submitOnEnter: true, autoAccept: true } : undefined;
-    }
-    const items = completePath(t, this.cwd);
-    return items.length ? { items, from: offset, to: Array.from(text).length } : undefined;
-  }
+
 
   /** Open a workspace: load its config, index it, and (optionally) probe and analyze automatically. */
   async openWorkspace(path: string, o: { keepConversation?: boolean } = {}): Promise<void> {
@@ -487,18 +464,15 @@ export class KurultayConsole {
 
     if (this.opts.autoIndex !== false) this.reindex();
     if (this.opts.autoProbe !== false && this.app.router.size > 0) {
-      // measured once per model and saved; only models without a profile are probed here
+      // measured once per model and saved: only models still without a profile (a new one in the config)
       const missing = await unprofiledModels(this.app.config, loadProfile());
       if (missing.length) {
-        this.out(color.dim(`  capability probe for ${missing.length} new model${missing.length === 1 ? '' : 's'} (once; Ctrl+C skips, /probe re-measures)`));
+        this.out(color.dim(`  capability probe for ${plural(missing.length, 'new model')} (once; Ctrl+C skips, /probe re-measures)`));
         await this.probe({ models: missing });
-      } else {
-        const old = this.app.router.list().some((h) => h.caps.reachable && h.caps.editScore > 0 && !h.caps.editFormat);
-        this.out(`  ${color.green('✓')} capability profile saved ${color.dim(old ? '(made by an older version – run /probe once to measure the edit format of each model)' : '(/probe to re-measure)')}`);
       }
     }
     if (this.opts.autoAnalyze !== false && this.app.router.size > 0 && this.index) {
-      const pending = this.index.needsSummary().length;
+      const pending = filesToSummarise(this.index).length;
       const hasArch = existsSync(join(this.app.stateDir, 'ARCHITECTURE.md'));
       if (pending > 0 || !hasArch) {
         this.out(color.dim(`  architecture analysis: ${plural(pending, 'file')} to summarise (Ctrl+C skips, later /analyze)`));
