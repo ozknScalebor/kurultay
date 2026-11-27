@@ -532,6 +532,67 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     assert.match(badPrefix.gitlab?.error ?? '', /does not accept/);
   });
 
+  it('a changed summary is a request too; comments can be off; a transition the workflow lacks is only logged', async () => {
+    const bare = remote();
+    const issue: FakeIssue = { key: 'SM-1', summary: 'first title', description: '@kurultay do it' };
+    const fake = await fakeServers([issue]);
+    const home = tmpProject({});
+    const lines: string[] = [];
+    const tasks: string[] = [];
+    const heard: string[] = [];
+    const worker = new JiraWorker({
+      config: configFile(home, fake.url, bare, { comment: false, transition: 'Shipped' }),
+      home,
+      onProgress: (l) => lines.push(l),
+      run: async (root, task, ctx) => {
+        tasks.push(task);
+        if (tasks.length === 1) {
+          issue.summary = 'second title';
+          await until(() => ctx.inbox.size > 0);
+          heard.push(...ctx.inbox.take(0).texts);
+        }
+        writeFileSync(join(root, `${tasks.length}.txt`), 'x\n');
+        return ok([`${tasks.length}.txt`]);
+      },
+    });
+    assert.deepEqual((await worker.pass()).done.map((d) => d.status), ['merge-request']);
+    assert.deepEqual(heard, ['The summary is now: second title']);
+    assert.equal(fake.comments('SM-1').length, 0, 'comment: false');
+    assert.ok(lines.some((l) => /no transition "Shipped" in its workflow/.test(l)));
+    // after the merge request: only the summary changes
+    issue.summary = 'third title';
+    assert.deepEqual((await worker.pass()).done.map((d) => d.status), ['merge-request']);
+    assert.match(tasks[1], /# Follow-up[\s\S]*The summary is now: third title/);
+  });
+
+  it('error paths: Jira down during watch, a broken state file, a comment that cannot be written, a repository without origin/HEAD', async () => {
+    const lines: string[] = [];
+    // watch: Jira cannot be reached – the round is skipped, the loop goes on
+    const home = tmpProject({});
+    const dead = join(home, 'dead.json');
+    writeFileSync(dead, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: 'http://127.0.0.1:9', token: 't' }, gitlab: { repo: 'https://g/a.git' } }));
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 300);
+    await new JiraWorker({ config: dead, home, intervalMinutes: 0.001, signal: ctl.signal, onProgress: (l) => lines.push(l) }).watch();
+    assert.ok(lines.some((l) => /^jira: .* – trying again in 0\.001 min/.test(l)));
+    // a damaged state file counts as empty; a comment Jira refuses is logged, the work goes on
+    const bare = remote();
+    const fake = await fakeServers([{ key: 'CM-1', summary: 'x', description: '@kurultay do', broken: true }]);
+    const h2 = tmpProject({ 'jira-state.json': '{oops' });
+    const failing = (async (u: string, init?: RequestInit) => (init?.method === 'POST' && u.includes('/comment') ? new Response('no', { status: 500 }) : fetch(u, init))) as typeof fetch;
+    const r = await new JiraWorker({ config: configFile(h2, fake.url, bare), home: h2, fetch: failing, onProgress: (l) => lines.push(l), run: async () => ok([]) }).pass();
+    assert.deepEqual(r.done.map((d) => d.status), ['no-change']);
+    assert.ok(lines.some((l) => /CM-1: could not write the comment – jira POST/.test(l)));
+    // no origin/HEAD: main, master or develop is taken; none of them – a clear error
+    const work = join(tmpProject({}), 'w');
+    const repo = new GitRepo(work, {});
+    await repo.sync(pathToFileURL(bare).href);
+    git(work, 'remote', 'set-head', 'origin', '-d');
+    assert.equal(await repo.defaultBranch(), 'main');
+    git(work, 'update-ref', '-d', 'refs/remotes/origin/main');
+    await assert.rejects(repo.defaultBranch(), /set gitlab\.targetBranch/);
+  });
+
   it('the user configuration template names every value to fill in', async () => {
     const { placeholdersIn, loadConfig } = await import('../../src/config.js');
     const text = readFileSync(new URL('../../../config_template.json', import.meta.url), 'utf8');

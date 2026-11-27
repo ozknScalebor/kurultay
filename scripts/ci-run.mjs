@@ -7,7 +7,7 @@
  * Usage: node scripts/ci-run.mjs <suite...> [--coverage --min-lines=N ...]
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,7 +15,8 @@ const root = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const args = process.argv.slice(2);
 const r = spawnSync(process.execPath, [join(root, 'scripts', 'run-tests.mjs'), ...args, '--reporter=tap'], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
 const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-process.stdout.write(out);
+// written synchronously: process.exit right after an asynchronous write to a pipe cuts the log off
+writeSync(1, out);
 writeFileSync(join(root, 'test-output.tap'), out);
 const lines = out.split(/\r?\n/);
 
@@ -34,8 +35,12 @@ for (let i = 0; i < lines.length; i++) {
   failures.push({ title: lines[i].replace(/^\s*not ok \d+ - /, '').trim(), text });
 }
 const esc = (s) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
-for (const f of failures.slice(0, 20)) console.log(`::error title=${esc(`[${suites}] ${f.title}`).slice(0, 200)}::${esc(f.text.slice(0, 6000))}`);
-if (r.status !== 0 && !failures.length) console.log(`::error title=[${suites}] test run failed::exit code ${r.status} – see log (build/runner error or coverage threshold)`);
+for (const f of failures.slice(0, 20)) writeSync(1, `::error title=${esc(`[${suites}] ${f.title}`).slice(0, 200)}::${esc(f.text.slice(0, 6000))}\n`);
+if (r.status !== 0 && !failures.length) {
+  // the coverage table names the threshold that was missed
+  const why = lines.filter((l) => /does not meet threshold/.test(l)).map((l) => l.replace(/^[#ℹ]\s*/, '')).join(' ');
+  writeSync(1, `::error title=[${suites}] test run failed::${why || `exit code ${r.status} – see log (build/runner error)`}\n`);
+}
 
 // job summary
 const summaryFile = process.env.GITHUB_STEP_SUMMARY;
@@ -55,4 +60,4 @@ if (summaryFile) {
   }
   appendFileSync(summaryFile, md);
 }
-process.exit(r.status ?? 1);
+process.exitCode = r.status ?? 1;
