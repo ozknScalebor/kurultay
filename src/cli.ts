@@ -20,7 +20,7 @@ import { detectVerifyCommands } from './orchestrator/verify.js';
 import { renderCapabilitiesMarkdown, writeCapabilities } from './probe/probe.js';
 import { profilePath, runProbe } from './probe/profile.js';
 import { startDashboard } from './ui/dashboard.js';
-import { attachTerminal, color, fmtSeconds } from './ui/terminal.js';
+import { attachTerminal, color, fmtSeconds, section } from './ui/terminal.js';
 import { EventBus } from './util/events.js';
 import { forTerminal, setUnicode } from './ui/symbols.js';
 import { plural, tryExtractJson } from './util/text.js';
@@ -444,17 +444,20 @@ async function cmdJira(args: Args) {
   }
   const ctrl = new AbortController();
   process.once('SIGINT', () => ctrl.abort(new Error('stopped')));
+  const { formatJiraLine } = await import('./integrations/jira-progress.js');
   const worker = new jw.JiraWorker({
     config,
     dryRun: !!args.flags['dry-run'],
     issue: typeof args.flags.issue === 'string' ? args.flags.issue : undefined,
     intervalMinutes: args.flags.interval !== undefined ? Number(args.flags.interval) : undefined,
-    onProgress: (l) => out(l),
+    onProgress: (l, kind) => out(formatJiraLine(l, kind, process.stdout.columns || 100)),
     signal: ctrl.signal,
   });
   if (args.flags.watch) return worker.watch();
   const r = await worker.pass();
-  out(`${color.bold('Jira')}: ${plural(r.seen, 'issue')} mention ${worker.jira.mention ?? '@kurultay'}; ${r.done.length ? r.done.map((d) => `${d.key} ${d.status}${d.mr ? ` ${d.mr}` : ''}`).join(', ') : 'nothing new to do'}`);
+  out(section('Done', undefined, process.stdout.columns || 100));
+  out(`  ${plural(r.seen, 'issue')} mention ${worker.jira.mention ?? '@kurultay'}; ${r.done.length ? '' : 'nothing new to do'}`.trimEnd());
+  for (const d of r.done) out(`  ${d.status === 'merge-request' ? color.green('✓') : d.status === 'failed' || d.status === 'no-repo' ? color.red('✗') : color.yellow('⚠')} ${d.key.padEnd(14)} ${d.status}${d.mr ? `  ${d.mr}` : ''}`);
 }
 
 async function cmdSwebench(args: Args) {

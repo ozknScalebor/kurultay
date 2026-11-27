@@ -9,8 +9,10 @@ import { LlmError } from '../llm/types.js';
 import { Orchestrator, type RunReport } from '../orchestrator/orchestrator.js';
 import { copySharedState } from '../tui/worktree.js';
 import { errorMessage, sleep } from '../util/async.js';
-import { EventBus } from '../util/events.js';
+import { plural } from '../util/text.js';
+import { EventBus, type KEvent } from '../util/events.js';
 import { branchName, GitRepo, openMergeRequest, repoSlug, type MergeRequest } from './gitlab.js';
+import { plainLine, RunNarrator, type JiraLineKind } from './jira-progress.js';
 import { descriptionChange, JiraClient, repoFor, requestOf, taskOf, type JiraComment, type JiraIssue } from './jira.js';
 
 /**
@@ -52,7 +54,10 @@ export interface JiraRunOptions {
   dryRun?: boolean;
   /** only this issue (e.g. ABC-123) */
   issue?: string;
-  onProgress?: (line: string) => void;
+  /** every line of progress, with its kind (heading, step, warning…) for the display */
+  onProgress?: (line: string, kind: JiraLineKind) => void;
+  /** the events of the run (the console shows them in its live activity block) */
+  events?: (e: KEvent) => void;
   signal?: AbortSignal;
   /** for tests */
   fetch?: typeof fetch;
@@ -142,10 +147,13 @@ export class JiraWorker {
     return Math.max(10, (this.jira.pollSeconds ?? 30) * 1000);
   }
 
-  private log(line: string): void {
-    this.opts.onProgress?.(line);
+  /** the issue being worked on: the log file names it on every line */
+  private current: string | undefined;
+
+  private log(line: string, kind: JiraLineKind = 'plain'): void {
+    this.opts.onProgress?.(line, kind);
     try {
-      appendFileSync(this.logPath, `${new Date().toISOString()} ${line}\n`);
+      appendFileSync(this.logPath, `${new Date().toISOString()} ${this.current && kind !== 'issue' ? `${this.current}: ` : ''}${plainLine(line, kind)}\n`);
     } catch {
       /* logging is best-effort */
     }
@@ -190,15 +198,20 @@ export class JiraWorker {
     const state = this.state();
     const todo = issues.map((i) => ({ issue: i, why: this.opts.issue ? 'asked for' : this.reason(i, state.issues[i.key]) })).filter((x) => x.why);
     const out: JiraPassResult = { seen: issues.length, done: [] };
-    if (todo.length) this.log(`jira: ${todo.length} issue(s) to do: ${todo.map((x) => `${x.issue.key} (${x.why})`).join(', ')}`);
+    if (todo.length) this.log(`${plural(todo.length, 'issue')} to do: ${todo.map((x) => `${x.issue.key} (${x.why})`).join(', ')}`, 'pass');
     for (const { issue } of todo) {
       if (this.opts.signal?.aborted) break;
       if (this.opts.dryRun) {
-        this.log(`would do ${issue.key} "${issue.summary}" in ${repoFor(issue, this.jira.repos, this.gitlab.repo) ?? '(no repository)'}`);
+        this.log(`${issue.key}\t${issue.summary} – in ${repoFor(issue, this.jira.repos, this.gitlab.repo) ?? '(no repository)'}`, 'info');
         continue;
       }
-      const r = await this.doIssue(issue);
-      out.done.push({ key: issue.key, ...r });
+      this.current = issue.key;
+      try {
+        const r = await this.doIssue(issue);
+        out.done.push({ key: issue.key, ...r });
+      } finally {
+        this.current = undefined;
+      }
     }
     return out;
   }
@@ -224,9 +237,10 @@ export class JiraWorker {
       write({ ...s, requests: s.status === 'failed' ? cur.requests : [], stopped: undefined, notified: s.status === 'failed' ? cur.notified : false });
       return s;
     };
+    this.log(`${issue.key}\t${issue.summary}`, 'issue');
     const url = repoFor(issue, this.jira.repos, this.gitlab.repo);
     if (!url) {
-      this.log(`${issue.key}: no repository for project ${issue.project}`);
+      this.log(`no repository for project ${issue.project}`, 'fail');
       await this.comment(issue, cur, `Kurultay could not start: no repository is configured for project ${issue.project} (gitlab.repo or jira.repos in the Kurultay configuration, or a line "repo: <url>" in the description).`);
       return finish({ status: 'no-repo' });
     }
@@ -238,6 +252,8 @@ export class JiraWorker {
       const branch = branchName(issue.key, this.gitlab.branchPrefix);
       await shared.sync(url);
       const { tree, target, continued } = await shared.issueTree(treeDir, branch, resuming);
+      this.log(`repo\t${url}`, 'info');
+      this.log(`branch\t${branch} → ${target}${continued ? ' (goes on from the server)' : ' (new)'}`, 'info');
       // the index and the analysis are shared by every issue of the repository
       if (!existsSync(join(treeDir, '.kurultay', 'index'))) copySharedState(join(shared.dir, '.kurultay'), join(treeDir, '.kurultay'));
 
@@ -252,7 +268,8 @@ export class JiraWorker {
       const progress = resuming ? this.restore(issue.key, treeDir) : undefined;
       let task = taskText(issue, this.client.mention, { followUp: known, requests: cur.requests!, resume: progress, stopped: prev?.stopped });
       write({});
-      this.log(`${issue.key}: "${issue.summary}" – ${url}, branch ${branch}${continued ? ' (goes on from the server)' : ''}${resuming ? ', continuing the interrupted work' : ''}`);
+      if (resuming) this.log(`resume\tthe interrupted work goes on${prev?.stopped ? ` (it stopped: ${prev.stopped})` : ''}`, 'info');
+      for (const r of cur.requests!) this.log(`request\t${firstLine(r)}`, 'info');
 
       const report = await this.runWatched(issue, cur, tree.dir, task, write, (t) => (task = t));
       // the index of this work tree is the newest one: the next issue starts from it
@@ -261,7 +278,7 @@ export class JiraWorker {
       const verify = report.finalVerify ? (report.finalVerify.skipped ? 'not run (no build/test commands)' : report.finalVerify.ok ? 'passed' : 'FAILED') : 'not run';
       const asked = cur.requests!.length ? cur.requests! : undefined;
       if (!files.length) {
-        this.log(`${issue.key}: no change (${report.status})`);
+        this.log(`no change (status ${report.status}) – nothing to commit`, 'warn');
         await this.comment(issue, cur, `Kurultay worked on this ${asked ? 'request' : 'issue'} but produced no change (status: ${report.status}). Edit the description, or write a comment with ${this.client.mention}, to hand it over again.`);
         rmSync(this.progressPath(issue.key), { force: true });
         return finish({ status: 'no-change' });
@@ -271,7 +288,7 @@ export class JiraWorker {
       const mr: MergeRequest | undefined = await openMergeRequest(tree, url, this.gitlab, { branch, target, title: `${issue.key}: ${issue.summary}`.slice(0, 250), description }, this.opts.fetch);
       const link = mr?.url ?? `branch ${branch} (the server did not return a merge request link)`;
       rmSync(this.progressPath(issue.key), { force: true });
-      this.log(`${issue.key}: ${mr?.existed ? 'merge request updated' : 'merge request opened'}: ${link}`);
+      this.log(`${mr?.existed ? 'merge request updated' : 'merge request opened'}: ${link}`, 'ok');
       await this.comment(
         issue,
         cur,
@@ -285,14 +302,14 @@ export class JiraWorker {
       );
       if (this.jira.transition && mr) {
         const moved = await this.client.transition(issue.key, this.jira.transition).catch(() => false);
-        if (!moved) this.log(`${issue.key}: no transition "${this.jira.transition}" in its workflow`);
+        if (!moved) this.log(`no transition "${this.jira.transition}" in its workflow`, 'warn');
       }
       return finish({ status: 'merge-request', mr: mr?.url ?? cur.mr });
     } catch (e) {
       const error = errorMessage(e).slice(0, 500);
       if (isOutage(e) && !this.opts.signal?.aborted) {
         const wait = fmtWait(this.maxWaitMs);
-        this.log(`${issue.key}: no model answered for ${wait} – paused, going on with the next issue; this one continues later from where it stopped`);
+        this.log(`no model answered for ${wait} – paused; the next issue goes on, this one continues later from where it stopped`, 'warn');
         if (!cur.notified) await this.comment(issue, cur, `Kurultay paused this issue: no model has answered for ${wait} (${error}). The work so far is kept; Kurultay keeps trying and goes on from where it stopped.`);
         write({ status: 'waiting', error, stopped: `no model answered for ${wait}`, notified: true });
         return { status: 'waiting', error };
@@ -302,7 +319,7 @@ export class JiraWorker {
         write({ status: 'working', stopped: 'Kurultay was stopped' });
         return { status: 'working', error };
       }
-      this.log(`${issue.key}: failed – ${error}`);
+      this.log(`failed – ${error}`, 'fail');
       await this.comment(issue, cur, `Kurultay could not finish this issue: ${error}`);
       return finish({ status: 'failed', error });
     }
@@ -339,11 +356,11 @@ export class JiraWorker {
         msgs.push(...comments.map((c) => commentText(c, this.client.mention)));
         if (msgs.length) {
           for (const m of msgs) inbox.post(m);
-          this.log(`${issue.key}: the issue changed while working – ${msgs.map(firstLine).join(' · ').slice(0, 200)}`);
+          this.log(`the issue changed while working – ${msgs.map(firstLine).join(' · ').slice(0, 200)}`, 'change');
           write({ description: now.description, summary: now.summary, hash: hashOf(now), requests: [...(cur.requests ?? []), ...msgs], ...(comments.length ? { lastComment: comments[comments.length - 1].id } : {}) });
         }
       } catch (e) {
-        this.log(`${issue.key}: could not read the issue (${errorMessage(e)}); trying again in ${Math.round(this.pollMs / 1000)} s`);
+        this.log(`could not read the issue (${errorMessage(e)}); trying again in ${Math.round(this.pollMs / 1000)} s`, 'warn');
       } finally {
         polling = false;
       }
@@ -375,7 +392,7 @@ export class JiraWorker {
         inbox.clear();
         task = `${taskOf({ ...issue, description: cur.description ?? issue.description, summary: cur.summary ?? issue.summary }, this.client.mention)}\n\n# New request\nThe work done so far is already in the work tree. The request changed while it was being done – do this now, on top of it:\n\n${unread.join('\n\n---\n\n')}`;
         setTask(task);
-        this.log(`${issue.key}: one more run for the change that came at the end`);
+        this.log('one more run for the change that came at the end', 'change');
         report = await (this.opts.run ?? this.runKurultay.bind(this))(root, task, ctx);
       }
       if (ctl.signal.aborted) throw ctl.signal.reason;
@@ -402,10 +419,10 @@ export class JiraWorker {
           writeFileSync(abs, content);
         }
       }
-      this.log(`${key}: ${Object.keys(snap.files ?? {}).length} file(s) of the interrupted work put back`);
+      this.log(`resume\t${plural(Object.keys(snap.files ?? {}).length, 'file')} of the interrupted work put back`, 'info');
       return snap;
     } catch (e) {
-      this.log(`${key}: could not read the saved progress (${errorMessage(e)}); the work tree is used as it is`);
+      this.log(`could not read the saved progress (${errorMessage(e)}); the work tree is used as it is`, 'warn');
       return undefined;
     }
   }
@@ -419,21 +436,34 @@ export class JiraWorker {
         this.save(issue.key, cur);
       }
     } catch (e) {
-      this.log(`${issue.key}: could not write the comment – ${errorMessage(e)}`);
+      this.log(`could not write the comment – ${errorMessage(e)}`, 'warn');
     }
   }
 
   private async runKurultay(root: string, task: string, ctx: IssueRunContext) {
     const bus = new EventBus();
-    bus.on('event', (e: { type: string; source?: string; message?: string }) => {
-      if (e.type === 'log.warn' || e.type === 'run.plan' || e.type === 'run.end' || e.type === 'worker.inbox') this.log(`  ${e.source ?? e.type}: ${e.message ?? ''}`.trimEnd());
+    // every agent step as one line; a line after a quiet minute says what it waits for
+    const narrator = new RunNarrator((text, kind) => this.log(text, kind));
+    bus.on('event', (e: KEvent) => {
+      narrator.onEvent(e);
+      this.opts.events?.(e);
     });
+    const beat = setInterval(() => narrator.heartbeat(), 5000);
+    beat.unref?.();
+    try {
+      return await this.orchestrate(root, task, ctx, bus);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+
+  private async orchestrate(root: string, task: string, ctx: IssueRunContext, bus: EventBus) {
     const started = Date.now();
     let app = await createApp({ root, config: this.opts.config, bus, requireModels: true });
     // no model could be found at all: try again every few minutes, as long as models may answer late
     while (app.router.size === 0) {
       if (Date.now() - started >= ctx.maxWaitMs) throw new ModelsDownError('no model could be reached');
-      this.log(`  no model could be reached; trying again in ${fmtWait(ctx.retryMs)}`);
+      this.log(`no model could be reached – trying again in ${fmtWait(ctx.retryMs)}`, 'warn');
       await sleep(Math.min(ctx.retryMs, Math.max(1000, ctx.maxWaitMs - (Date.now() - started))), ctx.signal);
       app = await createApp({ root, config: this.opts.config, bus, requireModels: true });
     }
@@ -449,12 +479,12 @@ export class JiraWorker {
   /** Look at Jira every few minutes until stopped; network or server errors only skip one round. */
   async watch(): Promise<void> {
     const minutes = this.opts.intervalMinutes ?? this.jira.intervalMinutes ?? 5;
-    this.log(`jira: watching ${this.jira.url} every ${minutes} min for issues assigned to you that mention ${this.client.mention}`);
+    this.log(`watching ${this.jira.url} every ${minutes} min for issues assigned to you that mention ${this.client.mention}`, 'pass');
     while (!this.opts.signal?.aborted) {
       try {
         await this.pass();
       } catch (e) {
-        this.log(`jira: ${errorMessage(e)} – trying again in ${minutes} min`);
+        this.log(`Jira: ${errorMessage(e)} – trying again in ${minutes} min`, 'warn');
       }
       await sleep(minutes * 60_000, this.opts.signal).catch(() => undefined);
     }

@@ -221,7 +221,7 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     writeFileSync(cfgFile, JSON.stringify({ endpoints: [{ name: 'e', baseUrl: 'http://127.0.0.1:1/v1' }], jira: { url: fake.url, token: 't', repos: { ABC: 'https://g/abc.git' } } }));
     const lines: string[] = [];
     await new JiraWorker({ config: cfgFile, home, dryRun: true, onProgress: (l) => lines.push(l) }).pass();
-    assert.ok(lines.some((l) => /would do NO-1 "where" in \(no repository\)/.test(l)));
+    assert.ok(lines.some((l) => /^NO-1\twhere – in \(no repository\)$/.test(l)));
     const r = await new JiraWorker({ config: cfgFile, home }).pass();
     assert.equal(r.done[0].status, 'no-repo');
     assert.match(JSON.stringify(fake.calls.at(-1)?.body), /no repository is configured for project NO/);
@@ -417,7 +417,7 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     const lines: string[] = [];
     const r = await new JiraWorker({ config: configFile(home, fake.url, bare, { maxWaitMinutes: 0.005, retryMinutes: 0.001 }), home, onProgress: (l) => lines.push(l) }).pass();
     assert.deepEqual(r.done.map((d) => d.status), ['waiting']);
-    assert.ok(lines.some((l) => /no model could be reached; trying again in 0 seconds/.test(l)));
+    assert.ok(lines.some((l) => /no model could be reached – trying again in 0 seconds/.test(l)));
     assert.match(fake.comments('NM-1')[0], /paused this issue/);
   });
 
@@ -574,7 +574,7 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     const ctl = new AbortController();
     setTimeout(() => ctl.abort(), 300);
     await new JiraWorker({ config: dead, home, intervalMinutes: 0.001, signal: ctl.signal, onProgress: (l) => lines.push(l) }).watch();
-    assert.ok(lines.some((l) => /^jira: .* – trying again in 0\.001 min/.test(l)));
+    assert.ok(lines.some((l) => /^Jira: .* – trying again in 0\.001 min/.test(l)));
     // a damaged state file counts as empty; a comment Jira refuses is logged, the work goes on
     const bare = remote();
     const fake = await fakeServers([{ key: 'CM-1', summary: 'x', description: '@kurultay do', broken: true }]);
@@ -582,7 +582,8 @@ describe('Jira: issues that mention @kurultay become merge requests', () => {
     const failing = (async (u: string, init?: RequestInit) => (init?.method === 'POST' && u.includes('/comment') ? new Response('no', { status: 500 }) : fetch(u, init))) as typeof fetch;
     const r = await new JiraWorker({ config: configFile(h2, fake.url, bare), home: h2, fetch: failing, onProgress: (l) => lines.push(l), run: async () => ok([]) }).pass();
     assert.deepEqual(r.done.map((d) => d.status), ['no-change']);
-    assert.ok(lines.some((l) => /CM-1: could not write the comment – jira POST/.test(l)));
+    assert.ok(lines.some((l) => /^could not write the comment – jira POST/.test(l)));
+    assert.match(readFileSync(join(h2, 'jira.log'), 'utf8'), /Z == CM-1 {2}x\n.*Z CM-1: repo {2}file:.*\n[\s\S]*Z CM-1: ! could not write the comment/);
     // no origin/HEAD: main, master or develop is taken; none of them – a clear error
     const work = join(tmpProject({}), 'w');
     const repo = new GitRepo(work, {});

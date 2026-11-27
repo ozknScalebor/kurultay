@@ -649,16 +649,33 @@ export class KurultayConsole {
         return this.out(readFileSync(log, 'utf8').trimEnd().split('\n').slice(-20).join('\n'));
       }
       if (sub && sub !== 'run' && sub !== 'list') return this.out(color.yellow('Usage: /jira · /jira run [KEY] · /jira startup · /jira log'));
+      const { formatJiraLine } = await import('../integrations/jira-progress.js');
+      const show = (l: string, kind: Parameters<typeof formatJiraLine>[1]) => this.out(formatJiraLine(l, kind, this.screen.columns));
       if (sub !== 'run') {
+        // the start screen showed the connection already; only a problem is shown again
         const st = await jiraStatus(this.config, { timeoutMs: this.opts.healthTimeoutMs ?? 6000 });
-        if (st) this.out(jiraPanel(st));
-        if (!st?.ok) return;
+        if (!st?.ok) {
+          if (st) this.out(jiraPanel(st));
+          return;
+        }
+        const r = await new JiraWorker({ config, issue: key, dryRun: true, onProgress: show }).pass();
+        return this.out(color.dim(r.seen ? `\n  /jira run does them all, /jira run ${key ?? 'ABC-12'} only one` : '  No issue waits (assigned to you, @kurultay in the description, not done).'));
       }
-      const worker = new JiraWorker({ config, issue: key, dryRun: sub !== 'run', onProgress: (l) => this.out(sub === 'run' ? l : color.dim(l)) });
-      const r = await worker.pass();
-      if (sub !== 'run') return this.out(r.seen ? color.dim(`${plural(r.seen, 'issue')} found – /jira run does them, /jira run ${key ?? 'ABC-12'} only one`) : color.dim('No issue waits (assigned to you, @kurultay in the description, not done).'));
-      if (!r.done.length) return this.out(color.dim(key ? `${key} is not waiting (assigned to you, @kurultay in the description, not done).` : 'No issue waits.'));
-      for (const d of r.done) this.out(`${d.status === 'merge-request' ? color.green('✓') : color.yellow('⚠')} ${d.key}: ${d.status}${d.mr ? ` – ${d.mr}` : ''}${d.error ? ` – ${d.error}` : ''}`);
+      // the run's events feed the live block under the spinner, as for /run; the run log of an
+      // open workspace is paused meanwhile – the Jira lines tell the same, once
+      const hadLog = !!this.detachLog;
+      this.detachLog?.();
+      this.detachLog = undefined;
+      let r: Awaited<ReturnType<InstanceType<typeof JiraWorker>['pass']>> | undefined;
+      try {
+        r = await this.withAbort('Jira', (signal) => new JiraWorker({ config, issue: key, signal, onProgress: show, events: (e) => this.bus.emitEvent(e.type, { source: e.source, message: e.message, data: e.data }) }).pass());
+      } finally {
+        if (hadLog) this.detachLog = attachTerminal(this.bus, { verbose: this.settings.verbose, write: (l) => this.out(l), width: () => this.screen.columns });
+      }
+      if (!r) return;
+      if (!r.done.length) return this.out(color.dim(key ? `  ${key} is not waiting (assigned to you, @kurultay in the description, not done).` : '  No issue waits.'));
+      this.out(section('Done', undefined, this.screen.columns));
+      for (const d of r.done) this.out(`  ${d.status === 'merge-request' ? color.green('✓') : d.status === 'failed' || d.status === 'no-repo' ? color.red('✗') : color.yellow('⚠')} ${d.key.padEnd(14)} ${d.status}${d.mr ? `  ${d.mr}` : ''}${d.error && d.status !== 'merge-request' ? color.dim(`  ${d.error.split('\n')[0].slice(0, 120)}`) : ''}`);
     } catch (e) {
       this.out(color.red(`Jira: ${errorMessage(e)}`));
     }

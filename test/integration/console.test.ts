@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
 import { DEFAULT_MOCK_MODELS, startMockServer, type MockServerHandle } from '../../src/mock/server.js';
@@ -401,5 +403,55 @@ describe('Kurultay console', () => {
     assert.match(out, /✓ MCP: 3 tools \(tracker\)/);
     assert.match(out, /mcp__tracker__lookup_ticket \(read-only\)\s+\[MCP tracker\] Read a ticket/);
     assert.match(out, /mcp__tracker__create_ticket\s+\[MCP tracker\]/);
+  });
+
+  it('/jira lists the waiting issues, /jira run does them with a heading per issue and every agent step', async () => {
+    // a bare repository as "GitLab", a fake Jira with one issue
+    const base = tmpProject({});
+    const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const bare = join(base, 'app.git');
+    mkdirSync(bare);
+    git(bare, 'init', '-q', '--bare', '-b', 'main');
+    const seed = join(base, 'seed');
+    mkdirSync(join(seed, 'src'), { recursive: true });
+    git(seed, 'init', '-q', '-b', 'main');
+    writeFileSync(join(seed, 'src', 'mathutil.js'), 'export function clamp(value, min, max) {\n  return value;\n}\n');
+    git(seed, 'add', '.');
+    git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+    git(seed, 'push', '-q', bare, 'main');
+    const issue = { key: 'YN-7', fields: { summary: 'clamp returns the value unchanged', description: '@kurultay fix clamp in src/mathutil.js', status: { name: 'To Do' }, project: { key: 'YN' }, comment: { comments: [] } } };
+    const jira = createServer((req, res) => {
+      const j = (code: number, v: unknown) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(v));
+      req.resume();
+      req.on('end', () => {
+        if (req.url?.startsWith('/rest/api/2/search')) return j(200, { issues: [issue] });
+        if (req.url === '/rest/api/2/serverInfo') return j(200, { version: '8.20.4', deploymentType: 'Server' });
+        if (req.url === '/rest/api/2/myself') return j(200, { displayName: 'Oz' });
+        if (req.url?.includes('/comment')) return j(201, { id: '1' });
+        if (req.url?.startsWith('/rest/api/2/issue/')) return j(200, issue);
+        if (req.url?.includes('/merge_requests')) return j(201, { web_url: 'https://gl/mr/9', iid: 9 });
+        return j(404, {});
+      });
+    });
+    await new Promise<void>((r) => jira.listen(0, '127.0.0.1', () => r()));
+    try {
+      const url = `http://127.0.0.1:${(jira.address() as { port: number }).port}`;
+      const h = tmpProject({});
+      process.env.KURULTAY_HOME = h;
+      writeFileSync(join(h, 'config.json'), JSON.stringify({ endpoints: [{ name: 'mock', baseUrl: mock.url, models: ['mock-coder-strong'] }], skills: { includeUser: false }, jira: { url, token: 't' }, gitlab: { repo: pathToFileURL(bare).href, url, token: 'g', targetBranch: 'main' } }));
+      const { out } = await session(['/jira', '/jira run'], { cwd: tmpProject({ 'x.txt': 'not a project' }), autoProbe: false, autoAnalyze: false });
+      // the list: no second connection panel, one line per issue
+      assert.equal(out.match(/GitLab {2}/g)?.length, 1, 'the connection panel is shown once, on start');
+      assert.match(out, /── Jira ─+\n {2}1 issue to do: YN-7 \(new\)\n {2}YN-7 {5}clamp returns the value unchanged – in file:/);
+      assert.match(out, /\/jira run does them all/);
+      // the run: a heading for the issue, labelled lines, numbered steps, the result
+      assert.match(out, /── YN-7 ─+\nclamp returns the value unchanged\n {2}repo {5}file:.*\n {2}branch {3}kurultay\/YN-7 → main \(new\)/);
+      assert.match(out, /⚠ no build\/test commands – the changes are not compiled or tested/);
+      assert.match(out, / {3}0:\d\d {2}step 1 · reading mathutil\.js/);
+      assert.match(out, /✓ merge request opened: https:\/\/gl\/mr\/9/);
+      assert.match(out, /── Done ─+\n {2}✓ YN-7 {11}merge-request {2}https:\/\/gl\/mr\/9/);
+    } finally {
+      jira.close();
+    }
   });
 });
