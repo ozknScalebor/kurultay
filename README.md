@@ -478,7 +478,7 @@ Issues **assigned to you** whose **description mentions `@kurultay`** (optionall
   "maxWaitMinutes": 120                // no model answers: keep trying this long, then the next issue
 },
 "gitlab": {
-  "repo": "https://gitlab.company.local/team/app.git",
+  "repo": "https://gitlab.company.local/team/app.git",   // optional when issues say @kurultay{repo:<url>}
   "username": "user.name",
   "token": "${GITLAB_TOKEN}",          // scope "api": push and merge request through the API
   "branchPrefix": "feature/"           // branch = prefix + issue key → feature/ABC-12
@@ -493,6 +493,31 @@ Issues **assigned to you** whose **description mentions `@kurultay`** (optionall
 | `kurultay jira --dry-run` | Only lists the issues it would do and the repository of each |
 | `kurultay jira --issue ABC-12` | Only this issue (also when it was done before) |
 | Console: `/jira`, `/jira run [KEY]`, `/jira startup`, `/jira log` | The same from the interactive console; its start screen shows the Jira and GitLab connection |
+
+### On screen
+
+`/jira run` (and `kurultay jira`) shows every issue under a heading of its own – the key and the summary – with labelled lines and every step of the agent; the console adds its live activity block (model, step, Ctrl+C):
+
+```
+── YNAVYS-3883 ──────────────────────────────────────────────────────────
+Silah Muhimmat > Atesleme Bilgileri ekranindaki SARP-35 bilgileri ...
+  repo     https://gitlab.company.local/yna/gui/vys-gui-krh.git
+  branch   kurultay/YNAVYS-3883 → dev (new)
+  project  C:\Users\me\.kurultay\projects\yna_gui_vys-gui-krh
+  skills   ekran-tablosu
+  test     mvn -B verify (from .gitlab-ci.yml)
+  analysis the project's analysis is up to date (dev)
+   0:12  step 1 · looking at the repository map
+   0:40  step 2 · reading AteslemeBilgileriPanel.java
+   2:10  still working · waiting for Qwen3.8-Flash-Next-FP8 for 1m 30s
+   3:05  step 3 · editing AteslemeBilgileriPanel.java
+   4:20  build/tests: passed
+  ✓ merge request opened: https://gitlab.company.local/.../merge_requests/41
+── Done ─────────────────────────────────────────────────────────────────
+  ✓ YNAVYS-3883    merge-request  https://gitlab.company.local/.../merge_requests/41
+```
+
+Headings and labels are cyan, times gray, step numbers magenta, warnings yellow (no dim text: a classic Windows console shows it as plain text). After a quiet minute a line says what Kurultay waits for; an outage is one line, not one per retry. Long lines wrap. `~/.kurultay/jira.log` has the same lines in plain text, each with the issue key.
 
 ### What happens per issue
 
@@ -553,7 +578,7 @@ Paused work goes on **from where it stopped**, not from the beginning. After eve
 
 | `gitlab.` | Default | Meaning |
 |---|---|---|
-| `repo` | – | Repository the work is done in (unless `jira.repos` or the description names one) |
+| `repo` | – | Repository the work is done in – optional: an issue's `@kurultay{repo:<url>}` (or `jira.repos`) comes first |
 | `branchPrefix` | `kurultay/` | Prefix of the branch, joined with the issue key; `{key}` marks where the key goes |
 | `targetBranch` | default branch | Branch the merge request targets |
 | `token` | – | Personal access token (scope `api`): used for git over HTTPS and for the merge request API |
@@ -567,7 +592,7 @@ Paused work goes on **from where it stopped**, not from the beginning. After eve
 - **Build and tests:** when the repository has a CI pipeline (`.gitlab-ci.yml` …), its build and test commands are used (see [`verify`](#verify--what-decides-that-a-task-is-done)). Without a pipeline and without `verify` in the project's `kurultay.config.json` the work is applied unchecked and the comment says `build/tests: not run`.
 - **Passwords and tokens:** use `${ENV_VAR}` as above (`setx JIRA_TOKEN "…"` on Windows). Git gets them from an inline credential helper – never written to disk or into the remote URL – and they are masked in messages and comments.
 - **Company certificates:** the portable package starts Node with `--use-system-ca`, so certificates in the Windows (or system) store are trusted for Jira, GitLab and the model servers. With your own Node.js start it the same way (`node --use-system-ca bin\kurultay.js …`, Node 22.15 or later); `kurultay jira startup` keeps the flag in the start-up entry. Otherwise set `NODE_EXTRA_CA_CERTS=C:\path\company-ca.pem`. Git uses its own setting (`git config --global http.sslCAInfo …`).
-- **First try:** `kurultay jira --dry-run`, then `kurultay jira --issue ABC-12`, then `kurultay jira startup`.
+- **First try:** in the console `/jira` (lists, changes nothing), then `/jira run ABC-12`; or from the command line `kurultay jira --dry-run`, `kurultay jira --issue ABC-12`, then `kurultay jira startup`.
 
 ## SWE-bench
 
@@ -718,7 +743,7 @@ npm run test:coverage     # coverage thresholds: lines ≥ 96%, branches ≥ 88%
 | Layer | What is tested |
 |---|---|
 | `test/unit` | Sandbox pool (parallelism proven with a barrier), compiler check (gcc/clang/javac, compile_commands, Windows paths), command policy and environment scrubbing, learned model statistics and the json_schema fallback, console usage meter; checkpoints, conversation storage, Markdown renderer, status line and activity indicator, git helpers; console plumbing (key parsing, bracketed paste, line editor, history, suggestion menu, line wrapping, screen), router (selection, retry, circuit breaker, first-token / silence timeouts and quarantine, auth/context errors, recovery wait, timeouts, cancellation, concurrency limit), OpenAI client (SSE, reasoning, tool-call deltas, error classification, headers), tools and security (path escapes, denied commands, read-only), overlay / 3-way merge / crash recovery, edit parsers, symbol extraction for 9 languages, import resolution, scanner, index, council (anonymity, independent reviewer, no self-votes, test evidence first, P0–P3 priority, text ranking fallback), planner, verification, configuration, skill discovery/validation/selection, front matter, loop guard, syntax check, read-before-write guard, CRLF/Unicode editing, Retry-After, folder-scoped rules |
-| `test/integration` | Evaluation harness, plan approval / budget / resume, MCP and LSP (with fake servers), semantic search (fake embeddings), context budget and truncation recovery; interactive console (session storage, resume, branching, rewind, git worktree; LLM panel, mandatory workspace, automatic index/probe/analysis, question vs. task, confirmation, settings and endpoint editing, completion, Ctrl+C, token/context display), agent loop (native/text/XML tool calls, rejected tools, toolshim, permanent failover from a hung model with history conversion, idling, step limit, loop/error stop, skill preloading and tool loading, condenser and its fallback, model dropouts), orchestrator (split + dependencies, iterations, build fixing, independent re-review of fixes, conflicts, confirmation, rules, crash recovery, cancellation), probe (ladder, embedding filter, unreachable endpoints), analysis (batches, fault tolerance, incrementality), dashboard and terminal |
+| `test/integration` | Evaluation harness, plan approval / budget / resume, MCP and LSP (with fake servers), semantic search (fake embeddings), context budget and truncation recovery; interactive console (session storage, resume, branching, rewind, git worktree; LLM panel, start without a workspace and `/workspace`, automatic index/probe/analysis, the Jira display, question vs. task, confirmation, settings and endpoint editing, completion, Ctrl+C, token/context display), agent loop (native/text/XML tool calls, rejected tools, toolshim, permanent failover from a hung model with history conversion, idling, step limit, loop/error stop, skill preloading and tool loading, condenser and its fallback, model dropouts), orchestrator (split + dependencies, iterations, build fixing, independent re-review of fixes, conflicts, confirmation, rules, crash recovery, cancellation), probe (ladder, embedding filter, unreachable endpoints), analysis (batches, fault tolerance, incrementality), dashboard and terminal |
 | `test/cli` | console (over a pipe), `init`, `probe`, `index`, `analyze` (flow documents, project notes), `skills`, `run` (`--skill`, `--req`, `--approve-plan`, `--max-tokens`, `--resume`), `ask`, `map`, `search`, `status`, `stats`; exit codes and error messages |
 | `test/package` | `npm pack` contents, installation without a registry, portable bundle with an embedded Node |
 
